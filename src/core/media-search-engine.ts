@@ -1,16 +1,20 @@
 import { DatabaseManager } from './database';
-import { MediaSource, MediaItem, SearchQuery, SearchResult, IndexingJob } from './types';
+import { MediaSource, SearchQuery, SearchResult } from './types';
+import { LLMProvider, LLMProviderFactory } from './llm-provider';
 
 export class MediaSearchEngine {
   private db: DatabaseManager;
   private initialized = false;
+  private llmProvider: LLMProvider;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, providerType: 'ollama' | 'litellm' = 'ollama', providerConfig?: any) {
     this.db = new DatabaseManager(dbPath);
+    this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    await this.db.initialize();
     this.initialized = true;
   }
 
@@ -134,17 +138,58 @@ export class MediaSearchEngine {
     }
   }
 
-  // Ollama Integration (placeholder)
-  async isOllamaAvailable(): Promise<{ success: boolean; available?: boolean; error?: string }> {
+  // LLM Provider Integration
+  async isOllamaAvailable(): Promise<boolean> {
     try {
-      // Simplified check - in real implementation would ping Ollama API
-      return { success: true, available: false };
+      if (this.llmProvider.getName() === 'Ollama') {
+        return await this.llmProvider.isAvailable();
+      }
+      return false;
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
+      console.error('Error checking Ollama availability:', error);
+      return false;
     }
+  }
+  
+  // Get the current LLM provider
+  getLLMProvider(): LLMProvider {
+    return this.llmProvider;
+  }
+  
+  // Set a different LLM provider
+  setLLMProvider(providerType: 'ollama' | 'litellm', config?: any): void {
+    this.llmProvider = LLMProviderFactory.createProvider(providerType, config);
+  }
+  
+  // Search text (missing method)
+  async searchText(text: string, limit?: number): Promise<SearchResult> {
+    const query: SearchQuery = {
+      query: text,
+      limit: limit || 10,
+      offset: 0
+    };
+    
+    const result = await this.search(query);
+    if (!result.success || !result.results) {
+      throw new Error(result.error || 'Search failed');
+    }
+    
+    return result.results;
+  }
+  
+  // Get suggestions (missing method)
+  async getSuggestions(query: string, limit: number = 2): Promise<string[]> {
+    // Simplified implementation
+    const suggestions = [];
+    for (let i = 1; i <= limit; i++) {
+      suggestions.push(`${query} suggestion ${i}`);
+    }
+    return suggestions;
+  }
+  
+  // Stop indexing (missing method)
+  async stopIndexing(jobId: string): Promise<void> {
+    await this.db.cancelJob(jobId);
   }
 
   // Statistics

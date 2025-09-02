@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import { AddSourceForm } from './components/AddSourceForm';
+// Import directly from the file
 import { SourceList } from './components/SourceList';
+import { SearchBar } from './components/SearchBar';
+import { SearchResults } from './components/SearchResults';
 import { MediaAPI } from './api/media-api';
+import { MediaItem } from './core/types';
 import './App.css';
 
 function App() {
@@ -9,6 +13,8 @@ function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [initialized, setInitialized] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState<boolean | null>(null);
+  const [searchResults, setSearchResults] = useState<MediaItem[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     const initializeApp = async () => {
@@ -39,6 +45,11 @@ function App() {
 
   const handleCancelAdd = () => {
     setShowAddForm(false);
+  };
+
+  const handleSearchResults = (results: MediaItem[], query: string) => {
+    setSearchResults(results);
+    setSearchQuery(query);
   };
 
   if (!initialized) {
@@ -83,10 +94,19 @@ function App() {
           </div>
         )}
 
-        <SourceList
-          onAddSource={handleAddSource}
-          refreshTrigger={refreshTrigger}
-        />
+        <div className="main-content">
+          <div className="search-section">
+            <SearchBar onResults={(results) => handleSearchResults(results, searchQuery)} />
+            <SearchResults results={searchResults} query={searchQuery} />
+          </div>
+          
+          <div className="sources-section">
+            <SourceList
+              onAddSource={handleAddSource}
+              refreshTrigger={refreshTrigger}
+            />
+          </div>
+        </div>
       </main>
 
       <footer className="app-footer">

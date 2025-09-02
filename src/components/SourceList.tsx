@@ -49,12 +49,37 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
       const result = await MediaAPI.startIndexing(sourceId);
       if (result.success) {
         await loadIndexingStatus();
+        // Start polling for progress updates
+        startProgressPolling();
       } else {
         alert(`Failed to start indexing: ${result.error}`);
       }
     } catch (err) {
       alert(`Error starting indexing: ${err instanceof Error ? err.message : err}`);
     }
+  };
+
+  const startProgressPolling = () => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const statusResult = await MediaAPI.getIndexingStatus();
+        if (statusResult.success && statusResult.activeJobs) {
+          setIndexingJobs(statusResult.activeJobs);
+          
+          // If no active jobs, stop polling and refresh sources
+          if (statusResult.activeJobs.length === 0) {
+            clearInterval(pollInterval);
+            await loadSources(); // Refresh to show updated lastIndexed
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll indexing status:', err);
+        clearInterval(pollInterval);
+      }
+    }, 1000); // Poll every second
+
+    // Stop polling after 30 seconds to prevent infinite polling
+    setTimeout(() => clearInterval(pollInterval), 30000);
   };
 
   const handleRemoveSource = async (sourceId: string, sourceName: string) => {
@@ -136,11 +161,15 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
                 <div className="source-actions">
                   <button
                     onClick={() => handleStartIndexing(source.id)}
-                    className="index-btn"
-                    disabled={indexingJobs.length > 0}
-                    title="Start indexing this source"
+                    className={`index-btn ${indexingJobs.includes(source.id) ? 'indexing' : ''}`}
+                    disabled={indexingJobs.includes(source.id)}
+                    title={indexingJobs.includes(source.id) ? 'Indexing in progress...' : 'Start indexing this source'}
                   >
-                    {indexingJobs.length > 0 ? '⏳' : '🔄'}
+                    {indexingJobs.includes(source.id) ? (
+                      <span className="indexing-spinner">🔄</span>
+                    ) : (
+                      '▶️'
+                    )}
                   </button>
                   <button
                     onClick={() => handleRemoveSource(source.id, source.name)}

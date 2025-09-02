@@ -1,13 +1,55 @@
 import { MediaSource, MediaItem, IndexingJob } from './types';
 
-// In-memory storage for development
-const sources: MediaSource[] = [];
-const items: MediaItem[] = [];
-const jobs: IndexingJob[] = [];
+// Persistent storage using localStorage
+const STORAGE_KEYS = {
+  SOURCES: 'driller_sources',
+  ITEMS: 'driller_items', 
+  JOBS: 'driller_jobs'
+};
+
+const loadFromStorage = <T>(key: string, defaultValue: T[]): T[] => {
+  try {
+    const stored = localStorage.getItem(key);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Convert date strings back to Date objects
+      return parsed.map((item: any) => {
+        if (item.createdAt) item.createdAt = new Date(item.createdAt);
+        if (item.lastIndexed) item.lastIndexed = new Date(item.lastIndexed);
+        if (item.modifiedAt) item.modifiedAt = new Date(item.modifiedAt);
+        if (item.indexedAt) item.indexedAt = new Date(item.indexedAt);
+        if (item.startedAt) item.startedAt = new Date(item.startedAt);
+        if (item.completedAt) item.completedAt = new Date(item.completedAt);
+        return item;
+      });
+    }
+  } catch (error) {
+    console.warn(`Failed to load ${key} from storage:`, error);
+  }
+  return defaultValue;
+};
+
+const saveToStorage = <T>(key: string, data: T[]): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (error) {
+    console.warn(`Failed to save ${key} to storage:`, error);
+  }
+};
+
+const sources: MediaSource[] = loadFromStorage(STORAGE_KEYS.SOURCES, []);
+const items: MediaItem[] = loadFromStorage(STORAGE_KEYS.ITEMS, []);
+const jobs: IndexingJob[] = loadFromStorage(STORAGE_KEYS.JOBS, []);
 
 export class DatabaseManager {
   constructor(_dbPath?: string) {
     // No-op for in-memory storage
+  }
+  
+  async initialize(): Promise<void> {
+    // Initialize database connection if needed
+    // For the current in-memory implementation, this is a no-op
+    return Promise.resolve();
   }
 
   // Media Sources
@@ -25,6 +67,7 @@ export class DatabaseManager {
     };
     
     sources.push(newSource);
+    saveToStorage(STORAGE_KEYS.SOURCES, sources);
     return id;
   }
 
@@ -42,6 +85,10 @@ export class DatabaseManager {
       
       const jobIndices = jobs.map((job, i) => job.sourceId === sourceId ? i : -1).filter(i => i !== -1);
       jobIndices.reverse().forEach(i => jobs.splice(i, 1));
+      
+      saveToStorage(STORAGE_KEYS.SOURCES, sources);
+      saveToStorage(STORAGE_KEYS.ITEMS, items);
+      saveToStorage(STORAGE_KEYS.JOBS, jobs);
     }
   }
 
@@ -49,6 +96,7 @@ export class DatabaseManager {
     const source = sources.find(s => s.id === sourceId);
     if (source) {
       source.lastIndexed = new Date();
+      saveToStorage(STORAGE_KEYS.SOURCES, sources);
     }
   }
 
@@ -65,6 +113,7 @@ export class DatabaseManager {
     } else {
       items.push(newItem);
     }
+    saveToStorage(STORAGE_KEYS.ITEMS, items);
   }
 
   async searchItems(query: string, limit: number = 50, offset: number = 0): Promise<MediaItem[]> {
@@ -96,6 +145,7 @@ export class DatabaseManager {
     };
     
     jobs.push(job);
+    saveToStorage(STORAGE_KEYS.JOBS, jobs);
     return id;
   }
 
@@ -104,6 +154,7 @@ export class DatabaseManager {
     if (job) {
       job.progress = progress;
       job.processedItems = processedItems || 0;
+      saveToStorage(STORAGE_KEYS.JOBS, jobs);
     }
   }
 
@@ -113,6 +164,16 @@ export class DatabaseManager {
       job.status = success ? 'completed' : 'failed';
       job.completedAt = new Date();
       job.error = error;
+      saveToStorage(STORAGE_KEYS.JOBS, jobs);
+    }
+  }
+  
+  async cancelJob(jobId: string): Promise<void> {
+    const job = jobs.find(j => j.id === jobId);
+    if (job) {
+      job.status = 'cancelled';
+      job.completedAt = new Date();
+      saveToStorage(STORAGE_KEYS.JOBS, jobs);
     }
   }
 

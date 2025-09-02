@@ -7,12 +7,28 @@ let engineInstance: MediaSearchEngine | null = null;
 export class MediaAPI {
   private static engine: MediaSearchEngine;
 
-  static async initialize(dbPath?: string): Promise<void> {
+  static async initialize(dbPath?: string, providerType: 'ollama' | 'litellm' = 'ollama', providerConfig?: any): Promise<void> {
     if (!engineInstance) {
-      engineInstance = new MediaSearchEngine(dbPath);
+      engineInstance = new MediaSearchEngine(dbPath, providerType, providerConfig);
       await engineInstance.initialize();
     }
     this.engine = engineInstance;
+  }
+  
+  static setLLMProvider(providerType: 'ollama' | 'litellm', config?: any): void {
+    if (this.engine) {
+      this.engine.setLLMProvider(providerType, config);
+    }
+  }
+  
+  static getLLMProviderInfo(): { name: string; model: string } | null {
+    if (!this.engine) return null;
+    
+    const provider = this.engine.getLLMProvider();
+    return {
+      name: provider.getName(),
+      model: provider.getModel()
+    };
   }
 
   static async addSource(name: string, type: string, path: string, config?: any): Promise<{ success: boolean; sourceId?: string; error?: string }> {
@@ -43,10 +59,14 @@ export class MediaAPI {
     }
   }
 
-  static async search(query: SearchQuery): Promise<{ success: boolean; result?: SearchResult; error?: string }> {
+  static async search(query: SearchQuery): Promise<{ success: boolean; results?: SearchResult; error?: string }> {
     try {
-      const result = await this.engine.search(query);
-      return { success: true, result };
+      const response = await this.engine.search(query);
+      if (response.success && response.results) {
+        return { success: true, results: response.results };
+      } else {
+        return { success: false, error: response.error || 'Search failed' };
+      }
     } catch (error) {
       return { 
         success: false, 
@@ -55,10 +75,14 @@ export class MediaAPI {
     }
   }
 
-  static async searchText(text: string, limit?: number): Promise<{ success: boolean; result?: SearchResult; error?: string }> {
+  static async searchText(text: string, limit?: number): Promise<{ success: boolean; results?: SearchResult; error?: string }> {
     try {
-      const result = await this.engine.searchText(text, limit);
-      return { success: true, result };
+      const response = await this.engine.searchText(text, limit);
+      if (response && typeof response === 'object' && 'items' in response) {
+        return { success: true, results: response };
+      } else {
+        return { success: false, error: 'Invalid search result format' };
+      }
     } catch (error) {
       return { 
         success: false, 
@@ -80,16 +104,17 @@ export class MediaAPI {
   }
 
   static async getStats(): Promise<{ success: boolean; stats?: {
+    totalSources: number;
     totalItems: number;
-    itemsByType: Record<string, number>;
-    itemsBySource: Record<string, number>;
-    itemsWithEmbeddings: number;
-    sources: number;
-    ollamaAvailable: boolean;
+    activeJobs: number;
   }; error?: string }> {
     try {
-      const stats = await this.engine.getStats();
-      return { success: true, stats };
+      const result = await this.engine.getStats();
+      if (result.success && result.stats) {
+        return { success: true, stats: result.stats };
+      } else {
+        return { success: false, error: result.error || 'Failed to get stats' };
+      }
     } catch (error) {
       return { 
         success: false, 
@@ -98,25 +123,31 @@ export class MediaAPI {
     }
   }
 
-  static async getIndexingStatus(): Promise<{ success: boolean; activeJobs?: string[]; error?: string }> {
+  static async getIndexingStatus(): Promise<{ success: boolean; activeJobs: string[]; error?: string }> {
     try {
-      const activeJobs = await this.engine.getIndexingStatus();
-      return { success: true, activeJobs };
+      const result = await this.engine.getIndexingStatus();
+      if (result.success && result.activeJobs) {
+        return { success: true, activeJobs: result.activeJobs };
+      } else {
+        return { success: false, activeJobs: [], error: result.error || 'Failed to get indexing status' };
+      }
     } catch (error) {
       return { 
         success: false, 
+        activeJobs: [],
         error: error instanceof Error ? error.message : String(error) 
       };
     }
   }
 
-  static async isOllamaAvailable(): Promise<{ success: boolean; available?: boolean; error?: string }> {
+  static async isOllamaAvailable(): Promise<{ success: boolean; available: boolean; error?: string }> {
     try {
       const available = await this.engine.isOllamaAvailable();
       return { success: true, available };
     } catch (error) {
       return { 
         success: false, 
+        available: false,
         error: error instanceof Error ? error.message : String(error) 
       };
     }
