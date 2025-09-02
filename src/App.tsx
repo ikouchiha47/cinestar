@@ -1,0 +1,102 @@
+import { useState, useEffect } from 'react';
+import { AddSourceForm } from './components/AddSourceForm';
+import { SourceList } from './components/SourceList';
+import { MediaAPI } from './api/media-api';
+import './App.css';
+
+function App() {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [initialized, setInitialized] = useState(false);
+  const [ollamaStatus, setOllamaStatus] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        await MediaAPI.initialize();
+        const result = await MediaAPI.isOllamaAvailable();
+        if (result.success) {
+          setOllamaStatus(result.available || false);
+        }
+        setInitialized(true);
+      } catch (error) {
+        console.error('Failed to initialize app:', error);
+        setInitialized(true);
+      }
+    };
+
+    initializeApp();
+  }, []);
+
+  const handleSourceAdded = () => {
+    setShowAddForm(false);
+    setRefreshTrigger(prev => prev + 1);
+  };
+
+  const handleAddSource = () => {
+    setShowAddForm(true);
+  };
+
+  const handleCancelAdd = () => {
+    setShowAddForm(false);
+  };
+
+  if (!initialized) {
+    return (
+      <div className="app loading">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <h2>Initializing Driller...</h2>
+          <p>Setting up your media search engine</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <div className="header-content">
+          <div className="logo-section">
+            <h1>🔍 Driller</h1>
+            <p>LLM-Based Media Search Engine</p>
+          </div>
+          <div className="status-section">
+            {ollamaStatus !== null && (
+              <div className={`ollama-status ${ollamaStatus ? 'available' : 'unavailable'}`}>
+                {ollamaStatus ? '✅ Ollama Available' : '⚠️ Ollama Unavailable'}
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="app-main">
+        {showAddForm && (
+          <div className="modal-overlay">
+            <div className="modal-content">
+              <AddSourceForm
+                onSourceAdded={handleSourceAdded}
+                onCancel={handleCancelAdd}
+              />
+            </div>
+          </div>
+        )}
+
+        <SourceList
+          onAddSource={handleAddSource}
+          refreshTrigger={refreshTrigger}
+        />
+      </main>
+
+      <footer className="app-footer">
+        <p>
+          Add media sources like <code>add-source local "My Photos" /Users/john/Pictures</code> 
+          to start indexing and searching your files.
+        </p>
+      </footer>
+    </div>
+  );
+}
+
+export default App;
