@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { MediaAPI } from '../api/media-api';
 import { MediaSource } from '../core/types';
 
 interface SourceListProps {
@@ -17,10 +16,7 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
     try {
       console.log('Loading sources...');
       
-      // Ensure MediaAPI is initialized before loading sources
-      await MediaAPI.initialize();
-      
-      const result = await MediaAPI.getSources();
+      const result = await window.mediaAPI.getSources();
       console.log('Sources API result:', result);
       
       if (result.success && result.sources) {
@@ -40,7 +36,7 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
 
   const loadIndexingStatus = async () => {
     try {
-      const result = await MediaAPI.getIndexingStatus();
+      const result = await window.mediaAPI.getIndexingStatus();
       if (result.success && result.activeJobs) {
         setIndexingJobs(result.activeJobs);
       }
@@ -56,7 +52,7 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
 
   const handleStartIndexing = async (sourceId: string) => {
     try {
-      const result = await MediaAPI.startIndexing(sourceId);
+      const result = await window.mediaAPI.startIndexing(sourceId);
       if (result.success) {
         await loadIndexingStatus();
         // Start polling for progress updates
@@ -72,7 +68,7 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
   const startProgressPolling = () => {
     const pollInterval = setInterval(async () => {
       try {
-        const statusResult = await MediaAPI.getIndexingStatus();
+        const statusResult = await window.mediaAPI.getIndexingStatus();
         if (statusResult.success && statusResult.activeJobs) {
           setIndexingJobs(statusResult.activeJobs);
           
@@ -98,7 +94,7 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
     }
 
     try {
-      const result = await MediaAPI.removeSource(sourceId);
+      const result = await window.mediaAPI.removeSource(sourceId);
       if (result.success) {
         await loadSources();
       } else {

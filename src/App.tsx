@@ -4,7 +4,6 @@ import { AddSourceForm } from './components/AddSourceForm';
 import { SourceList } from './components/SourceList';
 import { SearchBar } from './components/SearchBar';
 import { SearchResults } from './components/SearchResults';
-import { MediaAPI } from './api/media-api';
 import { MediaItem } from './core/types';
 import './App.css';
 
@@ -19,10 +18,18 @@ function App() {
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        await MediaAPI.initialize();
-        const result = await MediaAPI.isOllamaAvailable();
-        if (result.success) {
-          setOllamaStatus(result.available || false);
+        // Check if mediaAPI is available (wait for preload)
+        let attempts = 0;
+        while (!window.mediaAPI && attempts < 50) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+        }
+        
+        if (window.mediaAPI) {
+          const result = await window.mediaAPI.isOllamaAvailable();
+          if (result.success) {
+            setOllamaStatus(result.available || false);
+          }
         }
         setInitialized(true);
       } catch (error) {

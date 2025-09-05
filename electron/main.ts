@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
+import { MainMediaAPI } from '../src/api/main-media-api'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The built directory structure
@@ -109,4 +110,91 @@ ipcMain.handle('app:getPath', (_, name) => {
   return app.getPath(name);
 });
 
-app.whenReady().then(createWindow)
+// Initialize MediaAPI in main process
+let mediaAPI: typeof MainMediaAPI | null = null;
+
+async function initializeMediaAPI() {
+  try {
+    const dbPath = path.join(app.getPath('userData'), 'driller-db');
+    await MainMediaAPI.initialize(dbPath);
+    mediaAPI = MainMediaAPI;
+    console.log('MainMediaAPI initialized in main process');
+  } catch (error) {
+    console.error('Failed to initialize MainMediaAPI:', error);
+  }
+}
+
+// MediaAPI IPC handlers
+ipcMain.handle('media:getSources', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getSources();
+});
+
+ipcMain.handle('media:addSource', async (_, name: string, type: string, path: string, config?: any) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.addSource(name, type, path, config);
+});
+
+ipcMain.handle('media:removeSource', async (_, sourceId: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.removeSource(sourceId);
+});
+
+ipcMain.handle('media:startIndexing', async (_, sourceId: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.startIndexing(sourceId);
+});
+
+ipcMain.handle('media:stopIndexing', async (_, jobId: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.stopIndexing(jobId);
+});
+
+ipcMain.handle('media:getIndexingStatus', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getIndexingStatus();
+});
+
+ipcMain.handle('media:search', async (_, query) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.search(query);
+});
+
+ipcMain.handle('media:searchText', async (_, text: string, limit?: number) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.searchText(text, limit);
+});
+
+ipcMain.handle('media:getSuggestions', async (_, query: string, limit?: number) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getSuggestions(query, limit);
+});
+
+ipcMain.handle('media:getStats', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getStats();
+});
+
+ipcMain.handle('media:isOllamaAvailable', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.isOllamaAvailable();
+});
+
+// Directory selection dialog
+ipcMain.handle('dialog:selectDirectory', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Select Media Directory'
+  });
+  
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+  
+  return { canceled: false, path: result.filePaths[0] };
+});
+
+app.whenReady().then(async () => {
+  createWindow();
+  await initializeMediaAPI();
+})

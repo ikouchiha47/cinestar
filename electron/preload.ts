@@ -28,3 +28,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mkdir: (dirPath: string) => ipcRenderer.invoke('fs:mkdir', dirPath),
   getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
 })
+
+// Expose MediaAPI for the renderer process
+contextBridge.exposeInMainWorld('mediaAPI', {
+  getSources: () => ipcRenderer.invoke('media:getSources'),
+  addSource: (name: string, type: string, path: string, config?: any) => 
+    ipcRenderer.invoke('media:addSource', name, type, path, config),
+  removeSource: (sourceId: string) => ipcRenderer.invoke('media:removeSource', sourceId),
+  startIndexing: (sourceId: string) => ipcRenderer.invoke('media:startIndexing', sourceId),
+  stopIndexing: (jobId: string) => ipcRenderer.invoke('media:stopIndexing', jobId),
+  getIndexingStatus: () => ipcRenderer.invoke('media:getIndexingStatus'),
+  search: (query: any) => ipcRenderer.invoke('media:search', query),
+  searchText: (text: string, limit?: number) => ipcRenderer.invoke('media:searchText', text, limit),
+  getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
+  getStats: () => ipcRenderer.invoke('media:getStats'),
+  isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
+  selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+})

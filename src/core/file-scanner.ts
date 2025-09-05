@@ -21,6 +21,9 @@ export async function scanDirectory(
   recursive: boolean = true,
   progressCallback?: (scannedCount: number, totalFiles: number) => void
 ): Promise<MediaFile[]> {
+  console.log(`[SCANNER] Starting scan of directory: ${dirPath}`);
+  console.log(`[SCANNER] Recursive: ${recursive}`);
+  
   const mediaFiles: MediaFile[] = [];
   let scannedCount = 0;
   let totalFiles = 0;
@@ -32,6 +35,7 @@ export async function scanDirectory(
   }
   
   await scanDir(dirPath);
+  console.log(`[SCANNER] Scan complete. Found ${mediaFiles.length} media files out of ${scannedCount} total files`);
   return mediaFiles;
   
   async function scanDir(currentPath: string): Promise<void> {
@@ -50,17 +54,22 @@ export async function scanDirectory(
             try {
               const stats = await fs.promises.stat(fullPath);
               
-              mediaFiles.push({
+              const mediaFile = {
                 path: fullPath,
                 name: entry.name,
                 extension,
                 size: stats.size,
-                type: 'image', // Currently only supporting images
+                type: 'image' as const, // Currently only supporting images
                 lastModified: stats.mtime
-              });
+              };
+              
+              mediaFiles.push(mediaFile);
+              console.log(`[SCANNER] Found media file: ${entry.name} (${stats.size} bytes)`);
             } catch (err) {
-              console.error(`Error getting file stats for ${fullPath}:`, err);
+              console.error(`[SCANNER] Error getting file stats for ${fullPath}:`, err);
             }
+          } else {
+            console.log(`[SCANNER] Skipping non-media file: ${entry.name} (${extension})`);
           }
           
           scannedCount++;
@@ -70,7 +79,7 @@ export async function scanDirectory(
         }
       }
     } catch (err) {
-      console.error(`Error scanning directory ${currentPath}:`, err);
+      console.error(`[SCANNER] Error scanning directory ${currentPath}:`, err);
     }
   }
 }

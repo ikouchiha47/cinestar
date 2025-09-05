@@ -1,5 +1,12 @@
-import React from 'react';
-import { MediaItem } from '../core/types';
+import React, { useState, useEffect } from 'react';
+import { MediaItem, MediaSource } from '../core/types';
+
+interface GroupedResults {
+  [sourceId: string]: {
+    source: MediaSource;
+    items: MediaItem[];
+  };
+}
 
 interface SearchResultsProps {
   results: MediaItem[];
@@ -7,6 +14,52 @@ interface SearchResultsProps {
 }
 
 export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) => {
+  const [groupedResults, setGroupedResults] = useState<GroupedResults>({});
+  const [sources, setSources] = useState<MediaSource[]>([]);
+
+  useEffect(() => {
+    const loadSourcesAndGroup = async () => {
+      if (results.length === 0) {
+        setGroupedResults({});
+        return;
+      }
+
+      try {
+        // Get all sources
+        const sourcesResponse = await window.mediaAPI.getSources();
+        if (sourcesResponse.success && sourcesResponse.sources) {
+          setSources(sourcesResponse.sources);
+          
+          // Group results by source
+          const grouped: GroupedResults = {};
+          results.forEach(item => {
+            const source = sourcesResponse.sources!.find(s => s.id === item.sourceId);
+            if (source) {
+              if (!grouped[item.sourceId]) {
+                grouped[item.sourceId] = {
+                  source,
+                  items: []
+                };
+              }
+              grouped[item.sourceId].items.push(item);
+            }
+          });
+          
+          setGroupedResults(grouped);
+        }
+      } catch (error) {
+        console.error('Error loading sources:', error);
+      }
+    };
+
+    loadSourcesAndGroup();
+  }, [results]);
+
+  const getImageThumbnail = (item: MediaItem): string => {
+    // For now, use file:// protocol to display local images
+    // In production, you'd want a proper thumbnail service
+    return `file://${item.path}`;
+  };
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -60,51 +113,80 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
   return (
     <div className="search-results">
       <div className="results-header">
-        <h3>Search Results</h3>
+        <h3>🔍 Search Results</h3>
         <span className="results-count">
           {results.length} result{results.length !== 1 ? 's' : ''} for "{query}"
         </span>
       </div>
       
-      <div className="results-grid">
-        {results.map((item) => (
-          <div key={item.id} className="result-card">
-            <div className="result-header">
-              <span className="file-icon">{getFileIcon(item.type)}</span>
-              <div className="file-info">
-                <h4 className="file-name" title={item.name}>
-                  {item.name}
-                </h4>
-                <div className="file-meta">
-                  <span className="file-type">{item.type}</span>
-                  <span className="file-size">{formatFileSize(item.size)}</span>
-                </div>
-              </div>
-            </div>
-            
-            <div className="file-path" title={item.path}>
-              📁 {item.path}
-            </div>
-            
-            {item.description && (
-              <div className="file-description">
-                {item.description}
-              </div>
-            )}
-            
-            <div className="file-dates">
-              <div className="date-item">
-                <strong>Modified:</strong> {new Date(item.modifiedAt).toLocaleDateString()}
-              </div>
-              {item.indexedAt && (
-                <div className="date-item">
-                  <strong>Indexed:</strong> {new Date(item.indexedAt).toLocaleDateString()}
-                </div>
-              )}
-            </div>
+      {Object.keys(groupedResults).length === 0 ? (
+        <div className="no-results">
+          <div className="no-results-icon">🔍</div>
+          <h3>No results found</h3>
+          <p>No media files match your search for "{query}"</p>
+          <div className="search-tips">
+            <h4>Search tips:</h4>
+            <ul>
+              <li>Try different keywords</li>
+              <li>Use descriptive terms about image content</li>
+              <li>Make sure your sources are indexed with embeddings</li>
+            </ul>
           </div>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="results-by-source">
+          {Object.entries(groupedResults).map(([sourceId, { source, items }]) => (
+            <div key={sourceId} className="source-group">
+              <div className="source-header">
+                <h4>📁 {source.name}</h4>
+                <span className="source-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
+              </div>
+              
+              <div className="gallery-grid">
+                {items.map((item) => (
+                  <div key={item.id} className="gallery-item">
+                    {item.type === 'image' ? (
+                      <div className="image-thumbnail">
+                        <img 
+                          src={getImageThumbnail(item)} 
+                          alt={item.name}
+                          onError={(e) => {
+                            // Fallback to file icon if image fails to load
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                            const fallback = target.nextElementSibling as HTMLElement;
+                            if (fallback) fallback.style.display = 'flex';
+                          }}
+                        />
+                        <div className="image-fallback" style={{ display: 'none' }}>
+                          🖼️
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="file-thumbnail">
+                        <span className="file-icon">{getFileIcon(item.type)}</span>
+                      </div>
+                    )}
+                    
+                    <div className="item-info">
+                      <h5 className="item-name" title={item.name}>{item.name}</h5>
+                      <div className="item-meta">
+                        <span className="item-size">{formatFileSize(item.size)}</span>
+                      </div>
+                      
+                      {item.description && (
+                        <div className="item-description" title={item.description}>
+                          {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

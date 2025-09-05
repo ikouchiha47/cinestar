@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { MediaAPI } from '../api/media-api';
 
 interface AddSourceFormProps {
   onSourceAdded: () => void;
@@ -49,7 +48,7 @@ export const AddSourceForm: React.FC<AddSourceFormProps> = ({ onSourceAdded, onC
         }
       }
 
-      const result = await MediaAPI.addSource(
+      const result = await window.mediaAPI.addSource(
         formData.name,
         formData.type,
         formData.path,
@@ -77,13 +76,14 @@ export const AddSourceForm: React.FC<AddSourceFormProps> = ({ onSourceAdded, onC
   };
 
   const handlePathSelect = async () => {
-    if (formData.type === 'local' && 'showDirectoryPicker' in window) {
+    if (formData.type === 'local') {
       try {
-        // @ts-expect-error - File System Access API not in TypeScript types
-        const dirHandle = await window.showDirectoryPicker();
-        setFormData(prev => ({ ...prev, path: dirHandle.name }));
+        const result = await window.mediaAPI.selectDirectory();
+        if (!result.canceled && result.path) {
+          setFormData(prev => ({ ...prev, path: result.path! }));
+        }
       } catch (err) {
-        // User cancelled or API not supported
+        console.error('Error selecting directory:', err);
       }
     }
   };

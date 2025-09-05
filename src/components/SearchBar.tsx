@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { MediaAPI } from '../api/media-api';
 import { MediaItem, SearchQuery } from '../core/types';
 
 interface SearchBarProps {
@@ -19,7 +18,9 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onResults }) => {
     setSearching(true);
     try {
       const searchQueryObj: SearchQuery = { query: searchQuery };
-      const response = await MediaAPI.search(searchQueryObj);
+      console.log('Performing search with query:', searchQuery);
+      const response = await window.mediaAPI.search(searchQueryObj);
+      console.log('Search response:', response);
       if (response.success && response.results) {
         onResults(response.results.items, searchQuery);
       } else {
@@ -42,11 +43,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onResults }) => {
     const newQuery = e.target.value;
     setQuery(newQuery);
     
-    // Debounced search
-    if (newQuery.trim()) {
-      const timeoutId = setTimeout(() => handleSearch(newQuery), 300);
-      return () => clearTimeout(timeoutId);
-    } else {
+    // Clear search results if query is empty
+    if (!newQuery.trim()) {
       onResults([], '');
     }
   };
