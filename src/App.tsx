@@ -103,7 +103,7 @@ function App() {
 
         <div className="main-content">
           <div className="search-section">
-            <SearchBar onResults={(results) => handleSearchResults(results, searchQuery)} />
+            <SearchBar onResults={handleSearchResults} />
             <SearchResults results={searchResults} query={searchQuery} />
           </div>
           

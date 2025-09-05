@@ -17,6 +17,9 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
   const [groupedResults, setGroupedResults] = useState<GroupedResults>({});
   const [sources, setSources] = useState<MediaSource[]>([]);
 
+  console.log('SearchResults component received:', { results, query });
+  console.log('Results length:', results.length);
+
   useEffect(() => {
     const loadSourcesAndGroup = async () => {
       if (results.length === 0) {
@@ -27,13 +30,18 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
       try {
         // Get all sources
         const sourcesResponse = await window.mediaAPI.getSources();
+        console.log('Sources response:', sourcesResponse);
+        
         if (sourcesResponse.success && sourcesResponse.sources) {
           setSources(sourcesResponse.sources);
           
           // Group results by source
           const grouped: GroupedResults = {};
           results.forEach(item => {
+            console.log('Processing item:', item.name, 'sourceId:', item.sourceId);
             const source = sourcesResponse.sources!.find(s => s.id === item.sourceId);
+            console.log('Found source:', source);
+            
             if (source) {
               if (!grouped[item.sourceId]) {
                 grouped[item.sourceId] = {
@@ -42,13 +50,51 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
                 };
               }
               grouped[item.sourceId].items.push(item);
+            } else {
+              console.warn('No source found for item:', item.name, 'sourceId:', item.sourceId);
+              // Create a fallback source if none found
+              if (!grouped[item.sourceId]) {
+                grouped[item.sourceId] = {
+                  source: {
+                    id: item.sourceId,
+                    name: 'Unknown Source',
+                    type: 'local' as const,
+                    path: '',
+                    enabled: true,
+                    createdAt: new Date()
+                  },
+                  items: []
+                };
+              }
+              grouped[item.sourceId].items.push(item);
             }
           });
           
+          console.log('Final grouped results:', grouped);
+          console.log('Grouped results keys:', Object.keys(grouped));
           setGroupedResults(grouped);
         }
       } catch (error) {
         console.error('Error loading sources:', error);
+        // Fallback: create grouped results without source info
+        const fallbackGrouped: GroupedResults = {};
+        results.forEach(item => {
+          if (!fallbackGrouped[item.sourceId]) {
+            fallbackGrouped[item.sourceId] = {
+              source: {
+                id: item.sourceId,
+                name: 'Unknown Source',
+                type: 'local' as const,
+                path: '',
+                enabled: true,
+                createdAt: new Date()
+              },
+              items: []
+            };
+          }
+          fallbackGrouped[item.sourceId].items.push(item);
+        });
+        setGroupedResults(fallbackGrouped);
       }
     };
 
@@ -119,74 +165,58 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
         </span>
       </div>
       
-      {Object.keys(groupedResults).length === 0 ? (
-        <div className="no-results">
-          <div className="no-results-icon">🔍</div>
-          <h3>No results found</h3>
-          <p>No media files match your search for "{query}"</p>
-          <div className="search-tips">
-            <h4>Search tips:</h4>
-            <ul>
-              <li>Try different keywords</li>
-              <li>Use descriptive terms about image content</li>
-              <li>Make sure your sources are indexed with embeddings</li>
-            </ul>
-          </div>
-        </div>
-      ) : (
-        <div className="results-by-source">
-          {Object.entries(groupedResults).map(([sourceId, { source, items }]) => (
-            <div key={sourceId} className="source-group">
-              <div className="source-header">
-                <h4>📁 {source.name}</h4>
-                <span className="source-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
-              </div>
-              
-              <div className="gallery-grid">
-                {items.map((item) => (
-                  <div key={item.id} className="gallery-item">
-                    {item.type === 'image' ? (
-                      <div className="image-thumbnail">
-                        <img 
-                          src={getImageThumbnail(item)} 
-                          alt={item.name}
-                          onError={(e) => {
-                            // Fallback to file icon if image fails to load
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
-                            const fallback = target.nextElementSibling as HTMLElement;
-                            if (fallback) fallback.style.display = 'flex';
-                          }}
-                        />
-                        <div className="image-fallback" style={{ display: 'none' }}>
-                          🖼️
-                        </div>
+      <div className="results-by-source">
+        {Object.entries(groupedResults).map(([sourceId, { source, items }]) => (
+          <div key={sourceId} className="source-group">
+            <div className="source-header">
+              <h4>📁 {source.name}</h4>
+              <span className="source-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
+            </div>
+            
+            <div className="gallery-grid">
+              {items.map((item) => (
+                <div key={item.id} className="gallery-item">
+                  {item.type === 'image' ? (
+                    <div className="image-thumbnail">
+                      <img 
+                        src={getImageThumbnail(item)} 
+                        alt={item.name}
+                        onError={(e) => {
+                          // Fallback to file icon if image fails to load
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = 'none';
+                          const fallback = target.nextElementSibling as HTMLElement;
+                          if (fallback) fallback.style.display = 'flex';
+                        }}
+                      />
+                      <div className="image-fallback" style={{ display: 'none' }}>
+                        🖼️
                       </div>
-                    ) : (
-                      <div className="file-thumbnail">
-                        <span className="file-icon">{getFileIcon(item.type)}</span>
+                    </div>
+                  ) : (
+                    <div className="file-thumbnail">
+                      <span className="file-icon">{getFileIcon(item.type)}</span>
+                    </div>
+                  )}
+                  
+                  <div className="item-info">
+                    <h5 className="item-name" title={item.name}>{item.name}</h5>
+                    <div className="item-meta">
+                      <span className="item-size">{formatFileSize(item.size)}</span>
+                    </div>
+                    
+                    {item.description && (
+                      <div className="item-description" title={item.description}>
+                        {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
                       </div>
                     )}
-                    
-                    <div className="item-info">
-                      <h5 className="item-name" title={item.name}>{item.name}</h5>
-                      <div className="item-meta">
-                        <span className="item-size">{formatFileSize(item.size)}</span>
-                      </div>
-                      
-                      {item.description && (
-                        <div className="item-description" title={item.description}>
-                          {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
-                        </div>
-                      )}
-                    </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

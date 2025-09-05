@@ -21,6 +21,12 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onResults }) => {
       console.log('Performing search with query:', searchQuery);
       const response = await window.mediaAPI.search(searchQueryObj);
       console.log('Search response:', response);
+      console.log('Response success:', response.success);
+      console.log('Response results:', response.results);
+      if (response.results) {
+        console.log('Results items:', response.results.items);
+        console.log('Results items length:', response.results.items?.length);
+      }
       if (response.success && response.results) {
         onResults(response.results.items, searchQuery);
       } else {
@@ -42,11 +48,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onResults }) => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newQuery = e.target.value;
     setQuery(newQuery);
-    
-    // Clear search results if query is empty
-    if (!newQuery.trim()) {
-      onResults([], '');
-    }
   };
 
   return (
