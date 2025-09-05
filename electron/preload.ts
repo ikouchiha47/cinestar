@@ -18,7 +18,13 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     const [channel, ...omit] = args
     return ipcRenderer.invoke(channel, ...omit)
   },
+})
 
-  // You can expose other APTs you need here.
-  // ...
+// Expose file system API for database operations
+contextBridge.exposeInMainWorld('electronAPI', {
+  readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
+  writeFile: (filePath: string, data: string) => ipcRenderer.invoke('fs:writeFile', filePath, data),
+  fileExists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
+  mkdir: (dirPath: string) => ipcRenderer.invoke('fs:mkdir', dirPath),
+  getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
 })

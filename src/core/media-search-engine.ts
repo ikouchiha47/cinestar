@@ -1,14 +1,15 @@
 import { DatabaseManager } from './database';
 import { MediaSource, SearchQuery, SearchResult } from './types';
 import { LLMProvider, LLMProviderFactory } from './llm-provider';
+import { getMimeType } from './utils';
 
 export class MediaSearchEngine {
   private db: DatabaseManager;
   private initialized = false;
   private llmProvider: LLMProvider;
 
-  constructor(dbPath?: string, providerType: 'ollama' | 'litellm' = 'ollama', providerConfig?: any) {
-    this.db = new DatabaseManager(dbPath);
+  constructor(_dbPath?: string, providerType: 'ollama' | 'litellm' = 'ollama', providerConfig?: any) {
+    this.db = new DatabaseManager();
     this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
   }
 
@@ -71,12 +72,12 @@ export class MediaSearchEngine {
   // Indexing
   async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
-      const jobId = await this.db.createIndexingJob(sourceId);
+      const jobId = await this.db.createJob({ sourceId });
       
       // Start indexing in background (simplified for now)
       this.performIndexing(jobId, sourceId).catch(error => {
         console.error('Indexing failed:', error);
-        this.db.completeJob(jobId, false, error.message);
+        this.db.updateJobStatus(jobId, 'failed', 0);
       });
       
       return { success: true, jobId };
@@ -89,16 +90,76 @@ export class MediaSearchEngine {
   }
 
   private async performIndexing(jobId: string, sourceId: string): Promise<void> {
-    // Simplified indexing - in real implementation this would:
-    // 1. Get the source configuration
-    // 2. Use appropriate plugin to scan files
-    // 3. Generate embeddings for each file
-    // 4. Store in database
-    
-    // For now, just simulate completion
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    await this.db.completeJob(jobId, true);
-    await this.db.updateSourceLastIndexed(sourceId);
+    try {
+      // 1. Get the source configuration
+      const sourceResult = await this.db.getSource(sourceId);
+      if (!sourceResult) {
+        throw new Error(`Source not found: ${sourceId}`);
+      }
+      
+      const source = sourceResult;
+      console.log(`Starting indexing for source: ${source.name} (${source.path})`);
+      
+      // Update job status to running
+      await this.db.updateJobStatus(jobId, 'running');
+      
+      // 2. Import the file scanner
+      const { scanDirectory } = await import('./file-scanner');
+      
+      // 3. Scan the directory for media files
+      const mediaFiles = await scanDirectory(source.path, true, 
+        (scannedCount, totalFiles) => {
+          // Update job progress
+          const progress = totalFiles > 0 ? Math.floor((scannedCount / totalFiles) * 50) : 0;
+          this.db.updateJobStatus(jobId, 'running', progress);
+        }
+      );
+      
+      console.log(`Found ${mediaFiles.length} media files in ${source.path}`);
+      
+      // 4. Process each file and generate embeddings
+      let processedCount = 0;
+      for (const file of mediaFiles) {
+        try {
+          console.log(`Processing file: ${file.path}`);
+          
+          // Generate embedding for image
+          const embedding = await this.llmProvider.generateImageEmbedding(file.path);
+          
+          // Store the media item with embedding in the database
+          await this.db.addMediaItem({
+            sourceId,
+            path: file.path,
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            createdAt: file.lastModified,
+            modifiedAt: file.lastModified,
+            mimeType: getMimeType(file.extension),
+            embedding
+          });
+          
+          processedCount++;
+          
+          // Update job progress (50-100%)
+          const progress = 50 + Math.floor((processedCount / mediaFiles.length) * 50);
+          await this.db.updateJobStatus(jobId, 'running', progress);
+          
+        } catch (error) {
+          console.error(`Error processing file ${file.path}:`, error);
+          // Continue with next file
+        }
+      }
+      
+      // 5. Complete the job
+      await this.db.updateJobStatus(jobId, 'completed', 100);
+      await this.db.updateSource(sourceId, { lastIndexed: new Date() });
+      console.log(`Indexing completed for source: ${source.name}`);
+      
+    } catch (error) {
+      console.error(`Indexing failed for source ${sourceId}:`, error);
+      await this.db.updateJobStatus(jobId, 'failed');
+    }
   }
 
   async getIndexingStatus(): Promise<{ success: boolean; activeJobs?: string[]; error?: string }> {
@@ -118,7 +179,7 @@ export class MediaSearchEngine {
   async search(query: SearchQuery): Promise<{ success: boolean; results?: SearchResult; error?: string }> {
     try {
       const startTime = Date.now();
-      const items = await this.db.searchItems(query.query, query.limit, query.offset);
+      const items = await this.db.searchMediaItems(query.query, query.limit);
       const executionTime = Date.now() - startTime;
       
       const results: SearchResult = {
@@ -187,9 +248,9 @@ export class MediaSearchEngine {
     return suggestions;
   }
   
-  // Stop indexing (missing method)
+  // Stop indexing
   async stopIndexing(jobId: string): Promise<void> {
-    await this.db.cancelJob(jobId);
+    await this.db.updateJobStatus(jobId, 'cancelled');
   }
 
   // Statistics
@@ -206,18 +267,14 @@ export class MediaSearchEngine {
       const sources = await this.db.getSources();
       const activeJobs = await this.db.getActiveJobs();
       
-      // Get total items count (simplified)
-      let totalItems = 0;
-      for (const source of sources) {
-        const items = await this.db.getItemsBySource(source.id);
-        totalItems += items.length;
-      }
+      // Get total items count
+      const allItems = await this.db.getMediaItems();
       
       return {
         success: true,
         stats: {
           totalSources: sources.length,
-          totalItems,
+          totalItems: allItems.length,
           activeJobs: activeJobs.length
         }
       };
@@ -229,7 +286,9 @@ export class MediaSearchEngine {
     }
   }
 
+  // No explicit close needed for file-based database
   close(): void {
-    this.db.close();
+    // FileDatabase doesn't require explicit closing
+    console.log('MediaSearchEngine closed');
   }
 }

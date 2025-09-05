@@ -1,6 +1,7 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import fs from 'node:fs'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // The built directory structure
@@ -61,5 +62,51 @@ app.on('activate', () => {
     createWindow()
   }
 })
+
+// Database file operations
+const DB_PATH = path.join(app.getPath('userData'), 'driller-db');
+
+// Ensure DB directory exists
+if (!fs.existsSync(DB_PATH)) {
+  fs.mkdirSync(DB_PATH, { recursive: true });
+}
+
+// File system IPC handlers
+ipcMain.handle('fs:readFile', async (_, filePath) => {
+  try {
+    return await fs.promises.readFile(filePath, 'utf8');
+  } catch (error) {
+    console.error('Error reading file:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('fs:writeFile', async (_, filePath, data) => {
+  try {
+    await fs.promises.writeFile(filePath, data);
+    return true;
+  } catch (error) {
+    console.error('Error writing file:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('fs:exists', (_, filePath) => {
+  return fs.existsSync(filePath);
+});
+
+ipcMain.handle('fs:mkdir', async (_, dirPath) => {
+  try {
+    await fs.promises.mkdir(dirPath, { recursive: true });
+    return true;
+  } catch (error) {
+    console.error('Error creating directory:', error);
+    return false;
+  }
+});
+
+ipcMain.handle('app:getPath', (_, name) => {
+  return app.getPath(name);
+});
 
 app.whenReady().then(createWindow)

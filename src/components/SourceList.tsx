@@ -15,13 +15,23 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
 
   const loadSources = async () => {
     try {
+      console.log('Loading sources...');
+      
+      // Ensure MediaAPI is initialized before loading sources
+      await MediaAPI.initialize();
+      
       const result = await MediaAPI.getSources();
+      console.log('Sources API result:', result);
+      
       if (result.success && result.sources) {
+        console.log('Setting sources:', result.sources);
         setSources(result.sources);
       } else {
+        console.error('Failed to load sources:', result.error);
         setError(result.error || 'Failed to load sources');
       }
     } catch (err) {
+      console.error('Error loading sources:', err);
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);

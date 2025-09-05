@@ -11,12 +11,12 @@ export interface LLMProvider {
   /**
    * Generate embeddings for text content
    */
-  generateEmbedding(text: string): Promise<number[]>;
+  generateEmbedding(text: string): Promise<Float32Array>;
   
   /**
    * Generate embeddings for image content
    */
-  generateImageEmbedding(imagePath: string): Promise<number[]>;
+  generateImageEmbedding(imagePath: string): Promise<Float32Array>;
   
   /**
    * Get the name of the provider
@@ -49,16 +49,49 @@ export class OllamaProvider implements LLMProvider {
     }
   }
   
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string): Promise<Float32Array> {
     // Simplified implementation - would call Ollama API
     console.log(`Generating embedding for text "${text.substring(0, 30)}..." using Ollama model ${this.model}`);
-    return new Array(384).fill(0).map(() => Math.random() - 0.5);
+    const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
+    return new Float32Array(randomArray);
   }
   
-  async generateImageEmbedding(imagePath: string): Promise<number[]> {
-    // Simplified implementation - would call Ollama API with image
-    console.log(`Generating embedding for image ${imagePath} using Ollama model ${this.model}`);
-    return new Array(384).fill(0).map(() => Math.random() - 0.5);
+  async generateImageEmbedding(imagePath: string): Promise<Float32Array> {
+    try {
+      console.log(`Generating embedding for image ${imagePath} using Ollama model ${this.model}`);
+      
+      // Read the image file as base64
+      const fs = require('fs');
+      const path = require('path');
+      const imageBuffer = fs.readFileSync(imagePath);
+      const base64Image = imageBuffer.toString('base64');
+      
+      // Call Ollama API
+      const response = await fetch('http://localhost:11434/api/embeddings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: this.model,
+          prompt: '',
+          image: `data:image/${path.extname(imagePath).substring(1)};base64,${base64Image}`
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Ollama API error: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      return new Float32Array(data.embedding);
+    } catch (error) {
+      console.error('Error generating image embedding:', error);
+      // Fallback to random embeddings in case of error
+      const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
+      return new Float32Array(randomArray);
+    }
   }
   
   getName(): string {
@@ -98,16 +131,18 @@ export class LiteLLMProvider implements LLMProvider {
     }
   }
   
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string): Promise<Float32Array> {
     // Simplified implementation - would call LiteLLM API
     console.log(`Generating embedding for text "${text.substring(0, 30)}..." using LiteLLM model ${this.model}`);
-    return new Array(384).fill(0).map(() => Math.random() - 0.5);
+    const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
+    return new Float32Array(randomArray);
   }
   
-  async generateImageEmbedding(imagePath: string): Promise<number[]> {
+  async generateImageEmbedding(imagePath: string): Promise<Float32Array> {
     // Simplified implementation - would call LiteLLM API with image
     console.log(`Generating embedding for image ${imagePath} using LiteLLM model ${this.model}`);
-    return new Array(384).fill(0).map(() => Math.random() - 0.5);
+    const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
+    return new Float32Array(randomArray);
   }
   
   getName(): string {

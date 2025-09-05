@@ -31,24 +31,35 @@ export class MediaAPI {
     };
   }
 
+  private static async ensureInitialized(): Promise<void> {
+    if (!this.engine) {
+      await this.initialize();
+    }
+  }
+
   static async addSource(name: string, type: string, path: string, config?: any): Promise<{ success: boolean; sourceId?: string; error?: string }> {
+    await this.ensureInitialized();
     return this.engine.addSource({ name, type: type as 'local' | 'remote', path, config });
   }
 
   static async getSources(): Promise<{ success: boolean; sources?: MediaSource[]; error?: string }> {
+    await this.ensureInitialized();
     return this.engine.getSources();
   }
 
   static async removeSource(sourceId: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureInitialized();
     return this.engine.removeSource(sourceId);
   }
 
   static async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
+    await this.ensureInitialized();
     return this.engine.startIndexing(sourceId);
   }
 
   static async stopIndexing(jobId: string): Promise<{ success: boolean; error?: string }> {
     try {
+      await this.ensureInitialized();
       await this.engine.stopIndexing(jobId);
       return { success: true };
     } catch (error) {
@@ -125,6 +136,7 @@ export class MediaAPI {
 
   static async getIndexingStatus(): Promise<{ success: boolean; activeJobs: string[]; error?: string }> {
     try {
+      await this.ensureInitialized();
       const result = await this.engine.getIndexingStatus();
       if (result.success && result.activeJobs) {
         return { success: true, activeJobs: result.activeJobs };

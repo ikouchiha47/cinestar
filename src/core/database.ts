@@ -1,187 +1,99 @@
 import { MediaSource, MediaItem, IndexingJob } from './types';
+import { FileDatabase } from './file-database';
 
-// Persistent storage using localStorage
-const STORAGE_KEYS = {
-  SOURCES: 'driller_sources',
-  ITEMS: 'driller_items', 
-  JOBS: 'driller_jobs'
-};
-
-const loadFromStorage = <T>(key: string, defaultValue: T[]): T[] => {
-  try {
-    const stored = localStorage.getItem(key);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      // Convert date strings back to Date objects
-      return parsed.map((item: any) => {
-        if (item.createdAt) item.createdAt = new Date(item.createdAt);
-        if (item.lastIndexed) item.lastIndexed = new Date(item.lastIndexed);
-        if (item.modifiedAt) item.modifiedAt = new Date(item.modifiedAt);
-        if (item.indexedAt) item.indexedAt = new Date(item.indexedAt);
-        if (item.startedAt) item.startedAt = new Date(item.startedAt);
-        if (item.completedAt) item.completedAt = new Date(item.completedAt);
-        return item;
-      });
-    }
-  } catch (error) {
-    console.warn(`Failed to load ${key} from storage:`, error);
+// For renderer process safety
+declare global {
+  interface Window {
+    electronAPI?: {
+      getAppPath: () => Promise<string>;
+      saveData: (key: string, data: any) => Promise<void>;
+      loadData: (key: string) => Promise<any>;
+    };
   }
-  return defaultValue;
-};
+}
 
-const saveToStorage = <T>(key: string, data: T[]): void => {
-  try {
-    localStorage.setItem(key, JSON.stringify(data));
-  } catch (error) {
-    console.warn(`Failed to save ${key} to storage:`, error);
-  }
-};
-
-const sources: MediaSource[] = loadFromStorage(STORAGE_KEYS.SOURCES, []);
-const items: MediaItem[] = loadFromStorage(STORAGE_KEYS.ITEMS, []);
-const jobs: IndexingJob[] = loadFromStorage(STORAGE_KEYS.JOBS, []);
-
+/**
+ * Database manager for the application
+ * Handles all database operations using localStorage as a fallback
+ * when running in a web browser or when Electron APIs are not available
+ */
 export class DatabaseManager {
-  constructor(_dbPath?: string) {
-    // No-op for in-memory storage
+  private db: FileDatabase;
+  private initialized = false;
+  private isElectron: boolean;
+
+  constructor() {
+    // Check if we're running in Electron
+    this.isElectron = !!(window.electronAPI);
+    console.log('DatabaseManager initialized, isElectron:', this.isElectron);
+    this.db = new FileDatabase();
   }
   
   async initialize(): Promise<void> {
-    // Initialize database connection if needed
-    // For the current in-memory implementation, this is a no-op
-    return Promise.resolve();
+    if (this.initialized) return;
+    
+    console.log('Initializing database');
+    await this.db.initialize();
+    this.initialized = true;
+    console.log('Database initialized');
   }
 
   // Media Sources
   async addSource(source: Omit<MediaSource, 'id' | 'createdAt'>): Promise<string> {
-    const id = crypto.randomUUID();
-    const newSource: MediaSource = {
-      id,
-      name: source.name,
-      type: source.type,
-      path: source.path,
-      enabled: source.enabled,
-      config: source.config,
-      createdAt: new Date(),
-      lastIndexed: undefined
-    };
-    
-    sources.push(newSource);
-    saveToStorage(STORAGE_KEYS.SOURCES, sources);
-    return id;
+    return this.db.addSource(source);
   }
 
   async getSources(): Promise<MediaSource[]> {
-    return [...sources].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return this.db.getSources();
+  }
+
+  async getSource(sourceId: string): Promise<MediaSource | undefined> {
+    return this.db.getSource(sourceId);
   }
 
   async removeSource(sourceId: string): Promise<void> {
-    const index = sources.findIndex(s => s.id === sourceId);
-    if (index !== -1) {
-      sources.splice(index, 1);
-      // Remove related items and jobs
-      const itemIndices = items.map((item, i) => item.sourceId === sourceId ? i : -1).filter(i => i !== -1);
-      itemIndices.reverse().forEach(i => items.splice(i, 1));
-      
-      const jobIndices = jobs.map((job, i) => job.sourceId === sourceId ? i : -1).filter(i => i !== -1);
-      jobIndices.reverse().forEach(i => jobs.splice(i, 1));
-      
-      saveToStorage(STORAGE_KEYS.SOURCES, sources);
-      saveToStorage(STORAGE_KEYS.ITEMS, items);
-      saveToStorage(STORAGE_KEYS.JOBS, jobs);
-    }
+    return this.db.removeSource(sourceId);
   }
 
-  async updateSourceLastIndexed(sourceId: string): Promise<void> {
-    const source = sources.find(s => s.id === sourceId);
-    if (source) {
-      source.lastIndexed = new Date();
-      saveToStorage(STORAGE_KEYS.SOURCES, sources);
-    }
+  async updateSource(sourceId: string, updates: Partial<MediaSource>): Promise<void> {
+    return this.db.updateSource(sourceId, updates);
   }
 
   // Media Items
-  async addMediaItem(item: Omit<MediaItem, 'indexedAt'>): Promise<void> {
-    const existingIndex = items.findIndex(i => i.id === item.id);
-    const newItem: MediaItem = {
-      ...item,
-      indexedAt: new Date()
-    };
-    
-    if (existingIndex !== -1) {
-      items[existingIndex] = newItem;
-    } else {
-      items.push(newItem);
-    }
-    saveToStorage(STORAGE_KEYS.ITEMS, items);
+  async addMediaItem(item: Omit<MediaItem, 'id'>): Promise<string> {
+    return this.db.addMediaItem(item);
   }
 
-  async searchItems(query: string, limit: number = 50, offset: number = 0): Promise<MediaItem[]> {
-    const searchTerm = query.toLowerCase();
-    const filtered = items.filter(item => 
-      item.name.toLowerCase().includes(searchTerm) || 
-      (item.description && item.description.toLowerCase().includes(searchTerm))
-    );
-    
-    return filtered
-      .sort((a, b) => (b.indexedAt?.getTime() || 0) - (a.indexedAt?.getTime() || 0))
-      .slice(offset, offset + limit);
+  async getMediaItems(sourceId?: string): Promise<MediaItem[]> {
+    return this.db.getMediaItems(sourceId);
   }
 
-  async getItemsBySource(sourceId: string): Promise<MediaItem[]> {
-    return items.filter(item => item.sourceId === sourceId);
+  async searchMediaItems(query: string, limit?: number): Promise<MediaItem[]> {
+    return this.db.searchMediaItems(query, limit);
+  }
+
+  async vectorSearch(embedding: Float32Array, limit = 10): Promise<MediaItem[]> {
+    return this.db.vectorSearch(embedding, limit);
   }
 
   // Indexing Jobs
-  async createIndexingJob(sourceId: string): Promise<string> {
-    const id = crypto.randomUUID();
-    const job: IndexingJob = {
-      id,
-      sourceId,
-      status: 'running',
-      progress: 0,
-      processedItems: 0,
-      startedAt: new Date()
-    };
-    
-    jobs.push(job);
-    saveToStorage(STORAGE_KEYS.JOBS, jobs);
-    return id;
+  async createJob(job: Omit<IndexingJob, 'id' | 'createdAt' | 'status' | 'progress'>): Promise<string> {
+    return this.db.createJob(job);
   }
 
-  async updateJobProgress(jobId: string, progress: number, processedItems?: number): Promise<void> {
-    const job = jobs.find(j => j.id === jobId);
-    if (job) {
-      job.progress = progress;
-      job.processedItems = processedItems || 0;
-      saveToStorage(STORAGE_KEYS.JOBS, jobs);
-    }
+  async getJobs(sourceId?: string): Promise<IndexingJob[]> {
+    return this.db.getJobs(sourceId);
   }
 
-  async completeJob(jobId: string, success: boolean, error?: string): Promise<void> {
-    const job = jobs.find(j => j.id === jobId);
-    if (job) {
-      job.status = success ? 'completed' : 'failed';
-      job.completedAt = new Date();
-      job.error = error;
-      saveToStorage(STORAGE_KEYS.JOBS, jobs);
-    }
-  }
-  
-  async cancelJob(jobId: string): Promise<void> {
-    const job = jobs.find(j => j.id === jobId);
-    if (job) {
-      job.status = 'cancelled';
-      job.completedAt = new Date();
-      saveToStorage(STORAGE_KEYS.JOBS, jobs);
-    }
+  async updateJobStatus(jobId: string, status: IndexingJob['status'], progress?: number): Promise<void> {
+    return this.db.updateJobStatus(jobId, status, progress);
   }
 
   async getActiveJobs(): Promise<IndexingJob[]> {
-    return jobs.filter(job => job.status === 'pending' || job.status === 'running');
+    return this.db.getActiveJobs();
   }
-
-  close(): void {
-    // No-op for in-memory storage
+  
+  async removeJob(sourceId: string): Promise<void> {
+    return this.db.removeJob(sourceId);
   }
 }
