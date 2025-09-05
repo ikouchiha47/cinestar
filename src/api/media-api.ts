@@ -104,8 +104,53 @@ export class MediaAPI {
 
   static async getSuggestions(query: string, limit?: number): Promise<{ success: boolean; suggestions?: string[]; error?: string }> {
     try {
-      const suggestions = await this.engine.getSuggestions(query, limit);
-      return { success: true, suggestions };
+      return await this.engine.getSuggestions(query, limit);
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error) 
+      };
+    }
+  }
+
+  static async updateConcurrencySettings(limit: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      return await this.engine.updateConcurrency(limit);
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error) 
+      };
+    }
+  }
+
+  static async getConfiguration(): Promise<{ success: boolean; config?: any; error?: string }> {
+    try {
+      return await this.engine.getConfiguration();
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error) 
+      };
+    }
+  }
+
+  static async enableDebugMode(saveImages: boolean = true, saveLLaVAOutputs: boolean = true, outputDir?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      // @ts-ignore - Will be handled by IPC
+      return await window.electronAPI.invoke('media:enableDebugMode', saveImages, saveLLaVAOutputs, outputDir);
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : String(error) 
+      };
+    }
+  }
+
+  static async disableDebugMode(): Promise<{ success: boolean; error?: string }> {
+    try {
+      // @ts-ignore - Will be handled by IPC
+      return await window.electronAPI.invoke('media:disableDebugMode');
     } catch (error) {
       return { 
         success: false, 

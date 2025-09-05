@@ -170,6 +170,26 @@ ipcMain.handle('media:getSuggestions', async (_, query: string, limit?: number) 
   return await MainMediaAPI.getSuggestions(query, limit);
 });
 
+ipcMain.handle('media:updateConcurrency', async (_, limit: number) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.updateConcurrencySettings(limit);
+});
+
+ipcMain.handle('media:getConfiguration', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getConfiguration();
+});
+
+ipcMain.handle('media:enableDebugMode', async (_, saveImages: boolean, saveLLaVAOutputs: boolean, outputDir?: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.enableDebugMode(saveImages, saveLLaVAOutputs, outputDir);
+});
+
+ipcMain.handle('media:disableDebugMode', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.disableDebugMode();
+});
+
 ipcMain.handle('media:getStats', async () => {
   if (!mediaAPI) await initializeMediaAPI();
   return await MainMediaAPI.getStats();
@@ -178,6 +198,11 @@ ipcMain.handle('media:getStats', async () => {
 ipcMain.handle('media:isOllamaAvailable', async () => {
   if (!mediaAPI) await initializeMediaAPI();
   return await MainMediaAPI.isOllamaAvailable();
+});
+
+ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getImageThumbnail(imagePath);
 });
 
 // Directory selection dialog

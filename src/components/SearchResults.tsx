@@ -1,6 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import { MediaItem, MediaSource } from '../core/types';
 
+// Custom hook for loading image thumbnails
+const useImageThumbnail = (item: MediaItem) => {
+  const [imageUrl, setImageUrl] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (item.type !== 'image') {
+      setLoading(false);
+      return;
+    }
+
+    const loadImage = async () => {
+      try {
+        setLoading(true);
+        setError(false);
+        const response = await window.mediaAPI.getImageThumbnail(item.path);
+        if (response.success && response.dataUrl) {
+          setImageUrl(response.dataUrl);
+        } else {
+          setError(true);
+        }
+      } catch (err) {
+        console.error('Failed to load image thumbnail:', err);
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadImage();
+  }, [item.path, item.type]);
+
+  return { imageUrl, loading, error };
+};
+
 interface GroupedResults {
   [sourceId: string]: {
     source: MediaSource;
@@ -101,10 +137,58 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
     loadSourcesAndGroup();
   }, [results]);
 
-  const getImageThumbnail = (item: MediaItem): string => {
-    // For now, use file:// protocol to display local images
-    // In production, you'd want a proper thumbnail service
-    return `file://${item.path}`;
+  // Component for individual gallery items with async image loading
+  const GalleryItem: React.FC<{ item: MediaItem }> = ({ item }) => {
+    const { imageUrl, loading, error } = useImageThumbnail(item);
+
+    return (
+      <div className="gallery-item">
+        {item.type === 'image' ? (
+          <div className="image-thumbnail">
+            {loading ? (
+              <div className="image-loading">
+                <span>Loading...</span>
+              </div>
+            ) : error || !imageUrl ? (
+              <div className="image-fallback">
+                🖼️
+              </div>
+            ) : (
+              <img 
+                src={imageUrl} 
+                alt={item.name}
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = 'none';
+                  const fallback = target.nextElementSibling as HTMLElement;
+                  if (fallback) fallback.style.display = 'flex';
+                }}
+              />
+            )}
+            <div className="image-fallback" style={{ display: 'none' }}>
+              🖼️
+            </div>
+          </div>
+        ) : (
+          <div className="file-thumbnail">
+            <span className="file-icon">{getFileIcon(item.type)}</span>
+          </div>
+        )}
+        
+        <div className="item-info">
+          <h5 className="item-name" title={item.name}>{item.name}</h5>
+          <div className="item-meta">
+            <span className="item-size">{formatFileSize(item.size)}</span>
+          </div>
+          
+          {item.description && (
+            <div className="item-description" title={item.description}>
+              {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -172,46 +256,9 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
               <h4>📁 {source.name}</h4>
               <span className="source-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
             </div>
-            
             <div className="gallery-grid">
               {items.map((item) => (
-                <div key={item.id} className="gallery-item">
-                  {item.type === 'image' ? (
-                    <div className="image-thumbnail">
-                      <img 
-                        src={getImageThumbnail(item)} 
-                        alt={item.name}
-                        onError={(e) => {
-                          // Fallback to file icon if image fails to load
-                          const target = e.target as HTMLImageElement;
-                          target.style.display = 'none';
-                          const fallback = target.nextElementSibling as HTMLElement;
-                          if (fallback) fallback.style.display = 'flex';
-                        }}
-                      />
-                      <div className="image-fallback" style={{ display: 'none' }}>
-                        🖼️
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="file-thumbnail">
-                      <span className="file-icon">{getFileIcon(item.type)}</span>
-                    </div>
-                  )}
-                  
-                  <div className="item-info">
-                    <h5 className="item-name" title={item.name}>{item.name}</h5>
-                    <div className="item-meta">
-                      <span className="item-size">{formatFileSize(item.size)}</span>
-                    </div>
-                    
-                    {item.description && (
-                      <div className="item-description" title={item.description}>
-                        {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <GalleryItem key={item.id} item={item} />
               ))}
             </div>
           </div>

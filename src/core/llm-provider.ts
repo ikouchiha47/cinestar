@@ -1,3 +1,7 @@
+import { RetryQueue } from './retry-queue';
+import { ConfigManager } from './config';
+import { SubprocessOllamaProvider } from './subprocess-ollama-provider';
+
 /**
  * Interface for LLM providers (Ollama, LiteLLM, etc.)
  * This allows for easy swapping between different LLM backends
@@ -38,10 +42,15 @@ export interface LLMProvider {
  * Ollama LLM provider implementation
  */
 export class OllamaProvider implements LLMProvider {
-  private model: string;
+  private visionModel: string;
+  private embeddingModel: string;
+  private retryQueue: RetryQueue;
   
-  constructor(model: string = 'llava:7b') {
-    this.model = model;
+  constructor(visionModel?: string, embeddingModel?: string) {
+    const config = ConfigManager.getConfig();
+    this.visionModel = visionModel || config.ai.visionModel;
+    this.embeddingModel = embeddingModel || config.ai.embeddingModel;
+    this.retryQueue = RetryQueue.getInstance();
   }
   
   async isAvailable(): Promise<boolean> {
@@ -57,8 +66,8 @@ export class OllamaProvider implements LLMProvider {
   }
   
   async generateEmbedding(text: string): Promise<Float32Array> {
-    try {
-      console.log(`Generating text embedding for "${text.substring(0, 30)}..." using nomic-embed-text`);
+    const operation = async (): Promise<Float32Array> => {
+      console.log(`Generating text embedding for "${text.substring(0, 30)}..." using ${this.embeddingModel}`);
       
       const response = await fetch('http://localhost:11434/api/embeddings', {
         method: 'POST',
@@ -66,19 +75,24 @@ export class OllamaProvider implements LLMProvider {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: 'nomic-embed-text',
+          model: this.embeddingModel,
           prompt: text
         })
       });
       
       if (!response.ok) {
-        throw new Error(`Ollama API error: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`Ollama API error: ${response.status} ${errorText}`);
       }
       
       const data = await response.json();
       return new Float32Array(data.embedding);
+    };
+
+    try {
+      return await this.retryQueue.addTask(operation, `text-embedding-${text.substring(0, 20)}`, 5);
     } catch (error) {
-      console.error('Error generating text embedding:', error);
+      console.error('Error generating text embedding after retries:', error);
       // Fallback to random embeddings
       const randomArray = new Array(768).fill(0).map(() => Math.random() - 0.5);
       return new Float32Array(randomArray);
@@ -86,8 +100,8 @@ export class OllamaProvider implements LLMProvider {
   }
   
   async generateImageDescription(imagePath: string): Promise<string> {
-    try {
-      console.log(`Generating description for image ${imagePath} using LLaVA`);
+    const operation = async (): Promise<string> => {
+      console.log(`Generating description for image ${imagePath} using ${this.visionModel}`);
       
       // Read the image file as base64
       const fs = await import('fs');
@@ -101,7 +115,7 @@ export class OllamaProvider implements LLMProvider {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: this.model,
+          model: this.visionModel,
           prompt: 'Describe this image in detail, including objects, colors, scene, and any text visible:',
           images: [base64Image],
           stream: false
@@ -114,9 +128,21 @@ export class OllamaProvider implements LLMProvider {
       }
       
       const data = await response.json();
-      return data.response || 'No description available';
+      console.log(`[DEBUG] Ollama response:`, JSON.stringify(data, null, 2));
+      
+      if (!data.response || data.response.trim() === '') {
+        console.warn(`[DEBUG] Empty or missing response from Ollama:`, data);
+        return 'No description available';
+      }
+      
+      return data.response.trim();
+    };
+
+    try {
+      const fileName = imagePath.split('/').pop() || 'unknown';
+      return await this.retryQueue.addTask(operation, `image-description-${fileName}`, 5);
     } catch (error) {
-      console.error('Error generating image description:', error);
+      console.error('Error generating image description after retries:', error);
       return 'Error generating description';
     }
   }
@@ -142,7 +168,7 @@ export class OllamaProvider implements LLMProvider {
   }
   
   getModel(): string {
-    return this.model;
+    return `Vision: ${this.visionModel}, Embedding: ${this.embeddingModel}`;
   }
 }
 
@@ -207,12 +233,14 @@ export class LiteLLMProvider implements LLMProvider {
  * Factory for creating LLM providers
  */
 export class LLMProviderFactory {
-  static createProvider(type: 'ollama' | 'litellm', config?: any): LLMProvider {
+  static createProvider(type: 'ollama' | 'litellm' | 'subprocess' = 'ollama', config?: any): LLMProvider {
     switch (type) {
       case 'ollama':
-        return new OllamaProvider(config?.model);
+        return new OllamaProvider(config?.visionModel, config?.embeddingModel);
+      case 'subprocess':
+        return new SubprocessOllamaProvider(config?.visionModel, config?.embeddingModel);
       case 'litellm':
-        return new LiteLLMProvider(config?.model, config?.apiKey);
+        return new LiteLLMProvider(config);
       default:
         throw new Error(`Unknown LLM provider type: ${type}`);
     }

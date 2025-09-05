@@ -43,5 +43,6 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
   getStats: () => ipcRenderer.invoke('media:getStats'),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
+  getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
 })

@@ -1029,6 +1029,17 @@ button:active {
   background: #f9fafb;
 }
 
+.image-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 0.875rem;
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
 .file-thumbnail {
   width: 100%;
   height: 150px;

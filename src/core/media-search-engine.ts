@@ -239,13 +239,46 @@ export class MediaSearchEngine {
   }
   
   // Get suggestions (missing method)
-  async getSuggestions(query: string, limit: number = 2): Promise<string[]> {
-    // Simplified implementation
-    const suggestions = [];
-    for (let i = 1; i <= limit; i++) {
-      suggestions.push(`${query} suggestion ${i}`);
+  async getSuggestions(query: string, limit: number = 2): Promise<{ success: boolean; suggestions?: string[]; error?: string }> {
+    try {
+      // Simplified implementation
+      const suggestions = [];
+      for (let i = 1; i <= limit; i++) {
+        suggestions.push(`${query} suggestion ${i}`);
+      }
+      return { success: true, suggestions };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
     }
-    return suggestions;
+  }
+
+  // Update concurrency settings
+  async updateConcurrency(_limit: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      // This will be handled by the main process
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  // Get configuration
+  async getConfiguration(): Promise<{ success: boolean; config?: any; error?: string }> {
+    try {
+      // This will be handled by the main process
+      return { success: true, config: {} };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
   }
   
   // Stop indexing

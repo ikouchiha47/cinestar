@@ -1,7 +1,15 @@
 import { MainDatabase } from '../core/main-database';
 import { MediaSource, SearchQuery, SearchResult } from '../core/types';
 import { LLMProvider, LLMProviderFactory } from '../core/llm-provider';
+import { VectorDatabase } from '../core/vector-database';
+import { TwoPhaseProcessor } from '../core/two-phase-processor';
 import { getMimeType } from '../core/utils';
+import { ConfigManager } from '../core/config';
+import { ImageCompressor } from '../core/image-compressor';
+import { processWithConcurrency } from '../core/concurrency-limiter';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 /**
  * Main process MediaAPI that uses Node.js file system directly
@@ -9,6 +17,8 @@ import { getMimeType } from '../core/utils';
  */
 export class MainMediaAPI {
   private static db: MainDatabase;
+  private static vectorDb: VectorDatabase;
+  private static processor: TwoPhaseProcessor;
   private static initialized = false;
   private static llmProvider: LLMProvider;
 
@@ -17,9 +27,16 @@ export class MainMediaAPI {
     
     this.db = new MainDatabase(dbPath);
     await this.db.initialize();
-    this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
+    
+    // Initialize vector database and two-phase processor
+    const vectorDbPath = dbPath.replace('.db', '_vector.db');
+    this.vectorDb = new VectorDatabase(vectorDbPath);
+    // Use subprocess provider to avoid Electron event loop issues
+    this.llmProvider = LLMProviderFactory.createProvider('subprocess', providerConfig);
+    this.processor = new TwoPhaseProcessor(this.vectorDb, this.llmProvider);
+    
     this.initialized = true;
-    console.log('MainMediaAPI initialized');
+    console.log('MainMediaAPI initialized with two-phase processing');
   }
 
   private static async ensureInitialized(): Promise<void> {
@@ -203,6 +220,67 @@ export class MainMediaAPI {
     }
   }
 
+  /**
+   * Update concurrency settings
+   */
+  static async updateConcurrencySettings(limit: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      ConfigManager.setConcurrencyLimit(limit);
+      console.log(`📋 [CONFIG] Concurrency limit updated to: ${limit}`);
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Invalid concurrency limit' 
+      };
+    }
+  }
+
+  /**
+   * Get current configuration
+   */
+  static async getConfiguration(): Promise<{ success: boolean; config?: any; error?: string }> {
+    try {
+      const config = ConfigManager.getConfig();
+      return { success: true, config };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to get configuration' 
+      };
+    }
+  }
+
+  /**
+   * Enable debug mode
+   */
+  static async enableDebugMode(saveImages: boolean = true, saveLLaVAOutputs: boolean = true, outputDir?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      ConfigManager.enableDebugMode(saveImages, saveLLaVAOutputs, outputDir);
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to enable debug mode' 
+      };
+    }
+  }
+
+  /**
+   * Disable debug mode
+   */
+  static async disableDebugMode(): Promise<{ success: boolean; error?: string }> {
+    try {
+      ConfigManager.disableDebugMode();
+      return { success: true };
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to disable debug mode' 
+      };
+    }
+  }
+
   static async getStats(): Promise<{ success: boolean; stats?: {
     totalSources: number;
     totalItems: number;
@@ -232,6 +310,32 @@ export class MainMediaAPI {
       return { 
         success: false, 
         available: false,
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  static async getImageThumbnail(imagePath: string): Promise<{ success: boolean; dataUrl?: string; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      // Check if file exists
+      if (!fs.existsSync(imagePath)) {
+        return { success: false, error: 'Image file not found' };
+      }
+      
+      // Read the image file
+      const imageBuffer = fs.readFileSync(imagePath);
+      const mimeType = getMimeType(imagePath);
+      
+      // Convert to base64 data URL
+      const base64 = imageBuffer.toString('base64');
+      const dataUrl = `data:${mimeType};base64,${base64}`;
+      
+      return { success: true, dataUrl };
+    } catch (error) {
+      return { 
+        success: false, 
         error: error instanceof Error ? error.message : 'Unknown error' 
       };
     }
@@ -291,60 +395,202 @@ export class MainMediaAPI {
       await this.db.updateJobStatus(jobId, 'running', 50);
       console.log(`Job progress updated to 50% (scanning complete)`);
       
-      // 4. Process each file
-      console.log(`\n--- PROCESSING PHASE ---`);
+      // 4. Process files with bounded concurrency
+      console.log(`\n--- PARALLEL PROCESSING PHASE ---`);
+      const CONCURRENCY_LIMIT = ConfigManager.getOptimalConcurrency(mediaFiles.length);
+      console.log(`Processing ${mediaFiles.length} files with optimal concurrency limit: ${CONCURRENCY_LIMIT}`);
+      console.log(`📋 [CONFIG] Base concurrency: ${ConfigManager.getConcurrencyLimit()}, Optimal for ${mediaFiles.length} files: ${CONCURRENCY_LIMIT}`);
+      
       let processedCount = 0;
-      for (const file of mediaFiles) {
-        try {
-          console.log(`Processing file ${processedCount + 1}/${mediaFiles.length}: ${file.name}`);
-        
-        // Generate embeddings for images using Ollama LLaVA
-        let description = '';
-        let embedding: Float32Array | undefined;
-        if (file.type === 'image') {
+      
+      const processingResults = await processWithConcurrency(
+        mediaFiles,
+        async (file, index) => {
+          const fileStartTime = Date.now();
           try {
-            console.log(`  🔍 Generating AI embedding for ${file.name}...`);
-            embedding = await this.llmProvider.generateImageEmbedding(file.path);
-            console.log(`  🧠 Generated embedding vector of size: ${embedding.length}`);
+            console.log(`⏱️  [${index + 1}/${mediaFiles.length}] Processing: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`);
             
-            // Also generate description for better search
-            description = await this.llmProvider.generateImageDescription(file.path);
-            console.log(`  📝 Description: ${description.substring(0, 100)}...`);
+            // Generate embeddings for images using Ollama LLaVA
+            let description = '';
+            let embedding: Float32Array | undefined;
+            let embeddingTime = 0;
+            let descriptionTime = 0;
+            
+            let compressionTime = 0;
+            let compressedPath = file.path;
+            let compressionResult: any = null;
+            
+            if (file.type === 'image') {
+              try {
+                // Step 1: Compress image if needed
+                if (ImageCompressor.shouldCompress(file.path, file.size)) {
+                  const compressStart = Date.now();
+                  console.log(`  🗜️ [${file.name}] Compressing image...`);
+                  
+                  // Create temp directory for compressed images
+                  const tempDir = path.join(os.tmpdir(), 'driller-compressed');
+                  const settings = ImageCompressor.getOptimalSettings(file.path, file.size);
+                  
+                  compressionResult = await ImageCompressor.compressImage(file.path, tempDir, settings);
+                  compressedPath = compressionResult.compressedPath;
+                  compressionTime = Date.now() - compressStart;
+                  
+                  console.log(`  ✅ [${file.name}] Compressed: ${compressionResult.compressionRatio.toFixed(1)}% savings in ${compressionTime}ms`);
+                  
+                  // Debug: Save compressed image if DEBUG_MODE=true
+                  const debugConfig = ConfigManager.getDebugConfig();
+                  if (debugConfig.enabled && debugConfig.saveCompressedImages) {
+                    try {
+                      await fs.promises.mkdir(debugConfig.outputDir, { recursive: true });
+                      const debugImagePath = path.join(debugConfig.outputDir, `compressed_${file.name}`);
+                      await fs.promises.copyFile(compressedPath, debugImagePath);
+                      console.log(`  🐛 [DEBUG] Saved compressed image: ${debugImagePath}`);
+                    } catch (debugError) {
+                      console.warn(`  ⚠️ [DEBUG] Failed to save compressed image: ${debugError}`);
+                    }
+                  }
+                } else {
+                  console.log(`  ⏭️ [${file.name}] Skipping compression (${(file.size / 1024).toFixed(1)}KB)`);
+                }
+                
+                // Step 2: Generate AI embeddings using compressed image
+                const embeddingStart = Date.now();
+                console.log(`  🔍 [${file.name}] Generating AI embedding...`);
+                embedding = await this.llmProvider.generateImageEmbedding(compressedPath);
+                embeddingTime = Date.now() - embeddingStart;
+                console.log(`  🧠 [${file.name}] Generated embedding vector of size: ${embedding.length} in ${embeddingTime}ms`);
+                
+                // Step 3: Generate description using compressed image
+                const descriptionStart = Date.now();
+                console.log(`  📝 [${file.name}] Generating description...`);
+                description = await this.llmProvider.generateImageDescription(compressedPath);
+                descriptionTime = Date.now() - descriptionStart;
+                console.log(`  📝 [${file.name}] Description generated in ${descriptionTime}ms: ${description.substring(0, 100)}...`);
+                
+                // Debug: Save LLaVA output if DEBUG_MODE=true
+                const debugConfig = ConfigManager.getDebugConfig();
+                if (debugConfig.enabled && debugConfig.saveLLaVAOutputs) {
+                  try {
+                    await fs.promises.mkdir(debugConfig.outputDir, { recursive: true });
+                    const debugOutputPath = path.join(debugConfig.outputDir, `llava_output_${path.parse(file.name).name}.txt`);
+                    const debugContent = `File: ${file.name}\nOriginal Size: ${(file.size / 1024).toFixed(1)}KB\nCompressed: ${compressionResult ? 'Yes' : 'No'}\n${compressionResult ? `Compressed Size: ${(compressionResult.compressedSize / 1024).toFixed(1)}KB\nCompression Ratio: ${compressionResult.compressionRatio.toFixed(1)}%\n` : ''}Processing Time: ${descriptionTime}ms\n\nVision Description:\n${description}`;
+                    await fs.promises.writeFile(debugOutputPath, debugContent, 'utf8');
+                    console.log(`  🐛 [DEBUG] Saved LLaVA output: ${debugOutputPath}`);
+                  } catch (debugError) {
+                    console.warn(`  ⚠️ [DEBUG] Failed to save LLaVA output: ${debugError}`);
+                  }
+                }
+                
+                // Clean up temporary compressed file if created
+                if (compressionResult && compressedPath !== file.path) {
+                  try {
+                    await fs.promises.unlink(compressedPath);
+                    console.log(`  🗑️ [${file.name}] Cleaned up temporary compressed file`);
+                  } catch (cleanupError) {
+                    console.warn(`  ⚠️ [${file.name}] Failed to cleanup temp file: ${cleanupError}`);
+                  }
+                }
+                
+              } catch (error) {
+                const errorTime = Date.now() - fileStartTime;
+                console.error(`  ⚠️ [${file.name}] Failed to process image after ${errorTime}ms:`, error);
+                description = `Image file: ${file.name}`;
+                
+                // Clean up on error
+                if (compressionResult && compressedPath !== file.path) {
+                  try {
+                    await fs.promises.unlink(compressedPath);
+                  } catch (cleanupError) {
+                    // Ignore cleanup errors
+                  }
+                }
+              }
+            }
+            
+            // Time database insertion
+            const dbStart = Date.now();
+            const itemId = await this.db.addMediaItem({
+              sourceId,
+              name: file.name,
+              path: file.path,
+              size: file.size,
+              type: file.type,
+              mimeType: getMimeType(file.path),
+              createdAt: new Date(),
+              modifiedAt: file.lastModified,
+              description,
+              embedding,
+              metadata: {}
+            });
+            const dbTime = Date.now() - dbStart;
+            const totalTime = Date.now() - fileStartTime;
+            
+            console.log(`  ✅ [${file.name}] Complete in ${totalTime}ms (compression: ${compressionTime}ms, embedding: ${embeddingTime}ms, description: ${descriptionTime}ms, db: ${dbTime}ms) - ID: ${itemId}`);
+            
+            return { 
+              success: true, 
+              itemId, 
+              fileName: file.name,
+              timings: {
+                total: totalTime,
+                compression: compressionTime,
+                embedding: embeddingTime,
+                description: descriptionTime,
+                database: dbTime
+              }
+            };
           } catch (error) {
-            console.error(`  ⚠️ Failed to generate embedding for ${file.name}:`, error);
-            description = `Image file: ${file.name}`;
+            const errorTime = Date.now() - fileStartTime;
+            console.error(`  ✗ [${file.name}] Error processing file after ${errorTime}ms:`, error);
+            return { 
+              success: false, 
+              error: error instanceof Error ? error.message : String(error), 
+              fileName: file.name,
+              timings: { total: errorTime, compression: 0, embedding: 0, description: 0, database: 0 }
+            };
           }
-        }
-        
-        const itemId = await this.db.addMediaItem({
-          sourceId,
-          name: file.name,
-          path: file.path,
-          size: file.size,
-          type: file.type,
-          mimeType: getMimeType(file.path),
-          createdAt: new Date(),
-          modifiedAt: file.lastModified,
-          description,
-          embedding,
-          metadata: {}
-        });
-        console.log(`  ✓ Added to database with ID: ${itemId}`);
-          processedCount++;
+        },
+        CONCURRENCY_LIMIT,
+        async (completed, total, file) => {
+          processedCount = completed;
           
           // Update job progress (50-100%)
-          const progress = 50 + Math.floor((processedCount / mediaFiles.length) * 50);
+          const progress = 50 + Math.floor((completed / total) * 50);
           await this.db.updateJobStatus(jobId, 'running', progress);
           
-          if (processedCount % 10 === 0 || processedCount === mediaFiles.length) {
-            console.log(`  Progress: ${processedCount}/${mediaFiles.length} files (${progress}%)`);
+          if (completed % 5 === 0 || completed === total) {
+            console.log(`  📊 Progress: ${completed}/${total} files (${progress}%) - Latest: ${file.name}`);
           }
-          
-        } catch (error) {
-          console.error(`  ✗ Error processing file ${file.path}:`, error);
-          // Continue with next file
         }
+      );
+      
+      // Calculate timing statistics
+      const successfulResults = processingResults.filter((r: any) => r.success);
+      const failedResults = processingResults.filter((r: any) => !r.success);
+      
+      if (successfulResults.length > 0) {
+        const totalCompressionTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.compression || 0), 0);
+        const totalEmbeddingTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.embedding || 0), 0);
+        const totalDescriptionTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.description || 0), 0);
+        const totalDbTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.database || 0), 0);
+        const avgCompressionTime = totalCompressionTime / successfulResults.length;
+        const avgEmbeddingTime = totalEmbeddingTime / successfulResults.length;
+        const avgDescriptionTime = totalDescriptionTime / successfulResults.length;
+        const avgDbTime = totalDbTime / successfulResults.length;
+        
+        console.log(`\n📊 [TIMING SUMMARY]`);
+        console.log(`   Successful: ${successfulResults.length}/${mediaFiles.length} files`);
+        console.log(`   Failed: ${failedResults.length}/${mediaFiles.length} files`);
+        console.log(`   Average compression time: ${avgCompressionTime.toFixed(0)}ms`);
+        console.log(`   Average embedding time: ${avgEmbeddingTime.toFixed(0)}ms`);
+        console.log(`   Average description time: ${avgDescriptionTime.toFixed(0)}ms`);
+        console.log(`   Average database time: ${avgDbTime.toFixed(0)}ms`);
+        console.log(`   Total compression time: ${totalCompressionTime.toFixed(0)}ms`);
+        console.log(`   Total AI processing time: ${(totalEmbeddingTime + totalDescriptionTime).toFixed(0)}ms`);
+        console.log(`   Total database time: ${totalDbTime.toFixed(0)}ms`);
       }
+      
+      console.log(`✅ Parallel processing complete: ${processedCount}/${mediaFiles.length} files processed`);
       
       // 5. Complete the job
       console.log(`\n--- COMPLETION PHASE ---`);
@@ -363,8 +609,142 @@ export class MainMediaAPI {
     }
   }
 
+  /**
+   * Index source using two-phase processing
+   */
+  static async indexSourceTwoPhase(sourceId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      const source = await this.db.getSource(sourceId);
+      if (!source) {
+        return { success: false, error: 'Source not found' };
+      }
+
+      console.log(`🚀 [TWO-PHASE] Starting indexing for source: ${source.name}`);
+      
+      // Scan for media files
+      const files = await this.scanMediaFiles(source.path);
+      console.log(`📁 [TWO-PHASE] Found ${files.length} media files`);
+      
+      // Add files to two-phase processor
+      const mediaItems = files.map(file => ({
+        id: this.generateId(),
+        sourceId: sourceId,
+        name: path.basename(file.path),
+        path: file.path,
+        size: file.size,
+        type: file.type
+      }));
+      
+      this.processor.addMediaItems(mediaItems);
+      
+      // Run processing phases
+      await this.processor.runProcessing(3, 5); // Small batches to avoid overwhelming Ollama
+      
+      const stats = this.processor.getStats();
+      console.log(`✅ [TWO-PHASE] Indexing completed. Phase 1: ${stats.phase1.completed}/${stats.phase1.total}, Phase 2: ${stats.phase2.completed}/${stats.phase2.total}`);
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error in two-phase indexing:', error);
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  /**
+   * Search using vector database
+   */
+  static async searchVector(query: string, limit: number = 10): Promise<{ success: boolean; results?: any[]; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      const results = await this.processor.search(query, limit);
+      
+      return {
+        success: true,
+        results: results.map(r => ({
+          id: r.item.id,
+          name: r.item.name,
+          path: r.item.path,
+          caption: r.item.caption,
+          similarity: r.similarity,
+          type: r.item.type,
+          size: r.item.size
+        }))
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Get two-phase processing statistics
+   */
+  static async getTwoPhaseStats(): Promise<{ success: boolean; stats?: any; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      const stats = this.processor.getStats();
+      const vectorStats = this.vectorDb.getStats();
+      
+      return {
+        success: true,
+        stats: {
+          twoPhase: stats,
+          database: vectorStats
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Process Phase 1 only (captions)
+   */
+  static async processPhase1(batchSize: number = 5): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      await this.processor.processPhase1(batchSize);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Process Phase 2 only (embeddings)
+   */
+  static async processPhase2(batchSize: number = 10): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      await this.processor.processPhase2(batchSize);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
   static async close(): Promise<void> {
-    // No explicit close needed for file-based database
+    if (this.vectorDb) {
+      this.vectorDb.close();
+    }
     console.log('MainMediaAPI closed');
   }
 }
