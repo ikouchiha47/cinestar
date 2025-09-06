@@ -2,6 +2,12 @@ import { MediaSource, SearchQuery, SearchResult } from '../core/types';
 
 declare global {
   interface Window {
+    ipcRenderer?: {
+      on: (...args: any[]) => any;
+      off: (...args: any[]) => any;
+      send: (...args: any[]) => any;
+      invoke: (...args: any[]) => Promise<any>;
+    };
     electronAPI: {
       readFile: (filePath: string) => Promise<string | null>;
       writeFile: (filePath: string, data: string) => Promise<boolean>;
@@ -16,7 +22,13 @@ declare global {
       removeSource: (sourceId: string) => Promise<{ success: boolean; error?: string }>;
       startIndexing: (sourceId: string) => Promise<{ success: boolean; jobId?: string; error?: string }>;
       stopIndexing: (jobId: string) => Promise<{ success: boolean; error?: string }>;
-      getIndexingStatus: () => Promise<{ success: boolean; activeJobs: string[]; error?: string }>;
+      getIndexingStatus: () => Promise<{
+        success: boolean;
+        activeJobs: string[];
+        jobs?: Array<{ id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: Date; completedAt?: Date; phase?: string }>;
+        error?: string;
+      }>;
+      getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
       search: (query: SearchQuery) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       searchText: (text: string, limit?: number) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       getSuggestions: (query: string, limit?: number) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>;

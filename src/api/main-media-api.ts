@@ -38,6 +38,22 @@ export class MainMediaAPI {
     console.log('MainMediaAPI initialized with two-phase processing');
   }
 
+  /**
+   * List media items, optionally filtered by sourceId (used for browse view)
+   */
+  static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      const items = await this.db.getMediaItems(sourceId);
+      return { success: true, items };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
   private static async ensureInitialized(): Promise<void> {
     if (!this.initialized) {
       throw new Error('MainMediaAPI not initialized');
@@ -102,7 +118,7 @@ export class MainMediaAPI {
         const source = await this.db.getSource(sourceId);
         if (source && source.lastIndexed) {
           console.log(`📋 [CONFIG] Skipping re-index for source ${source.name} (lastIndexed: ${source.lastIndexed})`);
-          // return { success: true, jobId: 'skipped' };
+          return { success: true, jobId: 'skipped' };
         }
       }
       

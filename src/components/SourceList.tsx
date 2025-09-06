@@ -34,13 +34,17 @@ const Icon = {
 interface SourceListProps {
   onAddSource: () => void;
   refreshTrigger?: number;
+  onSelectSource?: (sourceId: string) => void;
+  compact?: boolean;
+  showFilter?: boolean;
 }
 
-export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrigger }) => {
+export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrigger, onSelectSource, compact = false, showFilter = false }) => {
   const [sources, setSources] = useState<MediaSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [indexingJobs, setIndexingJobs] = useState<string[]>([]);
+  const [filterText, setFilterText] = useState<string>('');
 
   const loadSources = async () => {
     try {
@@ -174,8 +178,24 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
     );
   }
 
+  const filteredSources = sources.filter((s) => {
+    if (!filterText.trim()) return true;
+    const q = filterText.toLowerCase();
+    return s.name.toLowerCase().includes(q) || (s.path || '').toLowerCase().includes(q);
+  });
+
   return (
     <div>
+      {showFilter && sources.length > 0 && (
+        <div className="mb-3">
+          <input
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Filter sources..."
+            className="w-full rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm focus:outline-none focus:border-neutral-600"
+          />
+        </div>
+      )}
       {sources.length === 0 ? (
         <div className="flex items-center justify-center py-16">
           <div className="text-center">
@@ -194,22 +214,73 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
           </div>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {sources.map((source) => (
-            <div key={source.id} className="border border-neutral-800 rounded-2xl p-6 bg-neutral-900/50 hover:bg-neutral-900 transition">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <Icon.Folder className="w-6 h-6 text-neutral-400" />
-                  <div>
-                    <h3 className="font-semibold text-lg">{source.name}</h3>
-                    <p className="text-sm text-neutral-400 font-mono">{source.path}</p>
+        <div className="grid gap-3">
+          {filteredSources.map((source) => (
+            <div key={source.id}
+              className={compact
+                ? 'group flex items-center justify-between p-3 rounded-xl border border-neutral-800 bg-neutral-900/40 hover:bg-neutral-900 transition'
+                : 'border border-neutral-800 rounded-2xl p-6 bg-neutral-900/50 hover:bg-neutral-900 transition'}>
+              <div className={compact ? 'flex items-center gap-3 min-w-0' : 'flex items-start justify-between mb-4 w-full'}>
+                <div className="flex items-center gap-3 min-w-0">
+                  <Icon.Folder className={compact ? 'w-5 h-5 text-neutral-400' : 'w-6 h-6 text-neutral-400'} />
+                  <div className="min-w-0">
+                    <h3 className={compact ? 'font-medium text-sm truncate' : 'font-semibold text-lg truncate'} title={source.name}>{source.name}</h3>
+                    <p className={compact ? 'text-xs text-neutral-500 font-mono truncate' : 'text-sm text-neutral-400 font-mono truncate'} title={source.path}>{source.path}</p>
                   </div>
                 </div>
+                {!compact && (
+                  <div className="flex items-center gap-2">
+                    {onSelectSource && (
+                      <button
+                        onClick={() => onSelectSource(source.id)}
+                        className="p-2 rounded-lg border border-neutral-700 hover:bg-neutral-800 text-neutral-300"
+                        title="Browse this source"
+                      >
+                        <Icon.Folder className="w-4 h-4" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleStartIndexing(source.id)}
+                      disabled={indexingJobs.includes(source.id)}
+                      className={`p-2 rounded-lg border transition ${
+                        indexingJobs.includes(source.id)
+                          ? 'border-blue-700 bg-blue-900/50 text-blue-400'
+                          : 'border-neutral-700 hover:bg-neutral-800'
+                      }`}
+                      title={indexingJobs.includes(source.id) ? 'Indexing in progress...' : 'Start indexing this source'}
+                    >
+                      {indexingJobs.includes(source.id) ? (
+                        <Icon.Spinner className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Icon.Play className="w-4 h-4" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleRemoveSource(source.id, source.name)}
+                      className="p-2 rounded-lg border border-neutral-700 hover:bg-red-900/50 hover:border-red-700 text-neutral-400 hover:text-red-400 transition"
+                      title="Remove this source"
+                    >
+                      <Icon.Trash className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {compact ? (
                 <div className="flex items-center gap-2">
+                  {onSelectSource && (
+                    <button
+                      onClick={() => onSelectSource(source.id)}
+                      className="p-1.5 rounded-md border border-neutral-700 hover:bg-neutral-800 text-neutral-300"
+                      title="Browse this source"
+                    >
+                      <Icon.Folder className="w-4 h-4" />
+                    </button>
+                  )}
                   <button
                     onClick={() => handleStartIndexing(source.id)}
                     disabled={indexingJobs.includes(source.id)}
-                    className={`p-2 rounded-lg border transition ${
+                    className={`p-1.5 rounded-md border transition ${
                       indexingJobs.includes(source.id)
                         ? 'border-blue-700 bg-blue-900/50 text-blue-400'
                         : 'border-neutral-700 hover:bg-neutral-800'
@@ -224,44 +295,46 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
                   </button>
                   <button
                     onClick={() => handleRemoveSource(source.id, source.name)}
-                    className="p-2 rounded-lg border border-neutral-700 hover:bg-red-900/50 hover:border-red-700 text-neutral-400 hover:text-red-400 transition"
+                    className="p-1.5 rounded-md border border-neutral-700 hover:bg-red-900/50 hover:border-red-700 text-neutral-400 hover:text-red-400 transition"
                     title="Remove this source"
                   >
                     <Icon.Trash className="w-4 h-4" />
                   </button>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                <div>
-                  <div className="text-neutral-400 mb-1">Status</div>
-                  <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
-                    source.enabled 
-                      ? 'bg-green-900/50 text-green-400 border border-green-800'
-                      : 'bg-red-900/50 text-red-400 border border-red-800'
-                  }`}>
-                    {source.enabled ? '✅ Enabled' : '❌ Disabled'}
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm mt-2">
+                    <div>
+                      <div className="text-neutral-400 mb-1">Status</div>
+                      <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                        source.enabled 
+                          ? 'bg-green-900/50 text-green-400 border border-green-800'
+                          : 'bg-red-900/50 text-red-400 border border-red-800'
+                      }`}>
+                        {source.enabled ? '✅ Enabled' : '❌ Disabled'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-neutral-400 mb-1">Type</div>
+                      <div className="capitalize">{source.type}</div>
+                    </div>
+                    <div>
+                      <div className="text-neutral-400 mb-1">Last Indexed</div>
+                      <div>{formatDate(source.lastIndexed)}</div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-neutral-400 mb-1">Type</div>
-                  <div className="capitalize">{source.type}</div>
-                </div>
-                <div>
-                  <div className="text-neutral-400 mb-1">Last Indexed</div>
-                  <div>{formatDate(source.lastIndexed)}</div>
-                </div>
-              </div>
 
-              {source.config && Object.keys(source.config).length > 0 && (
-                <details className="mt-4">
-                  <summary className="cursor-pointer text-sm text-neutral-400 hover:text-neutral-200">
-                    Configuration
-                  </summary>
-                  <pre className="mt-2 p-3 bg-neutral-800 rounded-lg text-xs overflow-auto">
-                    {JSON.stringify(source.config, null, 2)}
-                  </pre>
-                </details>
+                  {source.config && Object.keys(source.config).length > 0 && (
+                    <details className="mt-4">
+                      <summary className="cursor-pointer text-sm text-neutral-400 hover:text-neutral-200">
+                        Configuration
+                      </summary>
+                      <pre className="mt-2 p-3 bg-neutral-800 rounded-lg text-xs overflow-auto">
+                        {JSON.stringify(source.config, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </>
               )}
             </div>
           ))}

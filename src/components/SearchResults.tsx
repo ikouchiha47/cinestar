@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { PluginRegistry } from '../core/plugin-registry';
 import { MediaItem, MediaSource } from '../core/types';
 
 // Custom hook for loading image thumbnails
@@ -48,11 +49,11 @@ interface SearchResultsProps {
   results: MediaItem[];
   query: string;
   viewMode?: 'grid' | 'list';
+  mode?: 'search' | 'browse';
 }
 
-export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, viewMode = 'grid' }) => {
+export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, viewMode = 'grid', mode = 'search' }) => {
   const [groupedResults, setGroupedResults] = useState<GroupedResults>({});
-  const [sources, setSources] = useState<MediaSource[]>([]);
 
   console.log('SearchResults component received:', { results, query });
   console.log('Results length:', results.length);
@@ -70,7 +71,6 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
         console.log('Sources response:', sourcesResponse);
         
         if (sourcesResponse.success && sourcesResponse.sources) {
-          setSources(sourcesResponse.sources);
           
           // Group results by source
           const grouped: GroupedResults = {};
@@ -161,7 +161,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
               </div>
             ) : (
               <div className="w-8 h-8 rounded bg-neutral-800 flex items-center justify-center text-sm">
-                {getFileIcon(item.type)}
+                {getFileIcon(item.type, item)}
               </div>
             )}
           </div>
@@ -210,13 +210,13 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
             </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-neutral-800 text-4xl">
-              {getFileIcon(item.type)}
+              {getFileIcon(item.type, item)}
             </div>
           )}
           
           <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px]">
             <span className="inline-flex items-center gap-1 rounded-md bg-neutral-900/70 px-2 py-1 text-neutral-200">
-              {getFileIcon(item.type)} {item.type}
+              {getFileIcon(item.type, item)} {item.type}
             </span>
           </div>
         </div>
@@ -244,7 +244,14 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const getFileIcon = (type: string): string => {
+  const getFileIcon = (type: string, item?: MediaItem): string => {
+    // Ask plugin icon providers first
+    const providers = PluginRegistry.getIconProviders();
+    for (const p of providers) {
+      const icon = p.getIcon({ name: item?.name, path: item?.path, mimeType: item?.mimeType, type });
+      if (icon) return icon;
+    }
+    // Fallbacks
     switch (type) {
       case 'image': return '🖼️';
       case 'video': return '🎥';
@@ -254,7 +261,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
     }
   };
 
-  if (!query) {
+  if (mode === 'search' && !query) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="text-center">
@@ -299,7 +306,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, vi
           </div>
           
           {viewMode === 'grid' ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4">
               {items.map((item) => (
                 <GalleryItem key={item.id} item={item} />
               ))}

@@ -195,6 +195,27 @@ ipcMain.handle('media:getStats', async () => {
   return await MainMediaAPI.getStats();
 });
 
+ipcMain.handle('media:getItems', async (_evt, sourceId?: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getItems(sourceId);
+});
+
+// App-level progress (taskbar/dock). Pass value in [0,1]; pass -1 to clear.
+ipcMain.handle('app:setProgress', async (_evt, value: number) => {
+  if (!win) return false;
+  try {
+    if (typeof value === 'number' && value >= 0 && value <= 1) {
+      win.setProgressBar(value);
+    } else {
+      win.setProgressBar(-1);
+    }
+    return true;
+  } catch (e) {
+    console.warn('Failed to set progress bar:', e);
+    return false;
+  }
+});
+
 ipcMain.handle('media:isOllamaAvailable', async () => {
   console.log('[ELECTRON-MAIN] media:isOllamaAvailable called');
   if (!mediaAPI) await initializeMediaAPI();

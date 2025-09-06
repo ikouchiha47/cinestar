@@ -4,7 +4,8 @@ import { SourceList } from './components/SourceList';
 import { SearchBar } from './components/SearchBar';
 import { SearchResults } from './components/SearchResults';
 import { MediaItem } from './core/types';
-import { UI_CATEGORIES } from './core/ui-config';
+import { getUICategories, UICategory } from './core/ui-config';
+import { PluginRegistry } from './core/plugin-registry';
 
 // Icon components
 const Icon = {
@@ -85,6 +86,10 @@ function App() {
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
   type JobInfo = { id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: string | Date; completedAt?: string | Date };
   const [jobDetails, setJobDetails] = useState<JobInfo[]>([]);
+  const [categories, setCategories] = useState<UICategory[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [browsedItems, setBrowsedItems] = useState<MediaItem[]>([]);
+  const [overallProgress, setOverallProgress] = useState<number>(-1); // percent 0-100, -1 hidden
 
   useEffect(() => {
     const initializeApp = async () => {
@@ -102,6 +107,9 @@ function App() {
             setOllamaStatus(result.available || false);
           }
         }
+        // Load plugins (categories, icons) then compute categories
+        await PluginRegistry.loadPlugins();
+        setCategories(getUICategories());
         setInitialized(true);
       } catch (error) {
         console.error('Failed to initialize app:', error);
@@ -182,9 +190,48 @@ function App() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [indexLogs.length, indexDrawerOpen]);
 
+  // Compute overall progress across active jobs and reflect in OS title bar (taskbar/dock) and a top bar
+  useEffect(() => {
+    // Only when there are active jobs
+    if (activeJobs.length > 0 && jobDetails.length > 0) {
+      const activeSet = new Set(activeJobs);
+      const activeOnly = jobDetails.filter(j => activeSet.has(j.id));
+      const avg = activeOnly.length > 0
+        ? activeOnly.reduce((sum, j) => sum + (j.progress || 0), 0) / activeOnly.length
+        : 0;
+      setOverallProgress(Math.max(0, Math.min(100, Math.round(avg))));
+      // Also set OS-level progress bar (0..1); clear when none
+      try {
+        // @ts-ignore - exposed by preload
+        window.ipcRenderer?.invoke('app:setProgress', avg / 100);
+      } catch {}
+    } else {
+      setOverallProgress(-1);
+      try {
+        // @ts-ignore
+        window.ipcRenderer?.invoke('app:setProgress', -1);
+      } catch {}
+    }
+  }, [activeJobs.join(','), jobDetails.length, jobDetails.map(j => j.progress).join(',')]);
+
   const handleSourceAdded = () => {
     setShowAddForm(false);
     setRefreshTrigger(prev => prev + 1);
+  };
+
+  const handleSelectSource = async (sourceId: string) => {
+    try {
+      setSelectedSourceId(sourceId);
+      const res = await window.mediaAPI.getItems(sourceId);
+      if (res?.success && Array.isArray(res.items)) {
+        setBrowsedItems(res.items);
+      } else {
+        setBrowsedItems([]);
+      }
+    } catch (e) {
+      console.warn('Failed to load items for source', sourceId, e);
+      setBrowsedItems([]);
+    }
   };
 
   const handleAddSource = () => {
@@ -214,9 +261,23 @@ function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-200">
+      {/* Top progress bar (subtle) */}
+      {overallProgress >= 0 && (
+        <div className="fixed top-0 left-0 right-0 z-50">
+          <div className="h-1 bg-neutral-900/60 backdrop-blur-sm">
+            <div
+              className="h-1 transition-all duration-300 shadow-[0_0_10px_rgba(59,130,246,0.45)]"
+              style={{
+                width: `${overallProgress}%`,
+                background: 'linear-gradient(90deg, rgba(59,130,246,0.95) 0%, rgba(59,130,246,0.65) 100%)'
+              }}
+            />
+          </div>
+        </div>
+      )}
       {/* Header */}
       <header className="border-b border-neutral-800 bg-neutral-900">
-        <div className="flex items-center justify-between px-6 py-4">
+        <div className="mx-auto w-full max-w-7xl min-w-[320px] px-4 sm:px-6 lg:px-8 flex items-center justify-between py-4">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Icon.Search className="w-6 h-6 text-neutral-400" />
@@ -258,8 +319,8 @@ function App() {
       {/* Main Content */}
       <main className="flex-1">
         {/* Search Bar */}
-        <div className="border-b border-neutral-800 bg-neutral-900/50 px-6 py-4">
-          <div className="flex items-center gap-3">
+        <div className="border-b border-neutral-800 bg-neutral-900/50">
+          <div className="mx-auto w-full max-w-7xl min-w-[320px] px-4 sm:px-6 lg:px-8 flex items-center gap-3 py-4">
             <div className="flex-1">
               <SearchBar onResults={handleSearchResults} />
             </div>
@@ -272,14 +333,14 @@ function App() {
           </div>
 
           {/* Tabs row */}
-          <div className="mt-3 flex items-center gap-2 overflow-x-auto">
+          <div className="mx-auto w-full max-w-7xl min-w-[320px] px-4 sm:px-6 lg:px-8 mt-3 flex items-center gap-2 overflow-x-auto pb-2">
             <button
               onClick={() => setActiveTab('all')}
               className={`px-3 py-1.5 rounded-full text-sm border ${activeTab==='all' ? 'bg-neutral-200 text-neutral-900 border-neutral-200' : 'border-neutral-700 hover:bg-neutral-800'}`}
             >
               All
             </button>
-            {UI_CATEGORIES.map(cat => (
+            {categories.map((cat: UICategory) => (
               <button
                 key={cat.key}
                 onClick={() => setActiveTab(cat.key)}
@@ -292,7 +353,7 @@ function App() {
         </div>
 
         {/* Content Area */}
-        <div className="px-6 py-6">
+        <div className="mx-auto w-full max-w-7xl min-w-[320px] px-4 sm:px-6 lg:px-8 py-6">
           {searchQuery && searchResults.length > 0 ? (
             <div className="grid grid-cols-12 gap-6">
               {/* Sidebar (non-expanding) */}
@@ -305,7 +366,7 @@ function App() {
                         onClick={() => setActiveTab('all')}
                         className={`px-3 py-1.5 rounded-full text-sm border ${activeTab==='all' ? 'bg-neutral-200 text-neutral-900 border-neutral-200' : 'border-neutral-700 hover:bg-neutral-800'}`}
                       >All</button>
-                      {UI_CATEGORIES.map(cat => (
+                      {categories.map((cat: UICategory) => (
                         <button
                           key={cat.key}
                           onClick={() => setActiveTab(cat.key)}
@@ -372,6 +433,7 @@ function App() {
                   results={(activeTab==='all') ? searchResults : searchResults.filter((it: MediaItem) => it.type === activeTab)} 
                   query={searchQuery} 
                   viewMode={viewMode} 
+                  mode="search"
                 />
               </section>
             </div>
@@ -387,7 +449,7 @@ function App() {
                         onClick={() => setActiveTab('all')}
                         className={`px-3 py-1.5 rounded-full text-sm border ${activeTab==='all' ? 'bg-neutral-200 text-neutral-900 border-neutral-200' : 'border-neutral-700 hover:bg-neutral-800'}`}
                       >All</button>
-                      {UI_CATEGORIES.map(cat => (
+                      {categories.map((cat: UICategory) => (
                         <button
                           key={cat.key}
                           onClick={() => setActiveTab(cat.key)}
@@ -416,20 +478,47 @@ function App() {
                 </div>
               </aside>
 
-              {/* Main */}
+              {/* Main: Browse layout */}
               <section className="col-span-12 md:col-span-9">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h2 className="text-lg font-semibold">Media Sources</h2>
-                    <p className="text-sm text-neutral-400">
-                      Manage your indexed media sources
-                    </p>
+                <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-12 lg:col-span-5">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h2 className="text-lg font-semibold">Media Sources</h2>
+                        <p className="text-sm text-neutral-400">Select a source to browse</p>
+                      </div>
+                    </div>
+                    <div className="max-h-[70vh] overflow-y-auto pr-1">
+                      <SourceList
+                        onAddSource={handleAddSource}
+                        refreshTrigger={refreshTrigger}
+                        onSelectSource={handleSelectSource}
+                        compact
+                        showFilter
+                      />
+                    </div>
+                  </div>
+                  <div className="col-span-12 lg:col-span-7">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h2 className="text-lg font-semibold">{selectedSourceId ? 'Browsing' : 'Preview'}</h2>
+                        <p className="text-sm text-neutral-400">{selectedSourceId ? 'Items from selected source' : 'Select a source to view its media'}</p>
+                      </div>
+                    </div>
+                    {selectedSourceId ? (
+                      <SearchResults
+                        results={(activeTab==='all') ? browsedItems : browsedItems.filter((it: MediaItem) => it.type === activeTab)}
+                        query={''}
+                        viewMode={viewMode}
+                        mode="browse"
+                      />
+                    ) : (
+                      <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-6 text-sm text-neutral-400">
+                        Choose a source on the left to start browsing.
+                      </div>
+                    )}
                   </div>
                 </div>
-                <SourceList
-                  onAddSource={handleAddSource}
-                  refreshTrigger={refreshTrigger}
-                />
               </section>
             </div>
           )}
@@ -468,52 +557,60 @@ function App() {
                 <Icon.Close className="w-4 h-4" />
               </button>
             </div>
-            {/* Active jobs summary */}
-            <div className="px-4 py-2 border-b border-neutral-800 text-xs text-neutral-400">
-              {activeJobs.length === 0 ? (
-                <span>No active jobs</span>
-              ) : (
-                <span>{activeJobs.length} active job(s): {activeJobs.map(j => j.slice(0,8)).join(', ')}</span>
-              )}
-            </div>
-            {/* Active jobs list with progress */}
-            {jobDetails.length > 0 && (
-              <div className="px-4 py-3 border-b border-neutral-800 space-y-2">
-                {jobDetails.map(job => {
-                  const phase = job.status === 'pending' ? 'Queued' : (job.progress < 50 ? 'Scanning' : 'Processing');
-                  return (
-                    <div key={job.id} className="text-xs">
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="font-mono">{job.id.slice(0,8)}…</div>
-                        <div className="text-neutral-400">{phase} • {Math.max(0, Math.min(100, Math.round(job.progress || 0)))}%</div>
-                      </div>
-                      <div className="h-2 w-full bg-neutral-800 rounded">
-                        <div className="h-2 rounded bg-blue-500" style={{ width: `${Math.max(0, Math.min(100, Math.round(job.progress || 0)))}%` }} />
-                      </div>
-                      {(job.totalItems || job.processedItems) && (
-                        <div className="mt-1 text-[10px] text-neutral-500">
-                          {job.processedItems ?? 0}/{job.totalItems ?? '?'} items
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+            {/* Content scroll area */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              {/* Active jobs summary + dev tools */}
+              <div className="px-4 py-2 border-b border-neutral-800 text-xs text-neutral-400 flex items-center justify-between">
+                <div>
+                  {activeJobs.length === 0 ? (
+                    <span>No active jobs</span>
+                  ) : (
+                    <span>{activeJobs.length} active job(s): {activeJobs.map(j => j.slice(0,8)).join(', ')}</span>
+                  )}
+                </div>
               </div>
-            )}
-            {/* Scrollable console-like log */}
-            <div className="flex-1 overflow-auto p-3 font-mono text-xs text-neutral-300">
-              {indexLogs.length === 0 ? (
-                <div className="text-neutral-500">Waiting for activity…</div>
-              ) : (
-                indexLogs.map((line, i) => (
-                  <div key={i} className="whitespace-pre-wrap">{line}</div>
-                ))
+
+              {/* Active jobs list with progress */}
+              {jobDetails.length > 0 && (
+                <div className="px-4 py-3 border-b border-neutral-800 space-y-2">
+                  {jobDetails.map(job => {
+                    const phase = job.status === 'pending' ? 'Queued' : (job.progress < 50 ? 'Scanning' : 'Processing');
+                    return (
+                      <div key={job.id} className="text-xs">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-mono">{job.id.slice(0,8)}…</div>
+                          <div className="text-neutral-400">{phase} • {Math.max(0, Math.min(100, Math.round(job.progress || 0)))}%</div>
+                        </div>
+                        <div className="h-2 w-full bg-neutral-800 rounded">
+                          <div className="h-2 rounded bg-blue-500" style={{ width: `${Math.max(0, Math.min(100, Math.round(job.progress || 0)))}%` }} />
+                        </div>
+                        {(job.totalItems || job.processedItems) && (
+                          <div className="mt-1 text-[10px] text-neutral-500">
+                            {job.processedItems ?? 0}/{job.totalItems ?? '?'} items
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-              <div ref={logsEndRef} />
+
+              {/* Scrollable console-like log */}
+              <div className="p-3 font-mono text-xs text-neutral-300">
+                {indexLogs.length === 0 ? (
+                  <div className="text-neutral-500">Waiting for activity…</div>
+                ) : (
+                  indexLogs.map((line, i) => (
+                    <div key={i} className="whitespace-pre-wrap">{line}</div>
+                  ))
+                )}
+                <div ref={logsEndRef} />
+              </div>
             </div>
+
             {/* Footer with overall hint */}
             <div className="border-t border-neutral-800 px-4 py-2 text-[11px] text-neutral-500">
-              Logs auto-refresh every 1s. Close this panel to keep indexing in background.
+              Logs auto-refresh every ~2.5s. Close this panel to keep indexing in background.
             </div>
           </div>
         </div>

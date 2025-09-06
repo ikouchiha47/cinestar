@@ -27,3 +27,6 @@ tmp/
 
 dist-electron/
 release/
+
+data/*db*
+!data/.keep

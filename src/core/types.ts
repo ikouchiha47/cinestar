@@ -39,6 +39,8 @@ export interface IndexingJob {
   startedAt?: Date;
   completedAt?: Date;
   error?: string;
+  // Optional fine-grained phase: used by UI when available
+  phase?: 'scanning' | 'captioning' | 'embedding' | 'finalizing' | 'queued' | 'unknown';
 }
 
 export interface SearchQuery {

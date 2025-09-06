@@ -89,6 +89,24 @@ export class MainDatabase {
     this.items = await this.loadCollection<MediaItem>('items');
     this.jobs = await this.loadCollection<IndexingJob>('jobs');
     
+    // Clean up stale jobs from a previous session (e.g., app was closed while indexing)
+    // Any job left as 'running' or 'pending' is considered stale on startup
+    if (this.jobs.length > 0) {
+      let mutated = false;
+      const now = new Date();
+      for (let i = 0; i < this.jobs.length; i++) {
+        const j = this.jobs[i];
+        if (j.status === 'running' || j.status === 'pending') {
+          this.jobs[i] = { ...j, status: 'failed', completedAt: now };
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        await this.saveCollection('jobs', this.jobs);
+        console.log('[DB] Cleaned up stale jobs on startup');
+      }
+    }
+    
     // Database loaded silently
     
     this.initialized = true;
@@ -322,7 +340,8 @@ export class MainDatabase {
   }
 
   async getActiveJobs(): Promise<IndexingJob[]> {
-    return this.jobs.filter(job => job.status === 'pending' || job.status === 'running');
+    // Only consider truly running jobs as active
+    return this.jobs.filter(job => job.status === 'running');
   }
 
   async removeJob(jobId: string): Promise<void> {
