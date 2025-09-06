@@ -20,7 +20,7 @@ export interface LLMProvider {
   /**
    * Generate description for image content
    */
-  generateImageDescription(imagePath: string): Promise<string>;
+  generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string>;
   
   /**
    * Generate embeddings for image content
@@ -99,42 +99,41 @@ export class OllamaProvider implements LLMProvider {
     }
   }
   
-  async generateImageDescription(imagePath: string): Promise<string> {
+  async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
     const operation = async (): Promise<string> => {
       console.log(`Generating description for image ${imagePath} using ${this.visionModel}`);
       
-      // Read the image file as base64
+      // Read and encode the image
       const fs = await import('fs');
-      const imageBuffer = fs.readFileSync(imagePath);
+      const imageBuffer = await fs.promises.readFile(imagePath);
       const base64Image = imageBuffer.toString('base64');
-      
-      // Call Ollama API for image description
+
       const response = await fetch('http://localhost:11434/api/generate', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           model: this.visionModel,
-          prompt: 'Describe this image in detail, including objects, colors, scene, and any text visible:',
+          prompt: "Describe this image in detail. Focus on the main subjects, objects, colors, and overall composition.",
           images: [base64Image],
           stream: false
         })
       });
-      
+
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Ollama API error: ${response.status} ${errorText}`);
+        throw new Error(`Ollama API error: ${response.status} ${await response.text()}`);
       }
-      
+
       const data = await response.json();
-      console.log(`[DEBUG] Ollama response:`, JSON.stringify(data, null, 2));
-      
+      console.log(' Ollama response for compressed image:', response.status, data);
+
       if (!data.response || data.response.trim() === '') {
-        console.warn(`[DEBUG] Empty or missing response from Ollama:`, data);
-        return 'No description available';
+        console.log('Empty response from vision model');
+        console.log('Base64 image length:', base64Image.length, 'First 100 chars:', base64Image);
+        throw new Error('Empty response from vision model');
       }
-      
+
       return data.response.trim();
     };
 
@@ -207,7 +206,7 @@ export class LiteLLMProvider implements LLMProvider {
     return new Float32Array(randomArray);
   }
   
-  async generateImageDescription(imagePath: string): Promise<string> {
+  async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
     // Simplified implementation - would call LiteLLM API with image
     console.log(`Generating description for image ${imagePath} using LiteLLM model ${this.model}`);
     return 'LiteLLM image description placeholder';

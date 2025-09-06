@@ -50,7 +50,7 @@ export class FileDatabase {
         return value;
       });
       
-      console.log(`Parsed ${collection}:`, parsed);
+      console.log(`Parsed ${collection}:`); //, parsed);
       return parsed || [];
     } catch (error) {
       console.error(`Failed to load ${collection}:`, error);
@@ -108,11 +108,8 @@ export class FileDatabase {
     this.items = await this.loadCollection<MediaItem>('items');
     this.jobs = await this.loadCollection<IndexingJob>('jobs');
     
-    console.log(`=== Load Complete: ${this.sources.length} sources, ${this.items.length} items, ${this.jobs.length} jobs ===`);
-    
-    if (this.sources.length > 0) {
-      console.log('Sources found:', this.sources.map(s => ({ id: s.id, name: s.name, path: s.path })));
-    } else {
+    // Database loaded silently
+    if (this.sources.length === 0) {
       console.log('No sources found on initialization');
     }
   }

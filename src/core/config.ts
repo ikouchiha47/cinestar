@@ -19,6 +19,7 @@ export interface AppConfig {
     provider: string;
     embeddingModel: string;
     visionModel: string;
+    visionModelDims: [number, number];
   };
   debug: {
     enabled: boolean;
@@ -45,8 +46,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   ai: {
     provider: 'ollama',
     embeddingModel: 'phi:2.7b',
-    visionModel: 'llava:7b',
-    // visionModel: 'moondream:v2',
+    // visionModel: 'llava:7b',
+    visionModelDims: [109, 109], // Default for LLaVA; change to [378, 378] for Moondream
+    visionModel: 'moondream:latest',
   },
   debug: {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true
@@ -78,7 +80,9 @@ export class ConfigManager {
       ...updates,
       indexing: { ...this.config.indexing, ...updates.indexing },
       compression: { ...this.config.compression, ...updates.compression },
-      ai: { ...this.config.ai, ...updates.ai }
+      ai: { ...this.config.ai, ...updates.ai },
+      // Ensure visionModelDims is always present
+      ...(updates.ai?.visionModelDims ? { ai: { ...this.config.ai, visionModelDims: updates.ai.visionModelDims } } : {})
     };
     
     console.log('📋 [CONFIG] Configuration updated:', this.config);
@@ -104,10 +108,36 @@ export class ConfigManager {
   }
 
   /**
-   * Get optimal concurrency based on file count
+   * Detect if GPU is available for Ollama
    */
-  static getOptimalConcurrency(fileCount: number): number {
+  static async hasGPU(): Promise<boolean> {
+    try {
+      // Check if we're on macOS with Metal support
+      if (process.platform === 'darwin') {
+        return true; // macOS typically has Metal GPU support
+      }
+      
+      // For other platforms, we could check for NVIDIA/AMD GPUs
+      // For now, assume no GPU on non-macOS systems
+      return false;
+    } catch (error) {
+      console.warn('GPU detection failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get optimal concurrency based on file count and GPU availability
+   */
+  static async getOptimalConcurrency(fileCount: number): Promise<number> {
     const baseLimit = this.config.indexing.concurrencyLimit;
+    const hasGPU = await this.hasGPU();
+    
+    // If no GPU, force concurrency to 1 to avoid overwhelming CPU
+    if (!hasGPU) {
+      console.log(`📋 [CONFIG] No GPU detected, using concurrency: 1`);
+      return 1;
+    }
     
     // For small batches, use lower concurrency
     if (fileCount <= 5) {

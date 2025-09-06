@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 export interface CompressionOptions {
+  resizeDims?: [number, number]; // [width, height] override for vision models
   maxWidth?: number;
   maxHeight?: number;
   quality?: number;
@@ -29,7 +30,7 @@ export class ImageCompressor {
     maxHeight: 720,
     quality: 60,
     format: 'jpeg',
-    preserveOriginal: true
+    preserveOriginal: false
   };
 
   /**
@@ -67,8 +68,14 @@ export class ImageCompressor {
       const metadata = await sharpInstance.metadata();
       console.log(`   Original: ${metadata.width}x${metadata.height}, ${(originalSize / 1024).toFixed(1)}KB`);
 
-      // Resize if needed
-      if (metadata.width && metadata.height) {
+      // Resize for vision model if resizeDims provided
+      if (opts.resizeDims && opts.resizeDims.length === 2) {
+        sharpInstance = sharpInstance.resize(opts.resizeDims[0], opts.resizeDims[1], {
+          fit: 'fill',
+          withoutEnlargement: false
+        });
+        console.log(`   Resizing to vision model dims: ${opts.resizeDims[0]}x${opts.resizeDims[1]}`);
+      } else if (metadata.width && metadata.height) {
         if (metadata.width > opts.maxWidth! || metadata.height > opts.maxHeight!) {
           sharpInstance = sharpInstance.resize(opts.maxWidth, opts.maxHeight, {
             fit: 'inside',
@@ -83,7 +90,7 @@ export class ImageCompressor {
         case 'jpeg':
           sharpInstance = sharpInstance.jpeg({ 
             quality: opts.quality,
-            progressive: true,
+            progressive: false,
             mozjpeg: true
           });
           break;
@@ -159,17 +166,17 @@ export class ImageCompressor {
   /**
    * Get optimal compression settings based on file size and format
    */
-  static getOptimalSettings(filePath: string, fileSize: number): CompressionOptions {
-    const ext = path.extname(filePath).toLowerCase();
+  static getOptimalSettings(_filePath: string, fileSize: number, visionModelDims?: [number, number]): CompressionOptions {
     const sizeMB = fileSize / (1024 * 1024);
 
-    // Base settings
+    // Base settings - use PNG for maximum compatibility with vision models
     let options: CompressionOptions = {
+      resizeDims: visionModelDims, // Use vision model dimensions if provided
       maxWidth: 1920,
       maxHeight: 1080,
       quality: 80,
-      format: 'jpeg',
-      preserveOriginal: true
+      format: 'png',
+      preserveOriginal: false
     };
 
     // Adjust based on file size - targeting max 500KB for large files
@@ -198,16 +205,8 @@ export class ImageCompressor {
       options.quality = 75;
     }
 
-    // Format-specific adjustments
-    if (ext === '.png') {
-      // PNG files - use WebP for better compression
-      options.format = 'webp';
-      options.quality = options.quality! + 5; // WebP can handle higher quality
-    } else if (ext === '.bmp' || ext === '.tiff' || ext === '.tif') {
-      // Uncompressed formats - convert to JPEG with more aggressive compression
-      options.format = 'jpeg';
-      options.quality = Math.max(40, options.quality! - 10); // More aggressive for uncompressed sources
-    }
+    // Force PNG format for all files to ensure vision model compatibility
+    options.format = 'png';
 
     return options;
   }

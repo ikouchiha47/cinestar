@@ -116,7 +116,7 @@ let mediaAPI: typeof MainMediaAPI | null = null;
 async function initializeMediaAPI() {
   try {
     const dbPath = path.join(app.getPath('userData'), 'driller-db');
-    await MainMediaAPI.initialize(dbPath);
+    await MainMediaAPI.initialize(dbPath, 'ollama');
     mediaAPI = MainMediaAPI;
     console.log('MainMediaAPI initialized in main process');
   } catch (error) {
@@ -196,8 +196,12 @@ ipcMain.handle('media:getStats', async () => {
 });
 
 ipcMain.handle('media:isOllamaAvailable', async () => {
+  console.log('[ELECTRON-MAIN] media:isOllamaAvailable called');
   if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.isOllamaAvailable();
+  console.log('[ELECTRON-MAIN] Calling MainMediaAPI.isOllamaAvailable()');
+  const result = await MainMediaAPI.isOllamaAvailable();
+  console.log('[ELECTRON-MAIN] MainMediaAPI.isOllamaAvailable() result:', result);
+  return result;
 });
 
 ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {

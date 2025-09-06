@@ -198,10 +198,18 @@ export class MediaAPI {
   }
 
   static async isOllamaAvailable(): Promise<{ success: boolean; available: boolean; error?: string }> {
+    console.log('[MEDIA-API] isOllamaAvailable() called');
     try {
+      if (!this.engine) {
+        console.log('[MEDIA-API] Engine not initialized');
+        return { success: false, available: false, error: 'Engine not initialized' };
+      }
+      console.log('[MEDIA-API] Calling engine.isOllamaAvailable()');
       const available = await this.engine.isOllamaAvailable();
+      console.log('[MEDIA-API] Engine returned:', available);
       return { success: true, available };
     } catch (error) {
+      console.error('[MEDIA-API] Error in isOllamaAvailable:', error);
       return { 
         success: false, 
         available: false,

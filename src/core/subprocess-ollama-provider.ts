@@ -27,10 +27,16 @@ export class SubprocessOllamaProvider implements LLMProvider {
   }
 
   async isAvailable(): Promise<boolean> {
+    console.log('[SUBPROCESS] isAvailable() called');
     try {
-      await this.executeOllamaCommand(['list']);
+      console.log('[SUBPROCESS] Executing ollama list command');
+      const result = await this.executeOllamaCommand(['list']);
+      console.log('[SUBPROCESS] Ollama list result:', result.substring(0, 100) + '...');
+      console.log('[SUBPROCESS] Ollama available: true');
       return true;
     } catch (error) {
+      console.error('[SUBPROCESS] Ollama list failed:', (error as Error).message);
+      console.log('[SUBPROCESS] Ollama available: false');
       return false;
     }
   }
@@ -40,12 +46,18 @@ export class SubprocessOllamaProvider implements LLMProvider {
    */
   private async executeOllamaCommand(args: string[], input?: string): Promise<string> {
     return new Promise((resolve, reject) => {
+      console.log('[SUBPROCESS] Spawning ollama with args:', args);
       const process = spawn('ollama', args, {
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
       let stdout = '';
       let stderr = '';
+
+      if (input) {
+        process.stdin.write(input);
+        process.stdin.end();
+      }
 
       process.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -56,6 +68,9 @@ export class SubprocessOllamaProvider implements LLMProvider {
       });
 
       process.on('close', (code) => {
+        console.log('[SUBPROCESS] Ollama process closed with code:', code);
+        console.log('[SUBPROCESS] Stdout:', stdout.substring(0, 200));
+        console.log('[SUBPROCESS] Stderr:', stderr);
         if (code === 0) {
           resolve(stdout.trim());
         } else {
@@ -64,61 +79,75 @@ export class SubprocessOllamaProvider implements LLMProvider {
       });
 
       process.on('error', (error) => {
+        console.error('[SUBPROCESS] Failed to start ollama process:', error);
         reject(new Error(`Failed to start ollama process: ${error.message}`));
       });
-
-      // Send input if provided
-      if (input) {
-        process.stdin.write(input);
-      }
-      process.stdin.end();
     });
   }
 
   /**
    * Generate image description using subprocess
    */
-  async generateImageDescription(imagePath: string): Promise<string> {
-    try {
-      console.log(`Generating description for image ${imagePath} using ${this.visionModel} (subprocess)`);
-      
-      // Check if image exists
-      if (!fs.existsSync(imagePath)) {
-        throw new Error(`Image file not found: ${imagePath}`);
-      }
-
-      // Convert image to base64
-      const imageBuffer = fs.readFileSync(imagePath);
-      const base64Image = imageBuffer.toString('base64');
-
-      // Create JSON payload for ollama
-      const payload = {
-        model: this.visionModel,
-        prompt: "Describe this image in detail. Focus on the main subjects, objects, colors, and overall composition.",
-        images: [base64Image],
-        stream: false
-      };
-
-      // Use curl via subprocess to call Ollama API
-      const curlArgs = [
-        '-X', 'POST',
-        'http://localhost:11434/api/generate',
-        '-H', 'Content-Type: application/json',
-        '-d', JSON.stringify(payload)
-      ];
-
-      const result = await this.executeCurlCommand(curlArgs);
-      const data = JSON.parse(result);
-
-      if (!data.response || data.response.trim() === '') {
-        return 'No description available';
-      }
-
-      return data.response.trim();
-    } catch (error) {
-      console.error(`Error generating image description via subprocess:`, error);
-      return 'Error generating description';
+  async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
+    console.log(`[SUBPROCESS] Generating description for image ${imagePath} using ${this.visionModel}`);
+    
+    // Try compressed image first, then original if available
+    const imagesToTry = [imagePath];
+    if (originalImagePath && originalImagePath !== imagePath) {
+      imagesToTry.push(originalImagePath);
     }
+    
+    for (let i = 0; i < imagesToTry.length; i++) {
+      const currentImagePath = imagesToTry[i];
+      const isOriginal = i > 0;
+      
+      try {
+        console.log(`[SUBPROCESS] Trying ${isOriginal ? 'original' : 'compressed'} image: ${currentImagePath}`);
+        
+        // Read and encode the image
+        const imageBuffer = await fs.promises.readFile(currentImagePath);
+        const base64Image = imageBuffer.toString('base64');
+        console.log(`[SUBPROCESS] Image encoded, size: ${Math.round(base64Image.length / 1024)}KB`);
+
+        // Create JSON payload for ollama
+        const payload = {
+          model: this.visionModel,
+          prompt: "Describe this image in detail. Focus on the main subjects, objects, colors, and overall composition.",
+          images: [base64Image],
+          stream: false
+        };
+
+        console.log(`[SUBPROCESS] Calling Ollama API with ${this.visionModel}`);
+        // Use curl via subprocess to call Ollama API
+        const curlArgs = [
+          '-X', 'POST',
+          'http://localhost:11434/api/generate',
+          '-H', 'Content-Type: application/json',
+          '-d', JSON.stringify(payload)
+        ];
+
+        const result = await this.executeCurlCommand(curlArgs);
+        const data = JSON.parse(result);
+        console.log(`[SUBPROCESS] Ollama response for ${isOriginal ? 'original' : 'compressed'} image:`, data.response ? 'SUCCESS' : 'EMPTY');
+
+        if (data.response && data.response.trim() !== '') {
+          console.log(`[SUBPROCESS] Got description from ${isOriginal ? 'original' : 'compressed'} image`);
+          return data.response.trim();
+        }
+        
+        console.log(`[SUBPROCESS] Empty response from vision model`);
+        console.log(`[SUBPROCESS] Base64 image length: ${base64Image.length}, First 100 chars: ${base64Image.substring(0, 100)}`);
+        console.log(`[SUBPROCESS] No description from ${isOriginal ? 'original' : 'compressed'} image, trying next...`);
+      } catch (error) {
+        console.error(`[SUBPROCESS] Error with ${isOriginal ? 'original' : 'compressed'} image:`, (error as Error).message);
+        if (i === imagesToTry.length - 1) {
+          // Last attempt failed
+          return 'Error generating description';
+        }
+      }
+    }
+    
+    throw new Error('Empty response from vision model after trying all image variants');
   }
 
   /**

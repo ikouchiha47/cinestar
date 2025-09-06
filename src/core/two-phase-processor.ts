@@ -151,7 +151,7 @@ export class TwoPhaseProcessor {
       // Compress image first
       const tempDir = path.join(os.tmpdir(), 'driller-compressed');
       const config = ConfigManager.getConfig();
-      const settings = ImageCompressor.getOptimalSettings(item.path, item.size);
+      const settings = ImageCompressor.getOptimalSettings(item.path, item.size, config.ai.visionModelDims);
       
       let compressedPath = item.path;
       if (config.compression.enabled && item.size > config.compression.minSizeKB * 1024) {
@@ -161,8 +161,8 @@ export class TwoPhaseProcessor {
         console.log(`  ✅ [${item.name}] Compressed: ${compressionResult.compressionRatio.toFixed(1)}% savings`);
       }
 
-      // Generate caption using vision model
-      const caption = await this.llmProvider.generateImageDescription(compressedPath);
+      // Generate caption using vision model (try compressed first, then original)
+      const caption = await this.llmProvider.generateImageDescription(compressedPath, item.path);
       
       // Clean up compressed file if it was created
       if (compressedPath !== item.path) {

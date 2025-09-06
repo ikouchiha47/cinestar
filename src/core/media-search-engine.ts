@@ -202,12 +202,17 @@ export class MediaSearchEngine {
   // LLM Provider Integration
   async isOllamaAvailable(): Promise<boolean> {
     try {
-      if (this.llmProvider.getName() === 'Ollama') {
-        return await this.llmProvider.isAvailable();
+      const providerName = this.llmProvider.getName();
+      console.log('[AVAILABILITY] Checking provider:', providerName);
+      if (providerName === 'Ollama' || providerName === 'Subprocess Ollama') {
+        const available = await this.llmProvider.isAvailable();
+        console.log('[AVAILABILITY] Provider available:', available);
+        return available;
       }
+      console.log('[AVAILABILITY] Provider not Ollama-based, returning false');
       return false;
     } catch (error) {
-      console.error('Error checking Ollama availability:', error);
+      console.error('[AVAILABILITY] Error checking Ollama availability:', error);
       return false;
     }
   }

@@ -31,8 +31,8 @@ export class MainMediaAPI {
     // Initialize vector database and two-phase processor
     const vectorDbPath = dbPath.replace('.db', '_vector.db');
     this.vectorDb = new VectorDatabase(vectorDbPath);
-    // Use subprocess provider to avoid Electron event loop issues
-    this.llmProvider = LLMProviderFactory.createProvider('subprocess', providerConfig);
+    // Use configured provider
+    this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
     this.processor = new TwoPhaseProcessor(this.vectorDb, this.llmProvider);
     
     this.initialized = true;
@@ -299,14 +299,21 @@ export class MainMediaAPI {
   }
 
   static async isOllamaAvailable(): Promise<{ success: boolean; available: boolean; error?: string }> {
+    console.log('[MAIN-MEDIA-API] isOllamaAvailable() called');
     try {
       await this.ensureInitialized();
-      if (this.llmProvider.getName() === 'Ollama') {
+      const providerName = this.llmProvider.getName();
+      console.log('[MAIN-MEDIA-API] Provider name:', providerName);
+      if (providerName === 'Ollama' || providerName === 'Subprocess Ollama') {
+        console.log('[MAIN-MEDIA-API] Calling provider.isAvailable()');
         const available = await this.llmProvider.isAvailable();
+        console.log('[MAIN-MEDIA-API] Provider.isAvailable() returned:', available);
         return { success: true, available };
       }
+      console.log('[MAIN-MEDIA-API] Provider not Ollama-based, returning false');
       return { success: true, available: false };
     } catch (error) {
+      console.error('[MAIN-MEDIA-API] Error in isOllamaAvailable:', error);
       return { 
         success: false, 
         available: false,
@@ -397,7 +404,7 @@ export class MainMediaAPI {
       
       // 4. Process files with bounded concurrency
       console.log(`\n--- PARALLEL PROCESSING PHASE ---`);
-      const CONCURRENCY_LIMIT = ConfigManager.getOptimalConcurrency(mediaFiles.length);
+      const CONCURRENCY_LIMIT = await ConfigManager.getOptimalConcurrency(mediaFiles.length);
       console.log(`Processing ${mediaFiles.length} files with optimal concurrency limit: ${CONCURRENCY_LIMIT}`);
       console.log(`📋 [CONFIG] Base concurrency: ${ConfigManager.getConcurrencyLimit()}, Optimal for ${mediaFiles.length} files: ${CONCURRENCY_LIMIT}`);
       
@@ -429,7 +436,8 @@ export class MainMediaAPI {
                   
                   // Create temp directory for compressed images
                   const tempDir = path.join(os.tmpdir(), 'driller-compressed');
-                  const settings = ImageCompressor.getOptimalSettings(file.path, file.size);
+                  const config = ConfigManager.getConfig();
+                  const settings = ImageCompressor.getOptimalSettings(file.path, file.size, config.ai.visionModelDims);
                   
                   compressionResult = await ImageCompressor.compressImage(file.path, tempDir, settings);
                   compressedPath = compressionResult.compressedPath;
