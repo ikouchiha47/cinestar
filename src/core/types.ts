@@ -1,17 +1,19 @@
 export interface MediaItem {
   id: string;
-  sourceId: string;
-  path: string;
   name: string;
-  type: 'image' | 'video' | 'audio' | 'document';
-  mimeType: string;
+  path: string;
   size: number;
-  createdAt: Date;
-  modifiedAt: Date;
-  indexedAt?: Date;
+  type: 'image' | 'video';
+  mimeType: string;
+  sourceId: string;
+  caption?: string;
+  description?: string; // AI-generated description/caption
   embedding?: Float32Array;
-  description?: string;
-  metadata?: Record<string, any>;
+  embeddingStatus?: string; // Status of embedding generation
+  createdAt: Date;
+  lastModified: Date;
+  modifiedAt?: Date; // Alternative name for lastModified
+  fileHash?: string; // SHA-256 hash to detect file changes
 }
 
 export interface MediaSource {

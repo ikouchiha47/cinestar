@@ -7,6 +7,7 @@ export interface AppConfig {
     batchSize: number;
     retryAttempts: number;
     retryDelayMs: number;
+    reindexOnStartup: boolean; // NEW: force re-index on startup
   };
   compression: {
     enabled: boolean;
@@ -27,14 +28,24 @@ export interface AppConfig {
     saveLLaVAOutputs: boolean;
     outputDir: string;
   };
+  vectorDbPath: string; // NEW: unified DB path for vectors
 }
+
+import os from 'os';
+import path from 'path';
+
+// Use project-relative path for development, system path for production
+const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
+const defaultDbPath = process.env.VECTOR_DB_PATH || 
+  (isDev ? './data/vector.db' : path.join(os.homedir(), '.driller', 'vector.db'));
 
 export const DEFAULT_CONFIG: AppConfig = {
   indexing: {
     concurrencyLimit: 3, // Process 1 image at a time to avoid Ollama crashes
     batchSize: 10, // Standard batch size
     retryAttempts: 3,
-    retryDelayMs: 1000
+    retryDelayMs: 1000,
+    reindexOnStartup: true // Default: do not re-index on startup
   },
   compression: {
     enabled: true,
@@ -45,18 +56,21 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ai: {
     provider: 'ollama',
-    embeddingModel: 'phi:2.7b',
+    embeddingModel: 'qllama/bge-large-en-v1.5:latest', // Better semantic embeddings than phi:2.7b
     // visionModel: 'llava:7b',
-    visionModelDims: [109, 109], // Default for LLaVA; change to [378, 378] for Moondream
-    visionModel: 'moondream:latest',
+    visionModelDims: [378, 378], // Default for LLaVA; change to [378, 378] for Moondream
+    visionModel: 'moondream:v2',
   },
   debug: {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true
     saveCompressedImages: process.env.DEBUG_MODE === 'true',
     saveLLaVAOutputs: process.env.DEBUG_MODE === 'true',
     outputDir: process.env.DEBUG_OUTPUT_DIR || './debug-output'
-  }
+  },
+  vectorDbPath: defaultDbPath // Unified vector DB path
 };
+
+console.log(`📦 [CONFIG] Vector DB path: ${DEFAULT_CONFIG.vectorDbPath}`);
 
 /**
  * Configuration manager for the application

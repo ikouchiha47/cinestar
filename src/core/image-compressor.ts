@@ -151,7 +151,7 @@ export class ImageCompressor {
    */
   static shouldCompress(filePath: string, fileSize: number): boolean {
     const ext = path.extname(filePath).toLowerCase();
-    const supportedFormats = ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp'];
+    const supportedFormats = ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.webp'];
     
     // Only compress supported formats
     if (!supportedFormats.includes(ext)) {

@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { MediaSource, MediaItem, IndexingJob } from './types';
+import { MediaItem, MediaSource, IndexingJob } from './types';
+import { EnhancedVectorSearch } from './enhanced-vector-search';
 
 /**
  * Main process database implementation using Node.js file system
@@ -193,6 +194,11 @@ export class MainDatabase {
     return [...this.items];
   }
 
+  async getItemByPath(filePath: string): Promise<MediaItem | null> {
+    const item = this.items.find(item => item.path === filePath);
+    return item || null;
+  }
+
   async removeMediaItems(sourceId: string): Promise<void> {
     this.items = this.items.filter(item => item.sourceId !== sourceId);
     await this.saveCollection('items', this.items);
@@ -237,46 +243,30 @@ export class MainDatabase {
     return limit ? results.slice(0, limit) : results;
   }
 
-  // Vector search (using embeddings)
-  async vectorSearch(queryEmbedding: Float32Array, limit = 10): Promise<MediaItem[]> {
-    console.log(`[DB] Vector search in ${this.items.length} items with ${queryEmbedding.length}D embedding`);
+  // Vector search (using embeddings) with enhanced ranking
+  async vectorSearch(queryEmbedding: Float32Array, limit = 10, query?: string): Promise<MediaItem[]> {
+    console.log(`[DB] Using enhanced vector search algorithm`);
     
-    // Filter items that have embeddings
-    const itemsWithEmbeddings = this.items.filter(item => item.embedding && item.embedding.length > 0);
-    console.log(`[DB] Found ${itemsWithEmbeddings.length} items with embeddings`);
+    // Use the enhanced vector search algorithm
+    const searchResults = EnhancedVectorSearch.searchSimilar(
+      this.items, 
+      queryEmbedding, 
+      query || '', 
+      limit
+    );
     
-    if (itemsWithEmbeddings.length === 0) {
-      console.log(`[DB] No items with embeddings found`);
-      return [];
+    // Convert search results back to MediaItem array
+    const mediaItems: MediaItem[] = [];
+    for (const result of searchResults) {
+      const item = this.items.find(i => i.id === result.id);
+      if (item) {
+        mediaItems.push(item);
+      }
     }
     
-    // Calculate cosine similarity between the query embedding and all item embeddings
-    const itemsWithSimilarity = itemsWithEmbeddings
-      .map(item => {
-        const similarity = this.cosineSimilarity(queryEmbedding, item.embedding as Float32Array);
-        console.log(`[DB] Similarity for ${item.name}: ${similarity.toFixed(4)}`);
-        return { item, similarity };
-      })
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
-    
-    console.log(`[DB] Vector search complete: ${itemsWithSimilarity.length} results`);
-    return itemsWithSimilarity.map(result => result.item);
+    return mediaItems;
   }
 
-  private cosineSimilarity(a: Float32Array, b: Float32Array): number {
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-  }
 
   // Indexing Jobs
   async createJob(job: { sourceId: string; config?: Record<string, any> }): Promise<string> {

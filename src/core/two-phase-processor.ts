@@ -4,11 +4,11 @@
  * Phase 2: Generate embeddings from stored captions
  */
 
-import { VectorDatabase, MediaItem } from './vector-database';
+import { SqliteVecDatabase, MediaItem } from './sqlite-vec-database';
 import { LLMProvider } from './llm-provider';
 import { ImageCompressor } from './image-compressor';
 import { ConfigManager } from './config';
-import { ConcurrencyLimiter } from './concurrency-limiter';
+import { processWithConcurrency } from './concurrency-limiter';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
@@ -30,18 +30,16 @@ export interface ProcessingStats {
   };
 }
 
+// TODO: replace the connecting phases with nodejs pipes.
+
 export class TwoPhaseProcessor {
-  private vectorDb: VectorDatabase;
+  private vectorDb: SqliteVecDatabase;
   private llmProvider: LLMProvider;
-  private concurrencyLimiter: ConcurrencyLimiter;
   private isProcessing = false;
 
-  constructor(vectorDb: VectorDatabase, llmProvider: LLMProvider) {
+  constructor(vectorDb: SqliteVecDatabase, llmProvider: LLMProvider) {
     this.vectorDb = vectorDb;
     this.llmProvider = llmProvider;
-    
-    const config = ConfigManager.getConfig();
-    this.concurrencyLimiter = new ConcurrencyLimiter(config.indexing.concurrencyLimit);
   }
 
   /**
@@ -91,9 +89,11 @@ export class TwoPhaseProcessor {
       console.log(`📋 [PHASE1] Processing ${items.length} items for caption generation`);
 
       // Process items with concurrency control
-      await this.concurrencyLimiter.processItems(
+      const config = ConfigManager.getConfig();
+      await processWithConcurrency(
         items,
-        async (item) => await this.generateCaption(item)
+        async (item: MediaItem) => await this.generateCaption(item),
+        config.indexing.concurrencyLimit
       );
 
       console.log('🎉 [PHASE1] Caption generation batch completed');
@@ -125,11 +125,10 @@ export class TwoPhaseProcessor {
       console.log(`📋 [PHASE2] Processing ${items.length} items for embedding generation`);
 
       // Process embeddings with higher concurrency (text processing is lighter)
-      const embeddingLimiter = new ConcurrencyLimiter(Math.min(batchSize, 5));
-      
-      await embeddingLimiter.processItems(
+      await processWithConcurrency(
         items,
-        async (item) => await this.generateEmbedding(item)
+        async (item: MediaItem) => await this.generateEmbedding(item),
+        Math.min(batchSize, 5)
       );
 
       console.log('🎉 [PHASE2] Embedding generation batch completed');
@@ -200,7 +199,14 @@ export class TwoPhaseProcessor {
 
     try {
       // Generate embedding from caption
+      console.log(`🔍 [EMBEDDING] Processing item: ${item.name}`);
+      console.log(`🔍 [EMBEDDING] Caption text: "${item.caption}"`);
+      
       const embedding = await this.llmProvider.generateEmbedding(item.caption);
+      
+      console.log(`🔍 [EMBEDDING] Generated embedding dimensions: ${embedding.length}`);
+      console.log(`🔍 [EMBEDDING] First 10 values: [${Array.from(embedding.slice(0, 10)).map(v => v.toFixed(4)).join(', ')}]`);
+      console.log(`🔍 [EMBEDDING] Embedding sum: ${Array.from(embedding).reduce((a, b) => a + b, 0).toFixed(4)}`);
       
       // Store embedding in database
       this.vectorDb.updateEmbedding(item.id, embedding, 'completed');

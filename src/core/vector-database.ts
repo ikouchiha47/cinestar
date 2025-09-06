@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { DEFAULT_CONFIG } from './config';
 
 export interface MediaItem {
   id: string;
@@ -32,15 +33,21 @@ export interface VectorSearchResult {
   similarity: number;
 }
 
+export interface SearchResult {
+  id: string;
+  similarity: number;
+  caption: string;
+  path: string;
+  name: string;
+}
+
 export class VectorDatabase {
   private db: Database.Database;
-  private dbPath: string;
 
-  constructor(dbPath: string = './data/vector.db') {
-    this.dbPath = dbPath;
-    
-    // Ensure directory exists with proper error handling
-    const dir = path.dirname(dbPath);
+  constructor(dbPath?: string) {
+    // Use config vectorDbPath if not provided
+    const resolvedDbPath = dbPath || DEFAULT_CONFIG.vectorDbPath;
+    const dir = path.dirname(resolvedDbPath);
     try {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -50,14 +57,12 @@ export class VectorDatabase {
       console.error(`Failed to create database directory ${dir}:`, error);
       throw error;
     }
-
-    // Ensure the database file path is absolute and has .db extension
-    let absolutePath = path.resolve(dbPath);
+    let absolutePath = path.resolve(resolvedDbPath);
     if (!absolutePath.endsWith('.db')) {
       absolutePath += '.db';
     }
-    
     try {
+      console.log(`[VectorDatabase] Using DB path: ${absolutePath}`);
       this.db = new Database(absolutePath);
       this.initializeTables();
     } catch (error) {
@@ -233,15 +238,6 @@ export class VectorDatabase {
   }
 
   /**
-   * Get media item by ID
-   */
-  getMediaItem(id: string): MediaItem | null {
-    const stmt = this.db.prepare('SELECT * FROM media_items WHERE id = ?');
-    const row = stmt.get(id);
-    return row ? this.rowToMediaItem(row) : null;
-  }
-
-  /**
    * Search by text using vector similarity
    */
   async searchByText(queryEmbedding: Float32Array, limit: number = 10): Promise<VectorSearchResult[]> {
@@ -267,33 +263,158 @@ export class VectorDatabase {
   }
 
   /**
-   * Get processing statistics
+   * Search similar items using enhanced ranking algorithm with semantic relevance
    */
-  getStats(): {
-    total: number;
-    captionsCompleted: number;
-    captionsPending: number;
-    captionsFailed: number;
-    embeddingsCompleted: number;
-    embeddingsPending: number;
-    embeddingsFailed: number;
-  } {
-    const totalStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items');
-    const captionsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "completed"');
-    const captionsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "pending"');
-    const captionsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "failed"');
-    const embeddingsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "completed"');
-    const embeddingsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "pending"');
-    const embeddingsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "failed"');
+  async searchSimilar(queryEmbedding: Float32Array, limit: number = 10, query?: string): Promise<SearchResult[]> {
+    const stmt = this.db.prepare(`
+      SELECT * FROM media_items 
+      WHERE embedding IS NOT NULL AND embedding_status = 'completed'
+    `);
+
+    const items = stmt.all().map(this.rowToMediaItem);
+    const results: SearchResult[] = [];
+    
+    console.log(`🔍 [SEARCH] Vector-only similarity search with ${items.length} items`);
+    if (query) console.log(`🔍 [SEARCH] Query: "${query}"`);
+    
+    for (const item of items) {
+      if (item.embedding && item.embeddingStatus === 'completed') {
+        const similarity = this.cosineSimilarity(queryEmbedding, item.embedding);
+        results.push({
+          id: item.id,
+          similarity,
+          caption: item.caption || '',
+          path: item.path || '',
+          name: item.name || ''
+        });
+        console.log(`🔍 [SEARCH] Item: ${item.name}, Similarity: ${similarity.toFixed(4)}, Caption: "${(item.caption || '').substring(0, 50)}..."`);
+      }
+    }
+    // Sort by similarity (highest first) and limit results
+    let sortedResults = results
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit);
+    console.log(`🔍 [SEARCH] Top ${Math.min(limit, sortedResults.length)} results (vector-only):`);
+    sortedResults.forEach((result, index) => {
+      console.log(`  ${index + 1}. ${result.name} (${result.similarity.toFixed(4)}) - "${result.caption.substring(0, 80)}..."`);
+    });
+    // Caption fallback: if all similarities are low (<0.1), fallback to caption keyword search
+    if (query && sortedResults.length > 0 && sortedResults[0].similarity < 0.1) {
+      console.log('🔍 [SEARCH] All vector similarities low, falling back to caption keyword search.');
+      const captionMatches = items.filter(item => item.caption && item.caption.toLowerCase().includes(query.toLowerCase()));
+      sortedResults = captionMatches.map(item => ({
+        id: item.id,
+        similarity: 0,
+        caption: item.caption || '',
+        path: item.path || '',
+        name: item.name || ''
+      })).slice(0, limit);
+      sortedResults.forEach((result, index) => {
+        console.log(`  [FALLBACK] ${index + 1}. ${result.name} (caption match) - "${result.caption.substring(0, 80)}..."`);
+      });
+    }
+    return sortedResults;
+  }
+
+  /**
+   * Calculate relevance boost based on caption content matching query
+   */
+  private calculateCaptionRelevanceBoost(query: string, caption: string): number {
+    const queryLower = query.toLowerCase();
+    const captionLower = caption.toLowerCase();
+    
+    let boost = 0;
+    
+    // Direct keyword match
+    if (captionLower.includes(queryLower)) {
+      boost += 1.0;
+    }
+    
+    // Semantic keyword matching for common queries
+    const semanticMatches = this.getSemanticMatches(queryLower);
+    for (const match of semanticMatches) {
+      if (captionLower.includes(match)) {
+        boost += 0.5;
+      }
+    }
+    
+    return Math.min(boost, 2.0); // Cap boost at 2.0
+  }
+
+  /**
+   * Get semantic matches for common query terms
+   */
+  private getSemanticMatches(query: string): string[] {
+    const semanticMap: { [key: string]: string[] } = {
+      'woman': ['female', 'lady', 'girl', 'person'],
+      'man': ['male', 'guy', 'person'],
+      'person': ['human', 'individual', 'people'],
+      'car': ['vehicle', 'automobile', 'auto'],
+      'house': ['home', 'building', 'residence'],
+      'dog': ['canine', 'puppy', 'pet'],
+      'cat': ['feline', 'kitten', 'pet']
+    };
+    
+    return semanticMap[query] || [];
+  }
+
+  /**
+   * Check if query is human-related
+   */
+  private isHumanRelatedQuery(query: string): boolean {
+    const humanKeywords = ['woman', 'man', 'person', 'people', 'human', 'girl', 'boy', 'lady', 'guy', 'individual'];
+    return humanKeywords.some(keyword => query.toLowerCase().includes(keyword));
+  }
+
+  /**
+   * Calculate penalty for technical content when searching for human-related terms
+   */
+  private calculateTechnicalContentPenalty(caption: string): number {
+    const captionLower = caption.toLowerCase();
+    const technicalKeywords = [
+      'bsod', 'blue screen', 'error', 'crash', 'system', 'computer', 'screen',
+      'software', 'hardware', 'code', 'programming', 'terminal', 'console',
+      'warhammer', 'game', 'gaming', 'fantasy', 'miniature'
+    ];
+    
+    let penalty = 0;
+    for (const keyword of technicalKeywords) {
+      if (captionLower.includes(keyword)) {
+        penalty += 0.5;
+      }
+    }
+    
+    return Math.min(penalty, 2.0); // Cap penalty at 2.0
+  }
+
+/**
+ * Get statistics about the database
+ */
+getStats(): {
+  total: number;
+  captionsCompleted: number;
+  captionsPending: number;
+  captionsFailed: number;
+  embeddingsCompleted: number;
+  embeddingsPending: number;
+  embeddingsFailed: number;
+} {
+  const totalStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items');
+  const captionsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "completed"');
+  const captionsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "pending"');
+  const captionsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "failed"');
+  const embeddingsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "completed"');
+  const embeddingsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "pending"');
+  const embeddingsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "failed"');
 
     return {
-      total: totalStmt.get().count,
-      captionsCompleted: captionsCompletedStmt.get().count,
-      captionsPending: captionsPendingStmt.get().count,
-      captionsFailed: captionsFailedStmt.get().count,
-      embeddingsCompleted: embeddingsCompletedStmt.get().count,
-      embeddingsPending: embeddingsPendingStmt.get().count,
-      embeddingsFailed: embeddingsFailedStmt.get().count,
+      total: (totalStmt.get() as any).count,
+      captionsCompleted: (captionsCompletedStmt.get() as any).count,
+      captionsPending: (captionsPendingStmt.get() as any).count,
+      captionsFailed: (captionsFailedStmt.get() as any).count,
+      embeddingsCompleted: (embeddingsCompletedStmt.get() as any).count,
+      embeddingsPending: (embeddingsPendingStmt.get() as any).count,
+      embeddingsFailed: (embeddingsFailedStmt.get() as any).count,
     };
   }
 
@@ -301,6 +422,18 @@ export class VectorDatabase {
    * Convert database row to MediaItem
    */
   private rowToMediaItem(row: any): MediaItem {
+    let embedding: Float32Array | undefined = undefined;
+    
+    if (row.embedding) {
+      try {
+        // SQLite returns BLOB as Buffer, convert to Float32Array
+        const buffer = Buffer.isBuffer(row.embedding) ? row.embedding : Buffer.from(row.embedding);
+        embedding = new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
+      } catch (error) {
+        console.warn(`Failed to convert embedding for ${row.name}:`, error);
+      }
+    }
+    
     return {
       id: row.id,
       sourceId: row.source_id,
@@ -312,7 +445,7 @@ export class VectorDatabase {
       updatedAt: new Date(row.updated_at),
       caption: row.caption || undefined,
       captionGeneratedAt: row.caption_generated_at ? new Date(row.caption_generated_at) : undefined,
-      embedding: row.embedding ? new Float32Array(row.embedding.buffer) : undefined,
+      embedding,
       embeddingGeneratedAt: row.embedding_generated_at ? new Date(row.embedding_generated_at) : undefined,
       captionStatus: row.caption_status,
       embeddingStatus: row.embedding_status,

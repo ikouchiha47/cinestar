@@ -1,10 +1,10 @@
 import { MainDatabase } from '../core/main-database';
 import { MediaSource, SearchQuery, SearchResult } from '../core/types';
 import { LLMProvider, LLMProviderFactory } from '../core/llm-provider';
-import { VectorDatabase } from '../core/vector-database';
-import { TwoPhaseProcessor } from '../core/two-phase-processor';
-import { getMimeType } from '../core/utils';
+import { SqliteVecDatabase } from '../core/sqlite-vec-database';
 import { ConfigManager } from '../core/config';
+import { TwoPhaseProcessor } from '../core/two-phase-processor';
+import { getMimeType, calculateFileHash } from '../core/utils';
 import { ImageCompressor } from '../core/image-compressor';
 import { processWithConcurrency } from '../core/concurrency-limiter';
 import * as fs from 'fs';
@@ -17,7 +17,7 @@ import * as os from 'os';
  */
 export class MainMediaAPI {
   private static db: MainDatabase;
-  private static vectorDb: VectorDatabase;
+  private static vectorDb: SqliteVecDatabase;
   private static processor: TwoPhaseProcessor;
   private static initialized = false;
   private static llmProvider: LLMProvider;
@@ -29,8 +29,7 @@ export class MainMediaAPI {
     await this.db.initialize();
     
     // Initialize vector database and two-phase processor
-    const vectorDbPath = dbPath.replace('.db', '_vector.db');
-    this.vectorDb = new VectorDatabase(vectorDbPath);
+    this.vectorDb = new SqliteVecDatabase(); // Uses config-based path
     // Use configured provider
     this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
     this.processor = new TwoPhaseProcessor(this.vectorDb, this.llmProvider);
@@ -93,6 +92,20 @@ export class MainMediaAPI {
   static async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
       await this.ensureInitialized();
+      
+      // Check if re-indexing is required based on config
+      const config = ConfigManager.getConfig();
+
+      console.log("reindexing status", config.indexing.reindexOnStartup)
+      
+      if (!config.indexing.reindexOnStartup) {
+        const source = await this.db.getSource(sourceId);
+        if (source && source.lastIndexed) {
+          console.log(`📋 [CONFIG] Skipping re-index for source ${source.name} (lastIndexed: ${source.lastIndexed})`);
+          // return { success: true, jobId: 'skipped' };
+        }
+      }
+      
       const jobId = await this.db.createJob({ sourceId });
       
       // Start indexing in background
@@ -149,13 +162,33 @@ export class MainMediaAPI {
       
       // Generate embedding for the search query
       console.log(`Generating query embedding...`);
-      const queryEmbedding = await this.llmProvider.generateEmbedding(query.query);
-      console.log(`Query embedding generated: ${queryEmbedding.length} dimensions`);
+      console.log(`🔍 [QUERY-EMBEDDING] Query text: "${query.query}"`);
       
-      // Perform vector similarity search
-      console.log(`Performing vector similarity search...`);
-      const items = await this.db.vectorSearch(queryEmbedding, query.limit || 10);
+      const queryEmbedding = await this.llmProvider.generateEmbedding(query.query);
+      
+      console.log(`Query embedding generated: ${queryEmbedding.length} dimensions`);
+      console.log(`🔍 [QUERY-EMBEDDING] First 10 values: [${Array.from(queryEmbedding.slice(0, 10)).map(v => v.toFixed(4)).join(', ')}]`);
+      console.log(`🔍 [QUERY-EMBEDDING] Embedding sum: ${Array.from(queryEmbedding).reduce((a, b) => a + b, 0).toFixed(4)}`);
+      
+      // Perform enhanced vector similarity search using SqliteVecDatabase
+      console.log(`Performing enhanced vector similarity search...`);
+      const searchResults = await this.vectorDb.searchSimilar(queryEmbedding, query.limit || 10, query.query);
       const executionTime = Date.now() - startTime;
+      
+      // Convert SqliteVecDatabase results to MediaItem format
+      const items = searchResults.map(result => ({
+        id: result.id,
+        name: result.name,
+        path: result.path,
+        description: result.caption,
+        // Add other required MediaItem properties with defaults
+        sourceId: '',
+        size: 0,
+        type: 'image' as const,
+        mimeType: 'image/jpeg',
+        createdAt: new Date(),
+        lastModified: new Date()
+      }));
       
       console.log(`Vector search results: ${items.length} items found in ${executionTime}ms`);
       if (items.length > 0) {
@@ -417,6 +450,23 @@ export class MainMediaAPI {
           try {
             console.log(`⏱️  [${index + 1}/${mediaFiles.length}] Processing: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`);
             
+            // Check if file already exists and hasn't changed
+            const fileHash = await calculateFileHash(file.path);
+            const existingItem = await this.db.getItemByPath(file.path);
+            
+            if (existingItem && existingItem.fileHash === fileHash) {
+              console.log(`  ⏭️ [${file.name}] Skipping - already processed (hash: ${fileHash.substring(0, 8)}...)`);
+              return {
+                success: true,
+                file: file.name,
+                itemId: existingItem.id,
+                skipped: true,
+                timing: { total: 0, compression: 0, embedding: 0, description: 0, database: 0 }
+              };
+            }
+            
+            console.log(`  🔄 [${file.name}] ${existingItem ? 'File changed, re-processing' : 'New file'} (hash: ${fileHash.substring(0, 8)}...)`);
+            
             // Generate embeddings for images using Ollama LLaVA
             let description = '';
             let embedding: Float32Array | undefined;
@@ -517,6 +567,8 @@ export class MainMediaAPI {
             
             // Time database insertion
             const dbStart = Date.now();
+            
+            // Save to MainDatabase (jobs/sources tracking)
             const itemId = await this.db.addMediaItem({
               sourceId,
               name: file.name,
@@ -530,6 +582,32 @@ export class MainMediaAPI {
               embedding,
               metadata: {}
             });
+            
+            // Save to VectorDatabase (for search functionality)
+            const mediaItem = {
+              id: fileHash,
+              sourceId: sourceId,
+              name: file.name,
+              path: file.path,
+              size: file.size,
+              type: file.type,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              captionStatus: (description ? 'completed' : 'failed') as 'pending' | 'processing' | 'completed' | 'failed',
+              embeddingStatus: (embedding ? 'completed' : 'failed') as 'pending' | 'processing' | 'completed' | 'failed'
+            };
+            
+            // Add to vector database
+            this.vectorDb.addMediaItem(mediaItem);
+            
+            // Update with caption and embedding if available
+            if (description) {
+              this.vectorDb.updateCaption(fileHash, description, 'completed');
+            }
+            if (embedding) {
+              this.vectorDb.updateEmbedding(fileHash, embedding, 'completed');
+            }
+            
             const dbTime = Date.now() - dbStart;
             const totalTime = Date.now() - fileStartTime;
             
