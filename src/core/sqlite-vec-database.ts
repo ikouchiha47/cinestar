@@ -32,6 +32,9 @@ export interface SearchResult {
   caption: string;
   path: string;
   name: string;
+  sourceId: string;
+  type: string;
+  size: number;
 }
 
 export class SqliteVecDatabase {
@@ -339,7 +342,7 @@ export class SqliteVecDatabase {
     // Use sqlite-vec MATCH syntax like the official example
     const stmt = this.db.prepare(`
       SELECT 
-        m.id, m.name, m.path, m.caption,
+        m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
         distance
       FROM vec_embeddings v
       JOIN media_items m ON v.item_id = m.id
@@ -408,7 +411,10 @@ export class SqliteVecDatabase {
         similarity: enhancedScore,
         caption: (row as any).caption || '',
         path: (row as any).path || '',
-        name: (row as any).name || ''
+        name: (row as any).name || '',
+        sourceId: (row as any).source_id || '',
+        type: (row as any).type || 'image',
+        size: Number((row as any).size) || 0
       });
       
       console.log(`🔍 [SQLITE-VEC] ${(row as any).name}: Raw distance=${((row as any).distance).toFixed(6)}, Base similarity ${baseSimilarity.toFixed(4)} (enhanced ranking disabled)`);

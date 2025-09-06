@@ -136,12 +136,23 @@ export class MainMediaAPI {
     }
   }
 
-  static async getIndexingStatus(): Promise<{ success: boolean; activeJobs: string[]; error?: string }> {
+  static async getIndexingStatus(): Promise<{ success: boolean; activeJobs: string[]; jobs?: Array<{ id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: Date; completedAt?: Date }>; error?: string }> {
     try {
       await this.ensureInitialized();
       const jobs = await this.db.getActiveJobs();
       const activeJobs = jobs.map(job => job.id);
-      return { success: true, activeJobs };
+      // Pass through minimal job details for UI
+      const jobDetails = jobs.map(j => ({
+        id: j.id,
+        sourceId: j.sourceId,
+        status: j.status,
+        progress: j.progress,
+        totalItems: j.totalItems,
+        processedItems: j.processedItems,
+        startedAt: j.startedAt,
+        completedAt: j.completedAt,
+      }));
+      return { success: true, activeJobs, jobs: jobDetails };
     } catch (error) {
       return { 
         success: false, 
@@ -181,11 +192,10 @@ export class MainMediaAPI {
         name: result.name,
         path: result.path,
         description: result.caption,
-        // Add other required MediaItem properties with defaults
-        sourceId: '',
-        size: 0,
-        type: 'image' as const,
-        mimeType: 'image/jpeg',
+        sourceId: result.sourceId,
+        size: result.size,
+        type: result.type,
+        mimeType: getMimeType(result.path),
         createdAt: new Date(),
         lastModified: new Date()
       }));

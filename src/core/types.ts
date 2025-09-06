@@ -3,7 +3,8 @@ export interface MediaItem {
   name: string;
   path: string;
   size: number;
-  type: 'image' | 'video';
+  // Programmable media kind (e.g. 'image' | 'video' | 'audio' | 'document' | ...)
+  type: string;
   mimeType: string;
   sourceId: string;
   caption?: string;
@@ -11,9 +12,10 @@ export interface MediaItem {
   embedding?: Float32Array;
   embeddingStatus?: string; // Status of embedding generation
   createdAt: Date;
-  lastModified: Date;
+  lastModified?: Date;
   modifiedAt?: Date; // Alternative name for lastModified
   fileHash?: string; // SHA-256 hash to detect file changes
+  metadata?: Record<string, any>; // Arbitrary additional metadata
 }
 
 export interface MediaSource {

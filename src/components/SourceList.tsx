@@ -1,6 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import { MediaSource } from '../core/types';
 
+// Icon components
+const Icon = {
+  Folder: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-5l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  ),
+  Play: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h8m2 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  ),
+  Trash: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  ),
+  Spinner: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+  ),
+  Plus: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+    </svg>
+  ),
+};
+
 interface SourceListProps {
   onAddSource: () => void;
   refreshTrigger?: number;
@@ -116,118 +146,129 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
     }).format(new Date(date));
   };
 
-  const getSourceIcon = (type: string) => {
-    return type === 'local' ? '📁' : '🌐';
-  };
 
   if (loading) {
     return (
-      <div className="source-list loading">
-        <div className="loading-spinner">Loading sources...</div>
+      <div className="flex items-center justify-center py-12">
+        <div className="flex items-center gap-2">
+          <Icon.Spinner className="w-5 h-5 animate-spin" />
+          <span>Loading sources...</span>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="source-list error">
-        <div className="error-message">❌ {error}</div>
-        <button onClick={loadSources} className="retry-btn">Retry</button>
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="text-red-400 mb-4">❌ {error}</div>
+          <button 
+            onClick={loadSources} 
+            className="px-4 py-2 bg-neutral-800 border border-neutral-700 rounded-lg hover:bg-neutral-700"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="source-list">
-      <div className="source-list-header">
-        <h2>Media Sources</h2>
-        <button onClick={onAddSource} className="add-source-btn">
-          ➕ Add Source
-        </button>
-      </div>
-
+    <div>
       {sources.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon">📂</div>
-          <h3>No media sources configured</h3>
-          <p>Add your first media source to start indexing and searching your files.</p>
-          <button onClick={onAddSource} className="add-first-source-btn">
-            Add Your First Source
-          </button>
+        <div className="flex items-center justify-center py-16">
+          <div className="text-center">
+            <div className="text-6xl mb-4">📂</div>
+            <h3 className="text-xl font-semibold mb-2">No media sources configured</h3>
+            <p className="text-neutral-400 mb-6 max-w-md">
+              Add your first media source to start indexing and searching your files.
+            </p>
+            <button 
+              onClick={onAddSource} 
+              className="inline-flex items-center gap-2 px-6 py-3 bg-neutral-200 text-neutral-900 rounded-lg hover:bg-neutral-300 font-medium"
+            >
+              <Icon.Plus className="w-5 h-5" />
+              Add Your First Source
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="sources-grid">
+        <div className="grid gap-4">
           {sources.map((source) => (
-            <div key={source.id} className="source-card">
-              <div className="source-header">
-                <div className="source-title">
-                  <span className="source-icon">{getSourceIcon(source.type)}</span>
-                  <h3>{source.name}</h3>
+            <div key={source.id} className="border border-neutral-800 rounded-2xl p-6 bg-neutral-900/50 hover:bg-neutral-900 transition">
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <Icon.Folder className="w-6 h-6 text-neutral-400" />
+                  <div>
+                    <h3 className="font-semibold text-lg">{source.name}</h3>
+                    <p className="text-sm text-neutral-400 font-mono">{source.path}</p>
+                  </div>
                 </div>
-                <div className="source-actions">
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleStartIndexing(source.id)}
-                    className={`index-btn ${indexingJobs.includes(source.id) ? 'indexing' : ''}`}
                     disabled={indexingJobs.includes(source.id)}
+                    className={`p-2 rounded-lg border transition ${
+                      indexingJobs.includes(source.id)
+                        ? 'border-blue-700 bg-blue-900/50 text-blue-400'
+                        : 'border-neutral-700 hover:bg-neutral-800'
+                    }`}
                     title={indexingJobs.includes(source.id) ? 'Indexing in progress...' : 'Start indexing this source'}
                   >
                     {indexingJobs.includes(source.id) ? (
-                      <span className="indexing-spinner">🔄</span>
+                      <Icon.Spinner className="w-4 h-4 animate-spin" />
                     ) : (
-                      '▶️'
+                      <Icon.Play className="w-4 h-4" />
                     )}
                   </button>
                   <button
                     onClick={() => handleRemoveSource(source.id, source.name)}
-                    className="remove-btn"
+                    className="p-2 rounded-lg border border-neutral-700 hover:bg-red-900/50 hover:border-red-700 text-neutral-400 hover:text-red-400 transition"
                     title="Remove this source"
                   >
-                    🗑️
+                    <Icon.Trash className="w-4 h-4" />
                   </button>
                 </div>
               </div>
 
-              <div className="source-details">
-                <div className="source-path">
-                  <strong>Path:</strong> {source.path}
-                </div>
-                <div className="source-meta">
-                  <span className={`source-status ${source.enabled ? 'enabled' : 'disabled'}`}>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <div className="text-neutral-400 mb-1">Status</div>
+                  <div className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                    source.enabled 
+                      ? 'bg-green-900/50 text-green-400 border border-green-800'
+                      : 'bg-red-900/50 text-red-400 border border-red-800'
+                  }`}>
                     {source.enabled ? '✅ Enabled' : '❌ Disabled'}
-                  </span>
-                  <span className="source-type">{source.type}</span>
+                  </div>
                 </div>
-                <div className="source-indexed">
-                  <strong>Last Indexed:</strong> {formatDate(source.lastIndexed)}
+                <div>
+                  <div className="text-neutral-400 mb-1">Type</div>
+                  <div className="capitalize">{source.type}</div>
+                </div>
+                <div>
+                  <div className="text-neutral-400 mb-1">Last Indexed</div>
+                  <div>{formatDate(source.lastIndexed)}</div>
                 </div>
               </div>
 
-              {source.config && (
-                <div className="source-config">
-                  <details>
-                    <summary>Configuration</summary>
-                    <pre>{JSON.stringify(source.config, null, 2)}</pre>
-                  </details>
-                </div>
+              {source.config && Object.keys(source.config).length > 0 && (
+                <details className="mt-4">
+                  <summary className="cursor-pointer text-sm text-neutral-400 hover:text-neutral-200">
+                    Configuration
+                  </summary>
+                  <pre className="mt-2 p-3 bg-neutral-800 rounded-lg text-xs overflow-auto">
+                    {JSON.stringify(source.config, null, 2)}
+                  </pre>
+                </details>
               )}
             </div>
           ))}
         </div>
       )}
 
-      {indexingJobs.length > 0 && (
-        <div className="indexing-status">
-          <h3>🔄 Active Indexing Jobs</h3>
-          <div className="active-jobs">
-            {indexingJobs.map((jobId) => (
-              <div key={jobId} className="job-item">
-                Job: {jobId}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {/* Active indexing list moved into the global Indexing Center drawer */}
     </div>
   );
 };

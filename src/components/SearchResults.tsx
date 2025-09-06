@@ -47,9 +47,10 @@ interface GroupedResults {
 interface SearchResultsProps {
   results: MediaItem[];
   query: string;
+  viewMode?: 'grid' | 'list';
 }
 
-export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) => {
+export const SearchResults: React.FC<SearchResultsProps> = ({ results, query, viewMode = 'grid' }) => {
   const [groupedResults, setGroupedResults] = useState<GroupedResults>({});
   const [sources, setSources] = useState<MediaSource[]>([]);
 
@@ -141,49 +142,94 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
   const GalleryItem: React.FC<{ item: MediaItem }> = ({ item }) => {
     const { imageUrl, loading, error } = useImageThumbnail(item);
 
-    return (
-      <div className="gallery-item">
-        {item.type === 'image' ? (
-          <div className="image-thumbnail">
-            {loading ? (
-              <div className="image-loading">
-                <span>Loading...</span>
-              </div>
-            ) : error || !imageUrl ? (
-              <div className="image-fallback">
-                🖼️
+    if (viewMode === 'list') {
+      return (
+        <div className="grid grid-cols-12 items-center gap-2 py-3 px-4 hover:bg-neutral-800/50 border-b border-neutral-800/50">
+          <div className="col-span-1 flex justify-center">
+            <div className="w-4 h-4 rounded border border-neutral-600" />
+          </div>
+          <div className="col-span-1">
+            {item.type === 'image' ? (
+              <div className="w-8 h-8 rounded overflow-hidden bg-neutral-800">
+                {loading ? (
+                  <div className="w-full h-full flex items-center justify-center text-xs">...</div>
+                ) : error || !imageUrl ? (
+                  <div className="w-full h-full flex items-center justify-center">🖼️</div>
+                ) : (
+                  <img src={imageUrl} alt={item.name} className="w-full h-full object-cover" />
+                )}
               </div>
             ) : (
-              <img 
-                src={imageUrl} 
-                alt={item.name}
-                onError={(e) => {
-                  const target = e.target as HTMLImageElement;
-                  target.style.display = 'none';
-                  const fallback = target.nextElementSibling as HTMLElement;
-                  if (fallback) fallback.style.display = 'flex';
-                }}
-              />
+              <div className="w-8 h-8 rounded bg-neutral-800 flex items-center justify-center text-sm">
+                {getFileIcon(item.type)}
+              </div>
             )}
-            <div className="image-fallback" style={{ display: 'none' }}>
-              🖼️
+          </div>
+          <div className="col-span-6 truncate">
+            <div className="font-medium text-sm truncate">{item.name}</div>
+          </div>
+          <div className="col-span-2 text-xs text-neutral-400">
+            {item.type}
+          </div>
+          <div className="col-span-2 text-xs text-neutral-400 text-right">
+            {formatFileSize(item.size)}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="group rounded-2xl border border-neutral-800 overflow-hidden bg-neutral-900 hover:border-neutral-600 transition cursor-pointer">
+        <div className="relative aspect-[4/3]">
+          {item.type === 'image' ? (
+            <div className="absolute inset-0">
+              {loading ? (
+                <div className="w-full h-full flex items-center justify-center bg-neutral-800 text-neutral-400">
+                  Loading...
+                </div>
+              ) : error || !imageUrl ? (
+                <div className="w-full h-full flex items-center justify-center bg-neutral-800 text-4xl">
+                  🖼️
+                </div>
+              ) : (
+                <img 
+                  src={imageUrl} 
+                  alt={item.name}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    target.style.display = 'none';
+                    const fallback = target.nextElementSibling as HTMLElement;
+                    if (fallback) fallback.style.display = 'flex';
+                  }}
+                />
+              )}
+              <div className="w-full h-full flex items-center justify-center bg-neutral-800 text-4xl" style={{ display: 'none' }}>
+                🖼️
+              </div>
             </div>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-neutral-800 text-4xl">
+              {getFileIcon(item.type)}
+            </div>
+          )}
+          
+          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between text-[11px]">
+            <span className="inline-flex items-center gap-1 rounded-md bg-neutral-900/70 px-2 py-1 text-neutral-200">
+              {getFileIcon(item.type)} {item.type}
+            </span>
           </div>
-        ) : (
-          <div className="file-thumbnail">
-            <span className="file-icon">{getFileIcon(item.type)}</span>
-          </div>
-        )}
+        </div>
         
-        <div className="item-info">
-          <h5 className="item-name" title={item.name}>{item.name}</h5>
-          <div className="item-meta">
-            <span className="item-size">{formatFileSize(item.size)}</span>
+        <div className="p-3">
+          <div className="truncate text-sm font-medium" title={item.name}>{item.name}</div>
+          <div className="mt-1 flex items-center justify-between text-xs text-neutral-400">
+            <span>{formatFileSize(item.size)}</span>
           </div>
           
           {item.description && (
-            <div className="item-description" title={item.description}>
-              {item.description.substring(0, 100)}{item.description.length > 100 ? '...' : ''}
+            <div className="mt-2 text-xs text-neutral-500 line-clamp-2" title={item.description}>
+              {item.description.substring(0, 80)}{item.description.length > 80 ? '...' : ''}
             </div>
           )}
         </div>
@@ -210,11 +256,11 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
 
   if (!query) {
     return (
-      <div className="search-results">
-        <div className="search-placeholder">
-          <div className="search-placeholder-icon">🔍</div>
-          <h3>Search Your Media</h3>
-          <p>Enter a search term to find your indexed media files</p>
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="text-4xl mb-4">🔍</div>
+          <h3 className="text-lg font-semibold mb-2">Search Your Media</h3>
+          <p className="text-neutral-400">Enter a search term to find your indexed media files</p>
         </div>
       </div>
     );
@@ -222,17 +268,17 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
 
   if (results.length === 0) {
     return (
-      <div className="search-results">
-        <div className="no-results">
-          <div className="no-results-icon">🔍</div>
-          <h3>No results found</h3>
-          <p>No media files match your search for "{query}"</p>
-          <div className="search-tips">
-            <h4>Search tips:</h4>
-            <ul>
-              <li>Try different keywords</li>
-              <li>Check your spelling</li>
-              <li>Make sure your sources are indexed</li>
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="text-4xl mb-4">🔍</div>
+          <h3 className="text-lg font-semibold mb-2">No results found</h3>
+          <p className="text-neutral-400 mb-4">No media files match your search for "{query}"</p>
+          <div className="text-left">
+            <h4 className="text-sm font-medium mb-2">Search tips:</h4>
+            <ul className="text-sm text-neutral-400 space-y-1">
+              <li>• Try different keywords</li>
+              <li>• Check your spelling</li>
+              <li>• Make sure your sources are indexed</li>
             </ul>
           </div>
         </div>
@@ -241,29 +287,39 @@ export const SearchResults: React.FC<SearchResultsProps> = ({ results, query }) 
   }
 
   return (
-    <div className="search-results">
-      <div className="results-header">
-        <h3>🔍 Search Results</h3>
-        <span className="results-count">
-          {results.length} result{results.length !== 1 ? 's' : ''} for "{query}"
-        </span>
-      </div>
-      
-      <div className="results-by-source">
-        {Object.entries(groupedResults).map(([sourceId, { source, items }]) => (
-          <div key={sourceId} className="source-group">
-            <div className="source-header">
-              <h4>📁 {source.name}</h4>
-              <span className="source-count">{items.length} item{items.length !== 1 ? 's' : ''}</span>
-            </div>
-            <div className="gallery-grid">
+    <div className="space-y-6">
+      {Object.entries(groupedResults).map(([sourceId, { source, items }]) => (
+        <section key={sourceId}>
+          <div className="flex items-center justify-between bg-neutral-900 px-4 py-3 rounded-lg mb-4">
+            <span className="flex items-center gap-2">
+              <span className="text-neutral-400">📁</span>
+              <span className="font-medium">{source.name}</span>
+              <span className="text-neutral-400">({items.length})</span>
+            </span>
+          </div>
+          
+          {viewMode === 'grid' ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {items.map((item) => (
                 <GalleryItem key={item.id} item={item} />
               ))}
             </div>
-          </div>
-        ))}
-      </div>
+          ) : (
+            <div className="border border-neutral-800 rounded-lg overflow-hidden">
+              <div className="grid grid-cols-12 items-center gap-2 py-2 px-4 bg-neutral-900/50 border-b border-neutral-800 text-xs font-medium text-neutral-400">
+                <div className="col-span-1"></div>
+                <div className="col-span-1"></div>
+                <div className="col-span-6">Name</div>
+                <div className="col-span-2">Type</div>
+                <div className="col-span-2 text-right">Size</div>
+              </div>
+              {items.map((item) => (
+                <GalleryItem key={item.id} item={item} />
+              ))}
+            </div>
+          )}
+        </section>
+      ))}
     </div>
   );
 };
