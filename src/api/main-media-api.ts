@@ -39,6 +39,45 @@ export class MainMediaAPI {
   }
 
   /**
+   * Get recent items with optional filters (sources, media types) sorted by recency
+   */
+  static async getRecentItems(params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }): Promise<{ success: boolean; items?: any[]; total?: number; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      const all = await this.db.getMediaItems();
+      const byType = (it: any): 'image'|'video'|'audio' => {
+        const mime = (it.mimeType || '').toLowerCase();
+        if (mime.startsWith('video/')) return 'video';
+        if (mime.startsWith('audio/')) return 'audio';
+        if (typeof it.type === 'string') {
+          const t = it.type.toLowerCase();
+          if (t.includes('video')) return 'video';
+          if (t.includes('audio')) return 'audio';
+        }
+        return 'image';
+      };
+      let items = all;
+      if (params?.sourceIds?.length) {
+        const set = new Set(params.sourceIds);
+        items = items.filter(it => set.has(it.sourceId));
+      }
+      if (params?.types?.length) {
+        const tset = new Set(params.types);
+        items = items.filter(it => tset.has(byType(it)));
+      }
+      const ts = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
+      items.sort((a, b) => ts(b) - ts(a));
+      const total = items.length;
+      const offset = Math.max(0, params?.offset || 0);
+      const limit = Math.max(0, params?.limit || total);
+      const paged = items.slice(offset, offset + limit);
+      return { success: true, items: paged, total };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
    * List media items, optionally filtered by sourceId (used for browse view)
    */
   static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; error?: string }> {

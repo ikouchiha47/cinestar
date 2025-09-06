@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   searchText: (text: string, limit?: number) => ipcRenderer.invoke('media:searchText', text, limit),
   getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
   getStats: () => ipcRenderer.invoke('media:getStats'),
+  getRecentItems: (params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }) => ipcRenderer.invoke('media:getRecentItems', params),
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),

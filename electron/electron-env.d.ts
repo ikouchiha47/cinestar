@@ -35,6 +35,7 @@ interface Window {
     searchText: (text: string, limit?: number) => Promise<any>;
     getSuggestions: (query: string, limit?: number) => Promise<any>;
     getStats: () => Promise<any>;
+    getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
     isOllamaAvailable: () => Promise<any>;
     getImageThumbnail: (imagePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
     selectDirectory: () => Promise<any>;

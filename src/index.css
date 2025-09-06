@@ -8,10 +8,72 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* Theme variables (default dark) */
+  --bg-color: #0b0c10;
+  --panel-color: #0f1115;
+  --border-color: #23252d;
+  --text-color: #e5e7eb;
+  --muted-color: #9ca3af;
+  --accent-color: #60a5fa;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: var(--bg-color);
+  color: var(--text-color);
 }
+
+/* Tokyo Night theme */
+[data-theme="tokyo-night"] {
+  --bg-color: #1a1b26;       /* tokyo night background */
+  --panel-color: #16161e;    /* darker panels */
+  --border-color: #2f3549;   /* subtle borders */
+  --text-color: #c0caf5;     /* foreground text */
+  --muted-color: #565f89;    /* muted/comment text */
+  --accent-color: #7aa2f7;   /* tokyo night blue */
+  --success-color: #9ece6a;  /* green */
+  --warning-color: #e0af68;  /* yellow */
+  --error-color: #f7768e;    /* red */
+  --purple-color: #bb9af7;   /* purple */
+  --cyan-color: #7dcfff;     /* cyan */
+}
+
+/* Utility helpers to opt into theme variables where desired */
+.app-bg { background-color: var(--bg-color); }
+.app-panel { background-color: var(--panel-color); }
+.app-border { border-color: var(--border-color); }
+.app-text { color: var(--text-color); }
+.app-muted { color: var(--muted-color); }
+.app-accent { color: var(--accent-color); }
+
+/* Focus helper to tint borders with accent color */
+.focus-accent:focus-within { border-color: var(--accent-color) !important; }
+
+/* Tokyo Night unified background */
+.tokyo-bg {
+  background-color: var(--bg-color) !important;
+}
+
+/* Tailwind-to-theme remap so existing classes adopt the theme when data-theme is set */
+/* Backgrounds */
+[data-theme] .bg-neutral-950 { background-color: var(--bg-color) !important; }
+[data-theme] .bg-neutral-900 { background-color: var(--panel-color) !important; }
+[data-theme] .bg-neutral-900\/60 { background-color: color-mix(in srgb, var(--panel-color) 60%, transparent) !important; }
+[data-theme] .bg-neutral-900\/50 { background-color: color-mix(in srgb, var(--panel-color) 50%, transparent) !important; }
+[data-theme] .bg-neutral-900\/30 { background-color: color-mix(in srgb, var(--panel-color) 30%, transparent) !important; }
+[data-theme] .hover\:bg-neutral-900:hover { background-color: var(--panel-color) !important; }
+[data-theme] .hover\:bg-neutral-800:hover { background-color: var(--panel-color) !important; }
+
+/* Borders */
+[data-theme] .border-neutral-900 { border-color: var(--border-color) !important; }
+[data-theme] .border-neutral-800 { border-color: var(--border-color) !important; }
+[data-theme] .hover\:border-neutral-700:hover { border-color: var(--border-color) !important; }
+
+/* Text */
+[data-theme] .text-neutral-200 { color: var(--text-color) !important; }
+[data-theme] .text-neutral-300 { color: var(--text-color) !important; }
+[data-theme] .text-neutral-400 { color: var(--muted-color) !important; }
+[data-theme] .text-neutral-500 { color: var(--muted-color) !important; }

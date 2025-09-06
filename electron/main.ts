@@ -195,6 +195,11 @@ ipcMain.handle('media:getStats', async () => {
   return await MainMediaAPI.getStats();
 });
 
+ipcMain.handle('media:getRecentItems', async (_evt, params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number }) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.getRecentItems(params);
+});
+
 ipcMain.handle('media:getItems', async (_evt, sourceId?: string) => {
   if (!mediaAPI) await initializeMediaAPI();
   return await MainMediaAPI.getItems(sourceId);
