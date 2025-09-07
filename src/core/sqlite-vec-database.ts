@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { ConfigManager } from './config';
 
 export interface MediaItem {
   id: string;
@@ -39,10 +40,13 @@ export interface SearchResult {
 
 export class SqliteVecDatabase {
   private db: Database.Database;
+  private expectedDim: number;
 
-  constructor(dbPath: string = './data/vector-vec.db') {
+  constructor(dbPath?: string) {
+    const cfg = ConfigManager.getConfig();
+    const finalPath = dbPath || process.env.VECTOR_DB_PATH || cfg.vectorDbPath;
     // Ensure directory exists
-    const dir = path.dirname(dbPath);
+    const dir = path.dirname(finalPath);
     try {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -54,7 +58,7 @@ export class SqliteVecDatabase {
     }
 
     // Initialize database
-    this.db = new Database(dbPath);
+    this.db = new Database(finalPath);
     this.db.pragma('journal_mode = WAL');
     
     // Load sqlite-vec extension
@@ -85,6 +89,9 @@ export class SqliteVecDatabase {
       throw error;
     }
 
+    // Determine expected embedding dimension based on current embedding model
+    this.expectedDim = this.getExpectedDim();
+
     this.initializeTables();
   }
 
@@ -108,13 +115,16 @@ export class SqliteVecDatabase {
       )
     `);
 
-    // Create vector table using sqlite-vec
+    // Meta table to track embedding model/dimension
     this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
-        item_id TEXT PRIMARY KEY,
-        embedding FLOAT[1024]
+      CREATE TABLE IF NOT EXISTS vector_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
       )
     `);
+
+    // Ensure vec_embeddings exists with the expected dimension; migrate if needed
+    this.ensureVectorTableDimension();
 
     console.log('✅ SQLite-vec tables initialized');
   }
@@ -327,7 +337,86 @@ export class SqliteVecDatabase {
       insertStmt.run(itemId, buffer);
       console.log(`🔍 [EMBEDDING-STORE] Stored embedding for ${itemId}: ${embedding.length} dimensions`);
     } catch (error) {
-      console.warn(`Failed to add embedding for ${itemId}:`, error);
+      const message = String((error as any)?.message || error);
+      console.warn(`Failed to add embedding for ${itemId}:`, message);
+      // Auto-migrate dimension if mismatch is detected, then retry once
+      if (message.includes('Dimension mismatch') || message.includes('received')) {
+        console.warn('⚠️ Detected dimension mismatch. Attempting to migrate vec_embeddings to expected dimension:', this.expectedDim);
+        this.recreateVectorTable(this.expectedDim);
+        // Retry once after migration
+        try {
+          const buffer = Buffer.alloc(embedding.length * 4);
+          for (let i = 0; i < embedding.length; i++) {
+            buffer.writeFloatLE(embedding[i], i * 4);
+          }
+          insertStmt.run(itemId, buffer);
+          console.log(`🔁 [EMBEDDING-STORE] Stored embedding for ${itemId} after migration`);
+        } catch (e2) {
+          console.error('❌ Retry after migration failed:', e2);
+        }
+      }
+    }
+  }
+
+  /**
+   * Determine expected embedding dimension based on the configured embedding model
+   */
+  private getExpectedDim(): number {
+    try {
+      const model = (ConfigManager.getConfig().ai.embeddingModel || '').toLowerCase();
+      if (model.includes('nomic-embed-text')) return 768;
+      if (model.includes('bge-large')) return 1024;
+      if (model.includes('bge-small')) return 384;
+      if (model.includes('text-embedding-3-small')) return 1536; // example for OpenAI
+      if (model.includes('text-embedding-3-large')) return 3072; // example for OpenAI
+      return 768; // sensible default
+    } catch {
+      return 768;
+    }
+  }
+
+  /**
+   * Ensure vec_embeddings virtual table matches expected dimension; migrate if mismatch
+   */
+  private ensureVectorTableDimension(): void {
+    // Read stored dimension
+    const row = this.db.prepare("SELECT value FROM vector_meta WHERE key = 'embedding_dim'").get() as any;
+    const currentDim = row ? Number(row.value) : undefined;
+
+    if (!currentDim) {
+      // First-time setup: create vec_embeddings with expected dimension
+      this.recreateVectorTable(this.expectedDim, /*skipReset*/ true);
+      return;
+    }
+
+    if (currentDim !== this.expectedDim) {
+      console.warn(`⚠️ Vector table dimension mismatch detected. Current: ${currentDim}, Expected: ${this.expectedDim}. Rebuilding table and resetting embeddings to pending.`);
+      this.recreateVectorTable(this.expectedDim);
+    }
+  }
+
+  /**
+   * Drop and recreate vec_embeddings with the given dimension, update meta, and reset embedding statuses.
+   */
+  private recreateVectorTable(dim: number, skipReset: boolean = false): void {
+    try {
+      this.db.exec('DROP TABLE IF EXISTS vec_embeddings');
+      this.db.exec(`
+        CREATE VIRTUAL TABLE vec_embeddings USING vec0(
+          item_id TEXT PRIMARY KEY,
+          embedding FLOAT[${dim}]
+        )
+      `);
+      this.db.prepare("INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('embedding_dim', ?)").run(String(dim));
+      this.db.prepare("INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('embedding_model', ?)").run(ConfigManager.getConfig().ai.embeddingModel);
+      if (!skipReset) {
+        // We cannot recover prior vectors; mark for regeneration
+        this.db.exec(`UPDATE media_items SET embedding_generated_at = NULL, embedding_status = 'pending'`);
+      }
+      console.log(`✅ vec_embeddings table created with dimension ${dim}`);
+    } catch (e) {
+      console.error('❌ Failed to recreate vec_embeddings table:', e);
+      throw e;
     }
   }
 

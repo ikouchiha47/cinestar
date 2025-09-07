@@ -1,8 +1,11 @@
 import { defineConfig } from 'vite'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -15,8 +18,25 @@ export default defineConfig({
         entry: 'electron/main.ts',
         vite: {
           build: {
+            sourcemap: true,
             rollupOptions: {
-              external: ['sharp', 'better-sqlite3']
+              // Externalize native/CJS deps so Rollup doesn't bundle them into ESM,
+              // which would break usages of __dirname and other CJS globals.
+              external: [
+                // native/binary
+                'sharp',
+                'better-sqlite3',
+                'sqlite-vec',
+                'sqlite-vec-darwin-arm64',
+                // media/tooling
+                'ffmpeg-static',
+                'fluent-ffmpeg',
+                'whisper-node',
+                // networking/utils
+                'node-fetch',
+                // node built-ins (defensive; Rollup already treats these specially)
+                'fs', 'path', 'os', 'url', 'util', 'events', 'stream', 'buffer', 'zlib', 'child_process'
+              ]
             }
           }
         }

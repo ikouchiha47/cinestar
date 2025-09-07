@@ -35,6 +35,20 @@ declare global {
       getStats: () => Promise<{ success: boolean; stats?: { totalSources: number; totalItems: number; activeJobs: number }; error?: string }>;
       isOllamaAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>;
       selectDirectory: () => Promise<{ canceled: boolean; path?: string }>;
+      getRecentItems: (params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }) => Promise<{ success: boolean; items?: any[]; error?: string }>;
+    };
+    
+    videoAPI: {
+      processVideo: (videoPath: string) => Promise<{ success: boolean; videoId?: string; error?: string }>;
+      processAudio: (audioPath: string) => Promise<{ success: boolean; videoId?: string; error?: string }>;
+      searchVideos: (query: any) => Promise<{ success: boolean; results?: any[]; error?: string }>;
+      getJobStatus: (videoPath: string) => Promise<any>;
+      getActiveJobs: () => Promise<any[]>;
+      getVideoFile: (videoPath: string) => Promise<any>;
+      getVideoSegments: (videoId: string) => Promise<any[]>;
+      isVideoFile: (filePath: string) => Promise<boolean>;
+      isAudioFile: (filePath: string) => Promise<boolean>;
+      selectVideoFile: () => Promise<{ canceled: boolean; path?: string }>;
     };
   }
 }

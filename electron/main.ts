@@ -1,9 +1,23 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import os from 'node:os'
 import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+import { VideoMediaAPI } from '../src/api/video-media-api'
+
+// ESM-safe __filename and __dirname
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+// Ensure availability for any bundled modules that still reference these identifiers
+;(globalThis as any).__filename = __filename
+;(globalThis as any).__dirname = __dirname
+
+// Unified data directory used by both Main and Renderer
+const IS_DEV = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true'
+const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller')
+const DATA_DIR = process.env.MAIN_DB_DIR || DEFAULT_DATA_DIR
+process.env.DRILLER_DATA_DIR = DATA_DIR
 
 // The built directory structure
 //
@@ -110,17 +124,37 @@ ipcMain.handle('app:getPath', (_, name) => {
   return app.getPath(name);
 });
 
+// Expose unified data dir to renderer
+ipcMain.handle('app:getDataDir', async () => {
+  try {
+    await fs.promises.mkdir(DATA_DIR, { recursive: true })
+  } catch (e) {
+    // ignore
+  }
+  return DATA_DIR
+});
+
 // Initialize MediaAPI in main process
 let mediaAPI: typeof MainMediaAPI | null = null;
+let videoAPI: VideoMediaAPI | null = null;
 
 async function initializeMediaAPI() {
   try {
-    const dbPath = path.join(app.getPath('userData'), 'driller-db');
-    await MainMediaAPI.initialize(dbPath, 'ollama');
+    await MainMediaAPI.initialize(DATA_DIR, 'ollama');
     mediaAPI = MainMediaAPI;
     console.log('MainMediaAPI initialized in main process');
   } catch (error) {
     console.error('Failed to initialize MainMediaAPI:', error);
+  }
+}
+
+async function initializeVideoAPI() {
+  try {
+    videoAPI = VideoMediaAPI.getInstance();
+    await videoAPI.initialize();
+    console.log('VideoMediaAPI initialized in main process');
+  } catch (error) {
+    console.error('Failed to initialize VideoMediaAPI:', error);
   }
 }
 
@@ -235,6 +269,63 @@ ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
   return await MainMediaAPI.getImageThumbnail(imagePath);
 });
 
+// Video processing IPC handlers
+ipcMain.handle('video:processVideo', async (_, videoPath: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  try {
+    return { success: true, videoId: await videoAPI!.processVideo(videoPath) };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('video:processAudio', async (_, audioPath: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  try {
+    return { success: true, videoId: await videoAPI!.processAudio(audioPath) };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('video:searchVideos', async (_, query: any) => {
+  if (!videoAPI) await initializeVideoAPI();
+  try {
+    const results = await videoAPI!.searchVideos(query);
+    return { success: true, results };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('video:getJobStatus', async (_, videoPath: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  return videoAPI!.getJobStatus(videoPath);
+});
+
+ipcMain.handle('video:getActiveJobs', async () => {
+  if (!videoAPI) await initializeVideoAPI();
+  return videoAPI!.getActiveJobs();
+});
+
+ipcMain.handle('video:getVideoFile', async (_, videoPath: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  return await videoAPI!.getVideoFile(videoPath);
+});
+
+ipcMain.handle('video:getVideoSegments', async (_, videoId: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  return await videoAPI!.getVideoSegments(videoId);
+});
+
+ipcMain.handle('video:isVideoFile', (_, filePath: string) => {
+  return VideoMediaAPI.isVideoFile(filePath);
+});
+
+ipcMain.handle('video:isAudioFile', (_, filePath: string) => {
+  return VideoMediaAPI.isAudioFile(filePath);
+});
+
 // Directory selection dialog
 ipcMain.handle('dialog:selectDirectory', async () => {
   const result = await dialog.showOpenDialog({
@@ -249,7 +340,27 @@ ipcMain.handle('dialog:selectDirectory', async () => {
   return { canceled: false, path: result.filePaths[0] };
 });
 
+// File selection dialog for video/audio files
+ipcMain.handle('dialog:selectVideoFile', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    title: 'Select Video or Audio File',
+    filters: [
+      { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv', 'wmv', 'm4v'] },
+      { name: 'Audio Files', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+  
+  return { canceled: false, path: result.filePaths[0] };
+});
+
 app.whenReady().then(async () => {
   createWindow();
   await initializeMediaAPI();
+  await initializeVideoAPI();
 })

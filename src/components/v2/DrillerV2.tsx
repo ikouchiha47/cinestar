@@ -1,6 +1,7 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AutoSizer, List } from 'react-virtualized';
+import VideoSearch from '../VideoSearch';
 
 // Minimal inline icons
 const Icon = {
@@ -125,6 +126,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const { overallProgress = -1, onOpenIndexing } = props;
 
   const [q, setQ] = useState('');
+  const [activeTab, setActiveTab] = useState<'media' | 'video'>('media');
   const [scope, setScope] = useState<Scope>('all');
   const [selectedPlace, setSelectedPlace] = useState<string | undefined>();
   const [connectOpen, setConnectOpen] = useState(false);
@@ -133,6 +135,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [library, setLibrary] = useState<MediaT[]>([]);
   const [searching, setSearching] = useState(false);
   const [expandedType, setExpandedType] = useState<'image' | 'video' | 'audio' | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load places from real sources, fall back to demo
   useEffect(() => {
@@ -199,7 +202,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   // Real search integration (debounced ~4s) when not on Folders tab
   useEffect(() => {
     let alive = true;
-    const handler = setTimeout(async () => {
+
+    const performSearch = async () => {
       const query = q.trim();
       if (!query || scope === 'folders') {
         if (alive) setSearchResults([]);
@@ -211,43 +215,48 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         if (!alive) return;
         if (res.success && res.results && Array.isArray((res as any).results.items)) {
           const items: any[] = (res as any).results.items;
-          const m: MediaT[] = items
-            .map((it) => {
-              // Derive media kind from mimeType or fallback to type/extension
-              const mime = (it.mimeType || '').toLowerCase();
-              let kind: 'image' | 'video' | 'audio' = 'image';
-              if (mime.startsWith('video/')) kind = 'video';
-              else if (mime.startsWith('audio/')) kind = 'audio';
-              else if (typeof it.type === 'string') {
-                const t = it.type.toLowerCase();
-                if (t.includes('video')) kind = 'video';
-                else if (t.includes('audio')) kind = 'audio';
-                else kind = 'image';
-              } else if (typeof it.name === 'string') {
-                const n = it.name.toLowerCase();
-                if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-                else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-                else kind = 'image';
-              }
-              return {
-                id: String(it.id),
-                placeId: String(it.sourceId || ''),
-                type: kind,
-                name: it.name || 'item',
-                path: it.path,
-              } as MediaT;
-            });
+          const m: MediaT[] = items.map((it) => {
+            const mime = (it.mimeType || '').toLowerCase();
+            let kind: 'image' | 'video' | 'audio' = 'image';
+            if (mime.startsWith('video/')) kind = 'video';
+            else if (mime.startsWith('audio/')) kind = 'audio';
+            else if (typeof it.type === 'string') {
+              const t = it.type.toLowerCase();
+              if (t.includes('video')) kind = 'video';
+              else if (t.includes('audio')) kind = 'audio';
+              else kind = 'image';
+            } else if (typeof it.name === 'string') {
+              const n = it.name.toLowerCase();
+              if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+              else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+              else kind = 'image';
+            }
+            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+          });
           setSearchResults(m);
         } else {
           setSearchResults([]);
         }
-      } catch (e) {
+      } catch {
         setSearchResults([]);
       } finally {
         if (alive) setSearching(false);
       }
+    };
+
+    // Clear any existing debounce and start a new one
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      performSearch();
     }, 4000);
-    return () => { alive = false; clearTimeout(handler); };
+
+    return () => {
+      alive = false;
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    };
   }, [q, scope]);
 
   const scopedMedia = useMemo(() => {
@@ -316,44 +325,121 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  // Cancel pending debounce and run search immediately
+                  if (debounceRef.current) {
+                    clearTimeout(debounceRef.current);
+                    debounceRef.current = null;
+                  }
+                  // Trigger the effect's performSearch by transiently changing scope
+                  // Simpler: temporarily setSearching and invoke mediaAPI directly here
+                  (async () => {
+                    const query = q.trim();
+                    if (!query || scope === 'folders') {
+                      setSearchResults([]);
+                      return;
+                    }
+                    try {
+                      setSearching(true);
+                      const res = await window.mediaAPI.searchText(query, 60);
+                      if (res.success && res.results && Array.isArray((res as any).results.items)) {
+                        const items: any[] = (res as any).results.items;
+                        const m: MediaT[] = items.map((it) => {
+                          const mime = (it.mimeType || '').toLowerCase();
+                          let kind: 'image' | 'video' | 'audio' = 'image';
+                          if (mime.startsWith('video/')) kind = 'video';
+                          else if (mime.startsWith('audio/')) kind = 'audio';
+                          else if (typeof it.type === 'string') {
+                            const t = it.type.toLowerCase();
+                            if (t.includes('video')) kind = 'video';
+                            else if (t.includes('audio')) kind = 'audio';
+                            else kind = 'image';
+                          } else if (typeof it.name === 'string') {
+                            const n = it.name.toLowerCase();
+                            if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+                            else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+                            else kind = 'image';
+                          }
+                          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                        });
+                        setSearchResults(m);
+                      } else {
+                        setSearchResults([]);
+                      }
+                    } catch {
+                      setSearchResults([]);
+                    } finally {
+                      setSearching(false);
+                    }
+                  })();
+                }
+              }}
               placeholder={scope === 'folders' ? 'Filter folders…' : 'Search your media…'}
               className="w-full bg-transparent outline-none placeholder:text-neutral-500"
             />
             {searching && <span className="text-[11px] text-neutral-500">Searching…</span>}
           </div>
-          <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
-            {/* pinned places */}
-            <Pill
-              active={!selectedPlace && scope === 'all'}
-              label="All"
-              onClick={() => {
-                setSelectedPlace(undefined);
-                setScope('all');
-              }}
-            />
-            {pinned.map((p) => (
+          {/* Tab Navigation */}
+          <div className="mt-3 flex items-center justify-center gap-2 mb-4">
+            <button
+              onClick={() => setActiveTab('media')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'media'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+              }`}
+            >
+              Media Search
+            </button>
+            <button
+              onClick={() => setActiveTab('video')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'video'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+              }`}
+            >
+              Video Search
+            </button>
+          </div>
+
+          {/* Media Search Pills - only show for media tab */}
+          {activeTab === 'media' && (
+            <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
+              {/* pinned places */}
               <Pill
-                key={p.id}
-                active={selectedPlace === p.id}
-                label={p.label}
+                active={!selectedPlace && scope === 'all'}
+                label="All"
                 onClick={() => {
-                  setSelectedPlace(p.id);
+                  setSelectedPlace(undefined);
                   setScope('all');
                 }}
               />
-            ))}
-            {(['s3', 'drive', 'folders'] as const).map((s) => (
-              <Pill
-                key={s}
-                active={scope === s}
-                label={s === 's3' ? 'S3' : s === 'drive' ? 'Drive' : 'Folders'}
-                onClick={() => {
-                  setScope(s);
-                  setSelectedPlace(undefined);
-                }}
-              />
-            ))}
-          </div>
+              {pinned.map((p) => (
+                <Pill
+                  key={p.id}
+                  active={selectedPlace === p.id}
+                  label={p.label}
+                  onClick={() => {
+                    setSelectedPlace(p.id);
+                    setScope('all');
+                  }}
+                />
+              ))}
+              {(['s3', 'drive', 'folders'] as const).map((s) => (
+                <Pill
+                  key={s}
+                  active={scope === s}
+                  label={s === 's3' ? 'S3' : s === 'drive' ? 'Drive' : 'Folders'}
+                  onClick={() => {
+                    setScope(s);
+                    setSelectedPlace(undefined);
+                  }}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </header>
 
@@ -386,7 +472,15 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
       {/* Main */}
       <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-        {scope === 'folders' ? (
+        {activeTab === 'video' ? (
+          <VideoSearch 
+            query={q}
+            onResultClick={(result) => {
+              console.log('Video result clicked:', result);
+              // TODO: Implement video player or segment viewer
+            }}
+          />
+        ) : scope === 'folders' ? (
           <PlacesGrid
             places={q.trim() ? places.filter(p => p.label.toLowerCase().includes(q.toLowerCase()) || p.path.toLowerCase().includes(q.toLowerCase())) : places}
             onBrowse={(id) => { setSelectedPlace(id); setScope('all'); }}

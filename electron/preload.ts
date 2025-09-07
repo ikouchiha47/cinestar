@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fileExists: (filePath: string) => ipcRenderer.invoke('fs:exists', filePath),
   mkdir: (dirPath: string) => ipcRenderer.invoke('fs:mkdir', dirPath),
   getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
+  getDataDir: () => ipcRenderer.invoke('app:getDataDir'),
 })
 
 // Expose MediaAPI for the renderer process
@@ -47,4 +48,18 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
+})
+
+// Expose VideoAPI for the renderer process
+contextBridge.exposeInMainWorld('videoAPI', {
+  processVideo: (videoPath: string) => ipcRenderer.invoke('video:processVideo', videoPath),
+  processAudio: (audioPath: string) => ipcRenderer.invoke('video:processAudio', audioPath),
+  searchVideos: (query: any) => ipcRenderer.invoke('video:searchVideos', query),
+  getJobStatus: (videoPath: string) => ipcRenderer.invoke('video:getJobStatus', videoPath),
+  getActiveJobs: () => ipcRenderer.invoke('video:getActiveJobs'),
+  getVideoFile: (videoPath: string) => ipcRenderer.invoke('video:getVideoFile', videoPath),
+  getVideoSegments: (videoId: string) => ipcRenderer.invoke('video:getVideoSegments', videoId),
+  isVideoFile: (filePath: string) => ipcRenderer.invoke('video:isVideoFile', filePath),
+  isAudioFile: (filePath: string) => ipcRenderer.invoke('video:isAudioFile', filePath),
+  selectVideoFile: () => ipcRenderer.invoke('dialog:selectVideoFile'),
 })

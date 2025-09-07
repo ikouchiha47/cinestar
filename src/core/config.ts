@@ -56,7 +56,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ai: {
     provider: 'ollama',
-    embeddingModel: 'qllama/bge-large-en-v1.5:latest', // Better semantic embeddings than phi:2.7b
+    embeddingModel: 'qllama/bge-large-en-v1.5:latest', // 1024-d embeddings (previous default)
     // visionModel: 'llava:7b',
     visionModelDims: [378, 378], // Default for LLaVA; change to [378, 378] for Moondream
     visionModel: 'moondream:v2',

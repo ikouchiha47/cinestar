@@ -74,31 +74,31 @@ export class FileDatabase {
 
   async initialize(): Promise<void> {
     console.log('=== FileDatabase Initialize Start ===');
-    
+
     // Wait for Electron API to be available (up to 5 seconds)
     let attempts = 0;
     const maxAttempts = 50; // 5 seconds with 100ms intervals
-    
+
     while (!(window as any).electronAPI && attempts < maxAttempts) {
-      console.log(`Waiting for Electron API... attempt ${attempts + 1}`);
       await new Promise(resolve => setTimeout(resolve, 100));
       attempts++;
     }
-    
-    console.log('Electron API available:', !!(window as any).electronAPI);
-    console.log('getAppPath method available:', !!(window as any).electronAPI?.getAppPath);
-    
-    // Get the database path from Electron
-    if ((window as any).electronAPI?.getAppPath) {
-      const userDataPath = await (window as any).electronAPI.getAppPath('userData');
+
+    const api = (window as any).electronAPI;
+    if (api?.getDataDir) {
+      // Use unified DATA_DIR provided by main process
+      const dataDir = await api.getDataDir();
+      this.dbPath = dataDir;
+      console.log('Database path set to unified DATA_DIR:', this.dbPath);
+      await api.mkdir(this.dbPath);
+    } else if (api?.getAppPath) {
+      // Fallback (older preload): userData/driller-db
+      const userDataPath = await api.getAppPath('userData');
       this.dbPath = `${userDataPath}/driller-db`;
-      console.log('Database path set to:', this.dbPath);
-      
-      // Ensure database directory exists
-      const dirCreated = await (window as any).electronAPI.mkdir(this.dbPath);
-      console.log('Database directory created/exists:', dirCreated);
+      console.log('Database path set to legacy userData:', this.dbPath);
+      await api.mkdir(this.dbPath);
     } else {
-      console.warn('Electron API not available after waiting, database will not persist');
+      console.warn('Electron API not available; database will not persist.');
       this.dbPath = '';
     }
     
@@ -109,9 +109,6 @@ export class FileDatabase {
     this.jobs = await this.loadCollection<IndexingJob>('jobs');
     
     // Database loaded silently
-    if (this.sources.length === 0) {
-      console.log('No sources found on initialization');
-    }
   }
 
   // Media Sources
