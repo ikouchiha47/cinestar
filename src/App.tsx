@@ -98,6 +98,11 @@ function App() {
             );
             if (changed) setJobDetails(nextJobs);
           }
+
+          // If there are no active jobs, clear any stale job details so UI doesn't show stuck progress bars
+          if (res.activeJobs.length === 0) {
+            setJobDetails([]);
+          }
         }
       } catch (e) {
         if (!mounted) return;

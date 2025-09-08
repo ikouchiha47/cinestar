@@ -213,8 +213,8 @@ export class SQLiteDatabase {
   }
 
   async updateSource(id: string, updates: Partial<MediaSource>): Promise<void> {
-    const fields = [];
-    const values = [];
+    const fields: string[] = [];
+    const values: any[] = [];
     
     if (updates.name !== undefined) {
       fields.push('name = ?');
@@ -270,8 +270,8 @@ export class SQLiteDatabase {
         item.mimeType,
         item.size,
         item.createdAt.toISOString(),
-        item.modifiedAt.toISOString(),
-        item.indexedAt ? item.indexedAt.toISOString() : new Date().toISOString(),
+        item.modifiedAt ? item.modifiedAt.toISOString() : new Date().toISOString(),
+        new Date().toISOString(), // indexedAt
         item.description || null,
         embeddingBuffer,
         JSON.stringify(item.metadata || {})
@@ -412,7 +412,7 @@ export class SQLiteDatabase {
         job.sourceId,
         job.status,
         job.progress || 0,
-        job.startedAt.toISOString()
+        job.startedAt ? job.startedAt.toISOString() : new Date().toISOString()
       ], function(err: any) {
         if (err) {
           reject(err);
@@ -431,7 +431,7 @@ export class SQLiteDatabase {
     
     if (progress !== undefined) {
       fields.push('progress = ?');
-      values.push(progress);
+      values.push(progress.toString());
     }
     
     if (status === 'completed' || status === 'failed') {

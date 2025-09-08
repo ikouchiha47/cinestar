@@ -31,7 +31,7 @@ export default defineConfig({
                 // media/tooling
                 'ffmpeg-static',
                 'fluent-ffmpeg',
-                'whisper-node',
+                'nodejs-whisper',
                 // networking/utils
                 'node-fetch',
                 // node built-ins (defensive; Rollup already treats these specially)

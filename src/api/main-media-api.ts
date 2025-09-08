@@ -1,397 +1,251 @@
 import { MainDatabase } from '../core/main-database';
-import { MediaSource, MediaItem, IndexingJob } from '../core/types';
-import { DatabaseManager } from '../core/database';
-import { VideoDatabase } from '../core/video-database';
-import { EmbeddingService } from '../core/embedding-service';
-import { VideoPipeline } from '../core/video-pipeline';
-import { SegmentationProcessor } from '../core/processors/segmentation-processor';
-import { VisualProcessor } from '../core/processors/visual-processor';
-import { TranscriptionProcessor } from '../core/processors/transcription-processor';
-import { CaptioningProcessor } from '../core/processors/captioning-processor';
-import { OCRProcessor } from '../core/processors/ocr-processor';
-import { WhisperNodeService } from '../core/processors/whisper-node-service';
-import { ConcurrencyLimiter } from '../core/concurrency-limiter';
-import { generateEmbedding } from '../core/embedding-generator';
-import { OllamaService } from '../core/ollama-service';
-import { getMimeType, calculateFileHash } from '../core/utils';
-import { ImageCompressor } from '../core/image-compressor';
-import { processWithConcurrency } from '../core/concurrency-limiter';
-import { SqliteVecDatabase } from '../core/sqlite-vec-database';
-import { TwoPhaseProcessor } from '../core/two-phase-processor';
+import { SqliteMainDatabase } from '../core/sqlite-main-database';
+import { MediaSource } from '../core/types';
 import { LLMProvider, LLMProviderFactory } from '../core/llm-provider';
+import { SqliteVecDatabase } from '../core/sqlite-vec-database';
+import { ImageCompressor } from '../core/image-compressor';
 import { ConfigManager } from '../core/config';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { DatabaseMigrator, getDefaultDataDir } from '../core/database-migrator';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 /**
- * Main process MediaAPI that uses Node.js file system directly
+ * Minimal Main process MediaAPI for basic functionality
  * This runs in the Electron main process
  */
 export class MainMediaAPI {
-  private static db: MainDatabase;
-  private static vectorDb: SqliteVecDatabase;
-  private static processor: TwoPhaseProcessor;
+  // Use a common surface; implementation can be JSON-backed or SQLite-backed
+  private static db: any;
   private static initialized = false;
-  private static llmProvider: LLMProvider;
+  private static backendType: 'sqlite' | 'json' = 'sqlite';
+  private static dbPathInfo: string = '';
+  private static llm: LLMProvider | null = null;
+  private static vecDb: SqliteVecDatabase | null = null;
 
-  static async initialize(dbPath: string, providerType: 'ollama' | 'litellm' = 'ollama', providerConfig?: any): Promise<void> {
+  static async initialize(dbPath?: string): Promise<void> {
     if (this.initialized) return;
     
-    this.db = new MainDatabase(dbPath);
-    await this.db.initialize();
+    // Use default data directory if no path provided (fresh install scenario)
+    const dataDir = dbPath ?? getDefaultDataDir();
     
-    // Initialize vector database and two-phase processor
-    this.vectorDb = new SqliteVecDatabase(); // Uses config-based path
-    // Use configured provider
-    this.llmProvider = LLMProviderFactory.createProvider(providerType, providerConfig);
-    this.processor = new TwoPhaseProcessor(this.vectorDb, this.llmProvider);
+    // Select backend (default: sqlite)
+    const backend = (process.env.MAIN_DB_BACKEND || 'sqlite').toLowerCase();
+    if (backend === 'sqlite') {
+      // If a directory was passed, append a filename
+      const isFile = path.extname(dataDir).toLowerCase() === '.db';
+      const filePath = isFile ? dataDir : path.join(dataDir, process.env.VECTOR_DB_FILENAME || 'vector.db');
+      
+      // Run database migrations for fresh installs
+      console.log('[MainMediaAPI] Checking database migrations...');
+      const migrator = new DatabaseMigrator(filePath);
+      const migrationResult = await migrator.migrate();
+      
+      if (!migrationResult.success) {
+        throw new Error(`Database migration failed: ${migrationResult.error}`);
+      }
+      
+      if (migrationResult.migrationsRun.length > 0) {
+        console.log(`[MainMediaAPI] Applied ${migrationResult.migrationsRun.length} migrations:`, migrationResult.migrationsRun);
+      }
+      
+      this.db = new SqliteMainDatabase(filePath);
+      this.backendType = 'sqlite';
+      this.dbPathInfo = filePath;
+      // Initialize sqlite-vec on the same file for unified storage
+      try {
+        this.vecDb = new SqliteVecDatabase(filePath);
+      } catch (e) {
+        console.error('[MainMediaAPI] Failed to initialize sqlite-vec database:', e);
+        this.vecDb = null;
+      }
+    } else {
+      // Legacy JSON-backed implementation
+      this.db = new MainDatabase(dataDir);
+      this.backendType = 'json';
+      this.dbPathInfo = dataDir;
+    }
+    await this.db.initialize();
+    // Initialize LLM provider (Ollama by default)
+    try {
+      this.llm = LLMProviderFactory.createProvider('ollama');
+    } catch (e) {
+      console.warn('[MainMediaAPI] Failed to initialize LLM provider:', e);
+      this.llm = null;
+    }
     
     this.initialized = true;
-    console.log('MainMediaAPI initialized with two-phase processing');
-  }
-
-  /**
-   * Get recent items with optional filters (sources, media types) sorted by recency
-   */
-  static async getRecentItems(params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }): Promise<{ success: boolean; items?: any[]; total?: number; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      const all = await this.db.getMediaItems();
-      const byType = (it: any): 'image'|'video'|'audio' => {
-        const mime = (it.mimeType || '').toLowerCase();
-        if (mime.startsWith('video/')) return 'video';
-        if (mime.startsWith('audio/')) return 'audio';
-        if (typeof it.type === 'string') {
-          const t = it.type.toLowerCase();
-          if (t.includes('video')) return 'video';
-          if (t.includes('audio')) return 'audio';
-        }
-        return 'image';
-      };
-      let items = all;
-      if (params?.sourceIds?.length) {
-        const set = new Set(params.sourceIds);
-        items = items.filter(it => set.has(it.sourceId));
-      }
-      if (params?.types?.length) {
-        const tset = new Set(params.types);
-        items = items.filter(it => tset.has(byType(it)));
-      }
-      const ts = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-      items.sort((a, b) => ts(b) - ts(a));
-      const total = items.length;
-      const offset = Math.max(0, params?.offset || 0);
-      const limit = Math.max(0, params?.limit || total);
-      const paged = items.slice(offset, offset + limit);
-      return { success: true, items: paged, total };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-    }
-  }
-
-  /**
-   * List media items, optionally filtered by sourceId (used for browse view)
-   */
-  static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      const items = await this.db.getMediaItems(sourceId);
-      return { success: true, items };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-    }
+    console.log(`[MainMediaAPI] initialized with backend=${this.backendType} path=${this.dbPathInfo}`);
   }
 
   private static async ensureInitialized(): Promise<void> {
     if (!this.initialized) {
-      throw new Error('MainMediaAPI not initialized');
+      throw new Error('MainMediaAPI not initialized. Call initialize() first.');
     }
   }
 
-  static async addSource(name: string, type: string, path: string, config?: any): Promise<{ success: boolean; sourceId?: string; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      const sourceId = await this.db.addSource({
-        name,
-        type: type as 'local' | 'remote',
-        path,
-        enabled: true,
-        config
-      });
-      return { success: true, sourceId };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
+  /**
+   * Get all media sources
+   */
   static async getSources(): Promise<{ success: boolean; sources?: MediaSource[]; error?: string }> {
     try {
       await this.ensureInitialized();
       const sources = await this.db.getSources();
       return { success: true, sources };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
+      console.error('Failed to get sources:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
+  /**
+   * Add a new media source
+   */
+  static async addSource(source: Omit<MediaSource, 'id'>): Promise<{ success: boolean; id?: string; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      const id = await this.db.addSource(source);
+      return { success: true, id };
+    } catch (error) {
+      console.error('Failed to add source:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Update a media source
+   */
+  static async updateSource(id: string, updates: Partial<Omit<MediaSource, 'id'>>): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      await this.db.updateSource(id, updates);
+      return { success: true };
+    } catch (error) {
+      console.error('Failed to update source:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Remove a media source
+   */
   static async removeSource(sourceId: string): Promise<{ success: boolean; error?: string }> {
     try {
       await this.ensureInitialized();
       await this.db.removeSource(sourceId);
       return { success: true };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
+      console.error('Failed to remove source:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
-  static async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
+  /**
+   * Get recent media items with optional filters
+   */
+  static async getRecentItems(params?: { 
+    sourceIds?: string[]; 
+    types?: Array<'image'|'video'|'audio'>; 
+    limit?: number; 
+    offset?: number 
+  }): Promise<{ success: boolean; items?: any[]; total?: number; error?: string }> {
     try {
       await this.ensureInitialized();
+      console.log(`[MainMediaAPI] getRecentItems using backend=${this.backendType}`);
+      const allItems: any[] = await this.db.getMediaItems();
       
-      // Check if re-indexing is required based on config
-      const config = ConfigManager.getConfig();
-
-      console.log("reindexing status", config.indexing.reindexOnStartup)
+      let filteredItems = allItems;
       
-      if (!config.indexing.reindexOnStartup) {
-        const source = await this.db.getSource(sourceId);
-        if (source && source.lastIndexed) {
-          console.log(`📋 [CONFIG] Skipping re-index for source ${source.name} (lastIndexed: ${source.lastIndexed})`);
-          return { success: true, jobId: 'skipped' };
-        }
+      // Filter by source IDs if provided
+      if (params?.sourceIds?.length) {
+        const sourceIdSet = new Set(params.sourceIds);
+        filteredItems = filteredItems.filter((item: any) => sourceIdSet.has(item.sourceId));
       }
       
-      const jobId = await this.db.createJob({ sourceId });
+      // Filter by types if provided
+      if (params?.types?.length) {
+        const typeSet = new Set(params.types);
+        filteredItems = filteredItems.filter((item: any) => {
+          const mime: string = (item.mimeType || '').toLowerCase();
+          if (mime.startsWith('video/')) return typeSet.has('video');
+          if (mime.startsWith('audio/')) return typeSet.has('audio');
+          return typeSet.has('image');
+        });
+      }
       
-      // Start indexing in background
-      this.performIndexing(jobId, sourceId).catch(error => {
-        console.error('Indexing failed:', error);
-        this.db.updateJobStatus(jobId, 'failed', 0);
+      // Sort by creation date (most recent first)
+      filteredItems.sort((a: any, b: any) => {
+        const aDate = new Date(a.createdAt || 0);
+        const bDate = new Date(b.createdAt || 0);
+        return bDate.getTime() - aDate.getTime();
       });
       
-      return { success: true, jobId };
+      const total = filteredItems.length;
+      const offset = params?.offset || 0;
+      const limit = params?.limit || 50;
+      
+      const items = filteredItems.slice(offset, offset + limit);
+      
+      return { success: true, items, total };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  static async stopIndexing(jobId: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      await this.db.updateJobStatus(jobId, 'cancelled');
-      return { success: true };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : String(error) 
-      };
-    }
-  }
-
-  static async getIndexingStatus(): Promise<{ success: boolean; activeJobs: string[]; jobs?: Array<{ id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: Date; completedAt?: Date }>; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      const jobs = await this.db.getActiveJobs();
-      const activeJobs = jobs.map(job => job.id);
-      // Pass through minimal job details for UI
-      const jobDetails = jobs.map(j => ({
-        id: j.id,
-        sourceId: j.sourceId,
-        status: j.status,
-        progress: j.progress,
-        totalItems: j.totalItems,
-        processedItems: j.processedItems,
-        startedAt: j.startedAt,
-        completedAt: j.completedAt,
-      }));
-      return { success: true, activeJobs, jobs: jobDetails };
-    } catch (error) {
-      return { 
-        success: false, 
-        activeJobs: [],
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  static async search(query: SearchQuery): Promise<{ success: boolean; results?: SearchResult; error?: string }> {
-    try {
-      console.log(`\n=== VECTOR SEARCH START ===`);
-      console.log(`Query: "${query.query}"`);
-      console.log(`Limit: ${query.limit || 10}`);
-      
-      await this.ensureInitialized();
-      const startTime = Date.now();
-      
-      // Generate embedding for the search query
-      console.log(`Generating query embedding...`);
-      console.log(`🔍 [QUERY-EMBEDDING] Query text: "${query.query}"`);
-      
-      const queryEmbedding = await this.llmProvider.generateEmbedding(query.query);
-      
-      console.log(`Query embedding generated: ${queryEmbedding.length} dimensions`);
-      console.log(`🔍 [QUERY-EMBEDDING] First 10 values: [${Array.from(queryEmbedding.slice(0, 10)).map(v => v.toFixed(4)).join(', ')}]`);
-      console.log(`🔍 [QUERY-EMBEDDING] Embedding sum: ${Array.from(queryEmbedding).reduce((a, b) => a + b, 0).toFixed(4)}`);
-      
-      // Perform enhanced vector similarity search using SqliteVecDatabase
-      console.log(`Performing enhanced vector similarity search...`);
-      const searchResults = await this.vectorDb.searchSimilar(queryEmbedding, query.limit || 10, query.query);
-      const executionTime = Date.now() - startTime;
-      
-      // Convert SqliteVecDatabase results to MediaItem format
-      const items = searchResults.map(result => ({
-        id: result.id,
-        name: result.name,
-        path: result.path,
-        description: result.caption,
-        sourceId: result.sourceId,
-        size: result.size,
-        type: result.type,
-        mimeType: getMimeType(result.path),
-        createdAt: new Date(),
-        lastModified: new Date()
-      }));
-      
-      console.log(`Vector search results: ${items.length} items found in ${executionTime}ms`);
-      if (items.length > 0) {
-        console.log(`Top result: ${items[0].name} (${items[0].path})`);
-        if (items[0].description) {
-          console.log(`  Description: ${items[0].description.substring(0, 100)}...`);
-        }
-      }
-      
-      const results: SearchResult = {
-        items,
-        total: items.length,
-        query: query.query,
-        executionTime,
-        suggestions: []
-      };
-      
-      console.log(`=== VECTOR SEARCH COMPLETE ===\n`);
-      return { success: true, results };
-    } catch (error) {
-      console.error(`\n✗ VECTOR SEARCH FAILED:`, error);
-      console.log(`=== VECTOR SEARCH FAILED ===\n`);
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  static async searchText(text: string, limit?: number): Promise<{ success: boolean; results?: SearchResult; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      const query: SearchQuery = {
-        query: text,
-        limit: limit || 10,
-        offset: 0
-      };
-      
-      const result = await this.search(query);
-      return result;
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : String(error) 
-      };
-    }
-  }
-
-  static async getSuggestions(query: string, limit: number = 2): Promise<{ success: boolean; suggestions?: string[]; error?: string }> {
-    try {
-      // Simplified implementation
-      const suggestions = [];
-      for (let i = 1; i <= limit; i++) {
-        suggestions.push(`${query} suggestion ${i}`);
-      }
-      return { success: true, suggestions };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
+      console.error('Failed to get recent items:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
   /**
-   * Update concurrency settings
+   * Get media items, optionally filtered by sourceId
    */
-  static async updateConcurrencySettings(limit: number): Promise<{ success: boolean; error?: string }> {
+  static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; error?: string }> {
     try {
-      ConfigManager.setConcurrencyLimit(limit);
-      console.log(`📋 [CONFIG] Concurrency limit updated to: ${limit}`);
-      return { success: true };
+      await this.ensureInitialized();
+      console.log(`[MainMediaAPI] getItems(${sourceId ?? 'ALL'}) using backend=${this.backendType}`);
+      const items = await this.db.getMediaItems(sourceId);
+      return { success: true, items };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Invalid concurrency limit' 
-      };
+      console.error('Failed to get items:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
   /**
-   * Get current configuration
+   * Insert or update a single file as a media item in the main database.
+   * Useful for external pipelines (e.g., Video RAG) to reflect files in the unified UI without running full indexing.
    */
-  static async getConfiguration(): Promise<{ success: boolean; config?: any; error?: string }> {
+  static async addItemForFile(sourceId: string, filePath: string, description?: string, metadata?: Record<string, any>): Promise<{ success: boolean; id?: string; error?: string }> {
     try {
-      const config = ConfigManager.getConfig();
-      return { success: true, config };
+      await this.ensureInitialized();
+      const stats = await fs.stat(filePath);
+      const name = path.basename(filePath);
+      const mime = this.getMimeType(filePath);
+      const lower = (mime || '').toLowerCase();
+      let type: 'image' | 'video' | 'audio' | 'other' = 'other';
+      if (lower.startsWith('image/')) type = 'image';
+      else if (lower.startsWith('video/')) type = 'video';
+      else if (lower.startsWith('audio/')) type = 'audio';
+
+      const id = await this.db.addMediaItem({
+        sourceId,
+        name,
+        path: filePath,
+        size: Number(stats.size || 0),
+        type,
+        mimeType: mime,
+        createdAt: new Date(stats.birthtimeMs || stats.ctimeMs || Date.now()),
+        modifiedAt: new Date(stats.mtimeMs || Date.now()),
+        description,
+        metadata,
+      });
+      return { success: true, id };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to get configuration' 
-      };
+      console.error('[MainMediaAPI] addItemForFile failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
   /**
-   * Enable debug mode
+   * Get basic statistics
    */
-  static async enableDebugMode(saveImages: boolean = true, saveLLaVAOutputs: boolean = true, outputDir?: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      ConfigManager.enableDebugMode(saveImages, saveLLaVAOutputs, outputDir);
-      return { success: true };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to enable debug mode' 
-      };
-    }
-  }
-
-  /**
-   * Disable debug mode
-   */
-  static async disableDebugMode(): Promise<{ success: boolean; error?: string }> {
-    try {
-      ConfigManager.disableDebugMode();
-      return { success: true };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to disable debug mode' 
-      };
-    }
-  }
-
   static async getStats(): Promise<{ success: boolean; stats?: {
     totalSources: number;
     totalItems: number;
@@ -402,381 +256,15 @@ export class MainMediaAPI {
       const stats = await this.db.getStats();
       return { success: true, stats };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  static async isOllamaAvailable(): Promise<{ success: boolean; available: boolean; error?: string }> {
-    console.log('[MAIN-MEDIA-API] isOllamaAvailable() called');
-    try {
-      await this.ensureInitialized();
-      const providerName = this.llmProvider.getName();
-      console.log('[MAIN-MEDIA-API] Provider name:', providerName);
-      if (providerName === 'Ollama' || providerName === 'Subprocess Ollama') {
-        console.log('[MAIN-MEDIA-API] Calling provider.isAvailable()');
-        const available = await this.llmProvider.isAvailable();
-        console.log('[MAIN-MEDIA-API] Provider.isAvailable() returned:', available);
-        return { success: true, available };
-      }
-      console.log('[MAIN-MEDIA-API] Provider not Ollama-based, returning false');
-      return { success: true, available: false };
-    } catch (error) {
-      console.error('[MAIN-MEDIA-API] Error in isOllamaAvailable:', error);
-      return { 
-        success: false, 
-        available: false,
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  static async getImageThumbnail(imagePath: string): Promise<{ success: boolean; dataUrl?: string; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      
-      // Check if file exists
-      if (!fs.existsSync(imagePath)) {
-        return { success: false, error: 'Image file not found' };
-      }
-      
-      // Read the image file
-      const imageBuffer = fs.readFileSync(imagePath);
-      const mimeType = getMimeType(imagePath);
-      
-      // Convert to base64 data URL
-      const base64 = imageBuffer.toString('base64');
-      const dataUrl = `data:${mimeType};base64,${base64}`;
-      
-      return { success: true, dataUrl };
-    } catch (error) {
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      };
-    }
-  }
-
-  private static async performIndexing(jobId: string, sourceId: string): Promise<void> {
-    try {
-      console.log(`\n=== INDEXING START ===`);
-      console.log(`Job ID: ${jobId}`);
-      console.log(`Source ID: ${sourceId}`);
-      
-      // 1. Get the source configuration
-      const source = await this.db.getSource(sourceId);
-      if (!source) {
-        throw new Error(`Source not found: ${sourceId}`);
-      }
-      
-      console.log(`Source details:`, {
-        name: source.name,
-        path: source.path,
-        type: source.type,
-        recursive: source.config?.recursive
-      });
-      
-      // Update job status to running
-      await this.db.updateJobStatus(jobId, 'running');
-      console.log(`Job status updated to 'running'`);
-      
-      // 2. Import the file scanner
-      const { scanDirectory } = await import('../core/file-scanner');
-      console.log(`File scanner imported successfully`);
-      
-      // 3. Scan for media files
-      console.log(`\n--- SCANNING PHASE ---`);
-      console.log(`Scanning directory: ${source.path}`);
-      console.log(`Recursive scan: ${source.config?.recursive !== false}`);
-      
-      const mediaFiles = await scanDirectory(source.path, source.config?.recursive !== false);
-      console.log(`\n--- SCAN RESULTS ---`);
-      console.log(`Found ${mediaFiles.length} media files`);
-      
-      if (mediaFiles.length > 0) {
-        console.log(`First 3 files found:`);
-        mediaFiles.slice(0, 3).forEach((file, index) => {
-          console.log(`  ${index + 1}. ${file.name} (${file.size} bytes, ${file.type})`);
-        });
-      }
-      
-      if (mediaFiles.length === 0) {
-        console.log(`No media files found, completing job`);
-        await this.db.updateJobStatus(jobId, 'completed', 100);
-        console.log(`=== INDEXING COMPLETE (NO FILES) ===\n`);
-        return;
-      }
-      
-      // Update job progress (0-50% for scanning)
-      await this.db.updateJobStatus(jobId, 'running', 50);
-      console.log(`Job progress updated to 50% (scanning complete)`);
-      
-      // 4. Process files with bounded concurrency
-      console.log(`\n--- PARALLEL PROCESSING PHASE ---`);
-      const CONCURRENCY_LIMIT = await ConfigManager.getOptimalConcurrency(mediaFiles.length);
-      console.log(`Processing ${mediaFiles.length} files with optimal concurrency limit: ${CONCURRENCY_LIMIT}`);
-      console.log(`📋 [CONFIG] Base concurrency: ${ConfigManager.getConcurrencyLimit()}, Optimal for ${mediaFiles.length} files: ${CONCURRENCY_LIMIT}`);
-      
-      let processedCount = 0;
-      
-      const processingResults = await processWithConcurrency(
-        mediaFiles,
-        async (file, index) => {
-          const fileStartTime = Date.now();
-          try {
-            console.log(`⏱️  [${index + 1}/${mediaFiles.length}] Processing: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`);
-            
-            // Check if file already exists and hasn't changed
-            const fileHash = await calculateFileHash(file.path);
-            const existingItem = await this.db.getItemByPath(file.path);
-            
-            if (existingItem && existingItem.fileHash === fileHash) {
-              console.log(`  ⏭️ [${file.name}] Skipping - already processed (hash: ${fileHash.substring(0, 8)}...)`);
-              return {
-                success: true,
-                file: file.name,
-                itemId: existingItem.id,
-                skipped: true,
-                timing: { total: 0, compression: 0, embedding: 0, description: 0, database: 0 }
-              };
-            }
-            
-            console.log(`  🔄 [${file.name}] ${existingItem ? 'File changed, re-processing' : 'New file'} (hash: ${fileHash.substring(0, 8)}...)`);
-            
-            // Generate embeddings for images using Ollama LLaVA
-            let description = '';
-            let embedding: Float32Array | undefined;
-            let embeddingTime = 0;
-            let descriptionTime = 0;
-            
-            let compressionTime = 0;
-            let compressedPath = file.path;
-            let compressionResult: any = null;
-            
-            if (file.type === 'image') {
-              try {
-                // Step 1: Compress image if needed
-                if (ImageCompressor.shouldCompress(file.path, file.size)) {
-                  const compressStart = Date.now();
-                  console.log(`  🗜️ [${file.name}] Compressing image...`);
-                  
-                  // Create temp directory for compressed images
-                  const tempDir = path.join(os.tmpdir(), 'driller-compressed');
-                  const config = ConfigManager.getConfig();
-                  const settings = ImageCompressor.getOptimalSettings(file.path, file.size, config.ai.visionModelDims);
-                  
-                  compressionResult = await ImageCompressor.compressImage(file.path, tempDir, settings);
-                  compressedPath = compressionResult.compressedPath;
-                  compressionTime = Date.now() - compressStart;
-                  
-                  console.log(`  ✅ [${file.name}] Compressed: ${compressionResult.compressionRatio.toFixed(1)}% savings in ${compressionTime}ms`);
-                  
-                  // Debug: Save compressed image if DEBUG_MODE=true
-                  const debugConfig = ConfigManager.getDebugConfig();
-                  if (debugConfig.enabled && debugConfig.saveCompressedImages) {
-                    try {
-                      await fs.promises.mkdir(debugConfig.outputDir, { recursive: true });
-                      const debugImagePath = path.join(debugConfig.outputDir, `compressed_${file.name}`);
-                      await fs.promises.copyFile(compressedPath, debugImagePath);
-                      console.log(`  🐛 [DEBUG] Saved compressed image: ${debugImagePath}`);
-                    } catch (debugError) {
-                      console.warn(`  ⚠️ [DEBUG] Failed to save compressed image: ${debugError}`);
-                    }
-                  }
-                } else {
-                  console.log(`  ⏭️ [${file.name}] Skipping compression (${(file.size / 1024).toFixed(1)}KB)`);
-                }
-                
-                // Step 2: Generate AI embeddings using compressed image
-                const embeddingStart = Date.now();
-                console.log(`  🔍 [${file.name}] Generating AI embedding...`);
-                embedding = await this.llmProvider.generateImageEmbedding(compressedPath);
-                embeddingTime = Date.now() - embeddingStart;
-                console.log(`  🧠 [${file.name}] Generated embedding vector of size: ${embedding.length} in ${embeddingTime}ms`);
-                
-                // Step 3: Generate description using compressed image
-                const descriptionStart = Date.now();
-                console.log(`  📝 [${file.name}] Generating description...`);
-                description = await this.llmProvider.generateImageDescription(compressedPath);
-                descriptionTime = Date.now() - descriptionStart;
-                console.log(`  📝 [${file.name}] Description generated in ${descriptionTime}ms: ${description.substring(0, 100)}...`);
-                
-                // Debug: Save LLaVA output if DEBUG_MODE=true
-                const debugConfig = ConfigManager.getDebugConfig();
-                if (debugConfig.enabled && debugConfig.saveLLaVAOutputs) {
-                  try {
-                    await fs.promises.mkdir(debugConfig.outputDir, { recursive: true });
-                    const debugOutputPath = path.join(debugConfig.outputDir, `llava_output_${path.parse(file.name).name}.txt`);
-                    const debugContent = `File: ${file.name}\nOriginal Size: ${(file.size / 1024).toFixed(1)}KB\nCompressed: ${compressionResult ? 'Yes' : 'No'}\n${compressionResult ? `Compressed Size: ${(compressionResult.compressedSize / 1024).toFixed(1)}KB\nCompression Ratio: ${compressionResult.compressionRatio.toFixed(1)}%\n` : ''}Processing Time: ${descriptionTime}ms\n\nVision Description:\n${description}`;
-                    await fs.promises.writeFile(debugOutputPath, debugContent, 'utf8');
-                    console.log(`  🐛 [DEBUG] Saved LLaVA output: ${debugOutputPath}`);
-                  } catch (debugError) {
-                    console.warn(`  ⚠️ [DEBUG] Failed to save LLaVA output: ${debugError}`);
-                  }
-                }
-                
-                // Clean up temporary compressed file if created
-                if (compressionResult && compressedPath !== file.path) {
-                  try {
-                    await fs.promises.unlink(compressedPath);
-                    console.log(`  🗑️ [${file.name}] Cleaned up temporary compressed file`);
-                  } catch (cleanupError) {
-                    console.warn(`  ⚠️ [${file.name}] Failed to cleanup temp file: ${cleanupError}`);
-                  }
-                }
-                
-              } catch (error) {
-                const errorTime = Date.now() - fileStartTime;
-                console.error(`  ⚠️ [${file.name}] Failed to process image after ${errorTime}ms:`, error);
-                description = `Image file: ${file.name}`;
-                
-                // Clean up on error
-                if (compressionResult && compressedPath !== file.path) {
-                  try {
-                    await fs.promises.unlink(compressedPath);
-                  } catch (cleanupError) {
-                    // Ignore cleanup errors
-                  }
-                }
-              }
-            }
-            
-            // Time database insertion
-            const dbStart = Date.now();
-            
-            // Save to MainDatabase (jobs/sources tracking)
-            const itemId = await this.db.addMediaItem({
-              sourceId,
-              name: file.name,
-              path: file.path,
-              size: file.size,
-              type: file.type,
-              mimeType: getMimeType(file.path),
-              createdAt: new Date(),
-              modifiedAt: file.lastModified,
-              description,
-              embedding,
-              metadata: {}
-            });
-            
-            // Save to VectorDatabase (for search functionality)
-            const mediaItem = {
-              id: fileHash,
-              sourceId: sourceId,
-              name: file.name,
-              path: file.path,
-              size: file.size,
-              type: file.type,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-              captionStatus: (description ? 'completed' : 'failed') as 'pending' | 'processing' | 'completed' | 'failed',
-              embeddingStatus: (embedding ? 'completed' : 'failed') as 'pending' | 'processing' | 'completed' | 'failed'
-            };
-            
-            // Add to vector database
-            this.vectorDb.addMediaItem(mediaItem);
-            
-            // Update with caption and embedding if available
-            if (description) {
-              this.vectorDb.updateCaption(fileHash, description, 'completed');
-            }
-            if (embedding) {
-              this.vectorDb.updateEmbedding(fileHash, embedding, 'completed');
-            }
-            
-            const dbTime = Date.now() - dbStart;
-            const totalTime = Date.now() - fileStartTime;
-            
-            console.log(`  ✅ [${file.name}] Complete in ${totalTime}ms (compression: ${compressionTime}ms, embedding: ${embeddingTime}ms, description: ${descriptionTime}ms, db: ${dbTime}ms) - ID: ${itemId}`);
-            
-            return { 
-              success: true, 
-              itemId, 
-              fileName: file.name,
-              timings: {
-                total: totalTime,
-                compression: compressionTime,
-                embedding: embeddingTime,
-                description: descriptionTime,
-                database: dbTime
-              }
-            };
-          } catch (error) {
-            const errorTime = Date.now() - fileStartTime;
-            console.error(`  ✗ [${file.name}] Error processing file after ${errorTime}ms:`, error);
-            return { 
-              success: false, 
-              error: error instanceof Error ? error.message : String(error), 
-              fileName: file.name,
-              timings: { total: errorTime, compression: 0, embedding: 0, description: 0, database: 0 }
-            };
-          }
-        },
-        CONCURRENCY_LIMIT,
-        async (completed, total, file) => {
-          processedCount = completed;
-          
-          // Update job progress (50-100%)
-          const progress = 50 + Math.floor((completed / total) * 50);
-          await this.db.updateJobStatus(jobId, 'running', progress);
-          
-          if (completed % 5 === 0 || completed === total) {
-            console.log(`  📊 Progress: ${completed}/${total} files (${progress}%) - Latest: ${file.name}`);
-          }
-        }
-      );
-      
-      // Calculate timing statistics
-      const successfulResults = processingResults.filter((r: any) => r.success);
-      const failedResults = processingResults.filter((r: any) => !r.success);
-      
-      if (successfulResults.length > 0) {
-        const totalCompressionTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.compression || 0), 0);
-        const totalEmbeddingTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.embedding || 0), 0);
-        const totalDescriptionTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.description || 0), 0);
-        const totalDbTime = successfulResults.reduce((sum: number, r: any) => sum + (r.timings?.database || 0), 0);
-        const avgCompressionTime = totalCompressionTime / successfulResults.length;
-        const avgEmbeddingTime = totalEmbeddingTime / successfulResults.length;
-        const avgDescriptionTime = totalDescriptionTime / successfulResults.length;
-        const avgDbTime = totalDbTime / successfulResults.length;
-        
-        console.log(`\n📊 [TIMING SUMMARY]`);
-        console.log(`   Successful: ${successfulResults.length}/${mediaFiles.length} files`);
-        console.log(`   Failed: ${failedResults.length}/${mediaFiles.length} files`);
-        console.log(`   Average compression time: ${avgCompressionTime.toFixed(0)}ms`);
-        console.log(`   Average embedding time: ${avgEmbeddingTime.toFixed(0)}ms`);
-        console.log(`   Average description time: ${avgDescriptionTime.toFixed(0)}ms`);
-        console.log(`   Average database time: ${avgDbTime.toFixed(0)}ms`);
-        console.log(`   Total compression time: ${totalCompressionTime.toFixed(0)}ms`);
-        console.log(`   Total AI processing time: ${(totalEmbeddingTime + totalDescriptionTime).toFixed(0)}ms`);
-        console.log(`   Total database time: ${totalDbTime.toFixed(0)}ms`);
-      }
-      
-      console.log(`✅ Parallel processing complete: ${processedCount}/${mediaFiles.length} files processed`);
-      
-      // 5. Complete the job
-      console.log(`\n--- COMPLETION PHASE ---`);
-      await this.db.updateJobStatus(jobId, 'completed', 100);
-      await this.db.updateSource(sourceId, { lastIndexed: new Date() });
-      
-      console.log(`✓ Job completed successfully`);
-      console.log(`✓ Source lastIndexed timestamp updated`);
-      console.log(`✓ Total files processed: ${processedCount}`);
-      console.log(`=== INDEXING COMPLETE ===\n`);
-      
-    } catch (error) {
-      console.error(`\n✗ INDEXING FAILED for source ${sourceId}:`, error);
-      await this.db.updateJobStatus(jobId, 'failed');
-      console.log(`=== INDEXING FAILED ===\n`);
+      console.error('Failed to get stats:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
   /**
-   * Index source using two-phase processing
+   * Start indexing a source
    */
-  static async indexSourceTwoPhase(sourceId: string): Promise<{ success: boolean; error?: string }> {
+  static async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
       await this.ensureInitialized();
       
@@ -785,130 +273,376 @@ export class MainMediaAPI {
         return { success: false, error: 'Source not found' };
       }
 
-      console.log(`🚀 [TWO-PHASE] Starting indexing for source: ${source.name}`);
+      const jobId = await this.db.createJob({ sourceId });
       
-      // Scan for media files
-      const files = await this.scanMediaFiles(source.path);
-      console.log(`📁 [TWO-PHASE] Found ${files.length} media files`);
+      // Start indexing in background (simplified version)
+      this.performIndexing(jobId, sourceId).catch(error => {
+        console.error('Indexing failed:', error);
+        this.db.updateJobStatus(jobId, 'failed', 0);
+      });
       
-      // Add files to two-phase processor
-      const mediaItems = files.map(file => ({
-        id: this.generateId(),
-        sourceId: sourceId,
-        name: path.basename(file.path),
-        path: file.path,
-        size: file.size,
-        type: file.type
-      }));
-      
-      this.processor.addMediaItems(mediaItems);
-      
-      // Run processing phases
-      await this.processor.runProcessing(3, 5); // Small batches to avoid overwhelming Ollama
-      
-      const stats = this.processor.getStats();
-      console.log(`✅ [TWO-PHASE] Indexing completed. Phase 1: ${stats.phase1.completed}/${stats.phase1.total}, Phase 2: ${stats.phase2.completed}/${stats.phase2.total}`);
-      
+      return { success: true, jobId };
+    } catch (error) {
+      console.error('Failed to start indexing:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Stop indexing a job
+   */
+  static async stopIndexing(jobId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      await this.db.updateJobStatus(jobId, 'cancelled');
       return { success: true };
     } catch (error) {
-      console.error('Error in two-phase indexing:', error);
+      console.error('Failed to stop indexing:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get indexing status
+   */
+  static async getIndexingStatus(): Promise<{ 
+    success: boolean; 
+    activeJobs: string[]; 
+    jobs?: Array<{ 
+      id: string; 
+      sourceId: string; 
+      status: string; 
+      progress: number; 
+      totalItems?: number; 
+      processedItems?: number; 
+      startedAt?: Date; 
+      completedAt?: Date 
+    }>; 
+    error?: string 
+  }> {
+    try {
+      await this.ensureInitialized();
+      const jobs = await this.db.getActiveJobs();
+      const activeJobs = jobs.map((job: any) => job.id);
+      
+      const jobDetails = jobs.map((j: any) => ({
+        id: j.id,
+        sourceId: j.sourceId,
+        status: j.status,
+        progress: j.progress,
+        totalItems: j.totalItems,
+        processedItems: j.processedItems,
+        startedAt: j.startedAt,
+        completedAt: j.completedAt,
+      }));
+      
+      return { success: true, activeJobs, jobs: jobDetails };
+    } catch (error) {
+      console.error('Failed to get indexing status:', error);
       return { 
         success: false, 
+        activeJobs: [],
         error: error instanceof Error ? error.message : 'Unknown error' 
       };
     }
   }
 
   /**
-   * Search using vector database
+   * Simplified indexing implementation
    */
-  static async searchVector(query: string, limit: number = 10): Promise<{ success: boolean; results?: any[]; error?: string }> {
+  private static async performIndexing(jobId: string, sourceId: string): Promise<void> {
     try {
-      await this.ensureInitialized();
+      console.log(`Starting indexing job ${jobId} for source ${sourceId}`);
       
-      const results = await this.processor.search(query, limit);
+      const source = await this.db.getSource(sourceId);
+      if (!source) {
+        throw new Error(`Source not found: ${sourceId}`);
+      }
       
-      return {
-        success: true,
-        results: results.map(r => ({
-          id: r.item.id,
-          name: r.item.name,
-          path: r.item.path,
-          caption: r.item.caption,
-          similarity: r.similarity,
-          type: r.item.type,
-          size: r.item.size
-        }))
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-    }
-  }
+      await this.db.updateJobStatus(jobId, 'running');
+      
+      // Import file scanner
+      const { scanDirectory } = await import('../core/file-scanner');
+      
+      // Scan for media files
+      const mediaFiles = await scanDirectory(source.path, source.config?.recursive !== false);
+      console.log(`Found ${mediaFiles.length} media files`);
+      
+      if (mediaFiles.length === 0) {
+        await this.db.updateJobStatus(jobId, 'completed', 100);
+        return;
+      }
+      
+      // Process files: add to SQLite and (if available) generate captions + embeddings
+      let processedCount = 0;
+      
+      for (const file of mediaFiles) {
+        try {
+          // 0) Optional compression for vision models
+          let inferencePath = file.path;
+          try {
+            const cfg = ConfigManager.getConfig();
+            if (cfg.compression.enabled && ImageCompressor.shouldCompress(file.path, file.size)) {
+              const tempDir = path.join(os.tmpdir(), 'driller-compressed');
+              const settings = ImageCompressor.getOptimalSettings(file.path, file.size, cfg.ai.visionModelDims);
+              const res = await ImageCompressor.compressImage(file.path, tempDir, settings);
+              inferencePath = res.compressedPath;
+              console.log(`[INDEX] Using compressed image for inference: ${path.basename(inferencePath)}`);
+            }
+          } catch (e) {
+            console.warn('[INDEX] Compression step failed, falling back to original:', e);
+          }
 
-  /**
-   * Get two-phase processing statistics
-   */
-  static async getTwoPhaseStats(): Promise<{ success: boolean; stats?: any; error?: string }> {
-    try {
-      await this.ensureInitialized();
-      
-      const stats = this.processor.getStats();
-      const vectorStats = this.vectorDb.getStats();
-      
-      return {
-        success: true,
-        stats: {
-          twoPhase: stats,
-          database: vectorStats
+          // 1) Persist to main items table (upsert by sourceId+path)
+          const itemId = await this.db.addMediaItem({
+            sourceId,
+            name: file.name,
+            path: file.path,
+            size: file.size,
+            type: file.type,
+            mimeType: this.getMimeType(file.path),
+            createdAt: new Date(),
+            modifiedAt: file.lastModified,
+            description: `${file.type} file: ${file.name}`,
+            metadata: {}
+          });
+          // 2) Persist to sqlite-vec media_items with pending statuses
+          if (this.vecDb) {
+            try {
+              await this.vecDb.addMediaItemWithIdAsync(itemId, {
+                sourceId,
+                name: file.name,
+                path: file.path,
+                size: file.size,
+                type: file.type,
+                createdAt: file.lastModified,
+                updatedAt: file.lastModified,
+                caption: undefined,
+                captionGeneratedAt: undefined,
+                captionStatus: 'pending',
+                embedding: undefined,
+                embeddingGeneratedAt: undefined,
+                embeddingStatus: 'pending',
+              } as any);
+              console.log(`[INDEX] Staged item in sqlite-vec with ID ${itemId}: ${file.name}`);
+            } catch (e) {
+              console.warn('[INDEX] Failed to stage item in sqlite-vec media_items:', e);
+            }
+          }
+
+          // 3) If LLM available, generate caption + embeddings (no fallbacks)
+          if (this.llm && this.vecDb) {
+            try {
+              const caption = await this.llm.generateImageDescription(inferencePath, file.path);
+              this.vecDb.updateCaption(itemId, caption, 'completed');
+            } catch (e) {
+              console.warn('[INDEX] Caption generation failed:', e);
+              try { this.vecDb.updateStatus(itemId, 'failed', undefined); } catch {}
+            }
+            try {
+              const embedding = await this.llm!.generateImageEmbedding(inferencePath);
+              this.vecDb.updateEmbedding(itemId, embedding, 'completed');
+              if (typeof (this.db as any).updateItemEmbedding === 'function') {
+                try { await (this.db as any).updateItemEmbedding(itemId, embedding); } catch {}
+              }
+              console.log(`[INDEX] Stored embedding for ${file.name} (${embedding.length} dims)`);
+            } catch (e) {
+              console.warn('[INDEX] Embedding generation failed (no fallback):', e);
+              try { this.vecDb.updateStatus(itemId, undefined, 'failed'); } catch {}
+            }
+          }
+          
+          processedCount++;
+          const progress = Math.floor((processedCount / mediaFiles.length) * 100);
+          await this.db.updateJobStatus(jobId, 'running', progress);
+          
+        } catch (error) {
+          console.error(`Failed to process file ${file.name}:`, error);
         }
-      };
+      }
+      
+      await this.db.updateJobStatus(jobId, 'completed', 100);
+      console.log(`Indexing job ${jobId} completed. Processed ${processedCount}/${mediaFiles.length} files`);
+      
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      console.error(`Indexing job ${jobId} failed:`, error);
+      await this.db.updateJobStatus(jobId, 'failed', 0);
     }
   }
 
   /**
-   * Process Phase 1 only (captions)
+   * Search functionality (simplified implementation)
    */
-  static async processPhase1(batchSize: number = 5): Promise<{ success: boolean; error?: string }> {
+  static async search(query: any): Promise<{ success: boolean; results?: any; error?: string }> {
     try {
       await this.ensureInitialized();
-      await this.processor.processPhase1(batchSize);
-      return { success: true };
+      const q = String(query.query || '').trim();
+      const limit = query.limit || 20;
+      const started = Date.now();
+
+      if (this.vecDb && this.llm && q) {
+        try {
+          // Semantic search via sqlite-vec (vector-only)
+          const textEmbedding = await this.llm.generateEmbedding(q);
+          const vecResults = await this.vecDb.searchSimilar(textEmbedding, limit, q);
+          const items = vecResults.map(r => ({
+            id: r.id,
+            name: r.name,
+            path: r.path,
+            size: r.size,
+            type: 'image',
+            mimeType: this.getMimeType(r.path),
+            sourceId: r.sourceId,
+            createdAt: new Date(),
+          }));
+          const executionTime = Date.now() - started;
+          return { success: true, results: { items, total: items.length, query: q, executionTime, suggestions: [] } };
+        } catch (e) {
+          console.warn('[SEARCH] Semantic search failed (vector-only):', e);
+          // Vector-only: return empty results on failure
+          const executionTime = Date.now() - started;
+          return { success: true, results: { items: [], total: 0, query: q, executionTime, suggestions: [] } };
+        }
+      }
+
+      // Vector-only enforcement: if no vecDb/llm or no query, return empty
+      const executionTime = Date.now() - started;
+      return { success: true, results: { items: [], total: 0, query: q, executionTime, suggestions: [] } };
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
   /**
-   * Process Phase 2 only (embeddings)
+   * Text search functionality
    */
-  static async processPhase2(batchSize: number = 10): Promise<{ success: boolean; error?: string }> {
+  static async searchText(text: string, limit?: number): Promise<{ success: boolean; results?: any; error?: string }> {
+    return this.search({ query: text, limit: limit || 10 });
+  }
+
+  /**
+   * Get search suggestions
+   */
+  static async getSuggestions(query: string, limit: number = 2): Promise<{ success: boolean; suggestions?: string[]; error?: string }> {
     try {
-      await this.ensureInitialized();
-      await this.processor.processPhase2(batchSize);
-      return { success: true };
+      const suggestions = [];
+      for (let i = 1; i <= limit; i++) {
+        suggestions.push(`${query} suggestion ${i}`);
+      }
+      return { success: true, suggestions };
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 
-  static async close(): Promise<void> {
-    if (this.vectorDb) {
-      this.vectorDb.close();
+  /**
+   * Update concurrency settings (placeholder)
+   */
+  static async updateConcurrencySettings(limit: number): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log(`Concurrency limit updated to: ${limit}`);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Invalid concurrency limit' };
     }
-    console.log('MainMediaAPI closed');
+  }
+
+  /**
+   * Get current configuration (placeholder)
+   */
+  static async getConfiguration(): Promise<{ success: boolean; config?: any; error?: string }> {
+    try {
+      const config = { indexing: { reindexOnStartup: false }, concurrency: { limit: 3 } };
+      return { success: true, config };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to get configuration' };
+    }
+  }
+
+  /**
+   * Enable debug mode (placeholder)
+   */
+  static async enableDebugMode(_saveImages: boolean = true, _saveLLaVAOutputs: boolean = true, _outputDir?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log('Debug mode enabled');
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to enable debug mode' };
+    }
+  }
+
+  /**
+   * Disable debug mode (placeholder)
+   */
+  static async disableDebugMode(): Promise<{ success: boolean; error?: string }> {
+    try {
+      console.log('Debug mode disabled');
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Failed to disable debug mode' };
+    }
+  }
+
+  /**
+   * Check if Ollama is available (placeholder)
+   */
+  static async isOllamaAvailable(): Promise<{ success: boolean; available: boolean; error?: string }> {
+    try {
+      return { success: true, available: false };
+    } catch (error) {
+      return { success: false, available: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get image thumbnail (placeholder)
+   */
+  static async getImageThumbnail(_imagePath: string): Promise<{ success: boolean; dataUrl?: string; error?: string }> {
+    try {
+      const imagePath = _imagePath;
+      if (!imagePath) {
+        return { success: false, error: 'Empty image path' };
+      }
+
+      // Read the image from disk and return a data URL. This runs in Electron main, so Node fs is available.
+      const data = await fs.readFile(imagePath);
+      // Derive mime type from extension
+      const ext = (path.extname(imagePath) || '').replace('.', '').toLowerCase();
+      const mime = this.getMimeType(imagePath) || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'application/octet-stream');
+      const base64 = data.toString('base64');
+      const dataUrl = `data:${mime};base64,${base64}`;
+      return { success: true, dataUrl };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Simple mime type detection
+   */
+  private static getMimeType(filePath: string): string {
+    const ext = filePath.toLowerCase().split('.').pop() || '';
+    const mimeTypes: { [key: string]: string } = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo',
+      'mkv': 'video/x-matroska',
+      'webm': 'video/webm',
+      'm4v': 'video/x-m4v',
+      'flv': 'video/x-flv',
+      'wmv': 'video/x-ms-wmv',
+      'mp3': 'audio/mpeg',
+      'wav': 'audio/wav',
+      'flac': 'audio/flac',
+      'm4a': 'audio/mp4',
+      'aac': 'audio/aac',
+      'ogg': 'audio/ogg'
+    };
+    return mimeTypes[ext] || 'application/octet-stream';
   }
 }

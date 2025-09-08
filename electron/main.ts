@@ -5,6 +5,7 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
+import { attachPartialSegmentWriter } from '../src/orchestrator'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -18,6 +19,11 @@ const IS_DEV = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE 
 const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller')
 const DATA_DIR = process.env.MAIN_DB_DIR || DEFAULT_DATA_DIR
 process.env.DRILLER_DATA_DIR = DATA_DIR
+
+// Default main DB backend to sqlite unless explicitly overridden
+if (!process.env.MAIN_DB_BACKEND) process.env.MAIN_DB_BACKEND = 'sqlite'
+// Standardize filename used when a directory path is passed
+if (!process.env.VECTOR_DB_FILENAME) process.env.VECTOR_DB_FILENAME = 'vector.db'
 
 // The built directory structure
 //
@@ -140,7 +146,7 @@ let videoAPI: VideoMediaAPI | null = null;
 
 async function initializeMediaAPI() {
   try {
-    await MainMediaAPI.initialize(DATA_DIR, 'ollama');
+    await MainMediaAPI.initialize(DATA_DIR);
     mediaAPI = MainMediaAPI;
     console.log('MainMediaAPI initialized in main process');
   } catch (error) {
@@ -152,6 +158,8 @@ async function initializeVideoAPI() {
   try {
     videoAPI = VideoMediaAPI.getInstance();
     await videoAPI.initialize();
+    // Attach partial writer to persist segments early for non-blocking search
+    attachPartialSegmentWriter(videoAPI);
     console.log('VideoMediaAPI initialized in main process');
   } catch (error) {
     console.error('Failed to initialize VideoMediaAPI:', error);
@@ -166,7 +174,14 @@ ipcMain.handle('media:getSources', async () => {
 
 ipcMain.handle('media:addSource', async (_, name: string, type: string, path: string, config?: any) => {
   if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.addSource(name, type, path, config);
+  return await MainMediaAPI.addSource({
+    name,
+    type: type as 'local' | 'remote',
+    path,
+    enabled: true,
+    config,
+    createdAt: new Date()
+  });
 });
 
 ipcMain.handle('media:removeSource', async (_, sourceId: string) => {

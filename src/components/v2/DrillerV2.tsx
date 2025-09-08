@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AutoSizer, List } from 'react-virtualized';
-import VideoSearch from '../VideoSearch';
+import VideoSelection from '../VideoSelection';
 
 // Minimal inline icons
 const Icon = {
@@ -126,7 +126,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const { overallProgress = -1, onOpenIndexing } = props;
 
   const [q, setQ] = useState('');
-  const [activeTab, setActiveTab] = useState<'media' | 'video'>('media');
+  const [activeTab, setActiveTab] = useState<'media' | 'videos'>('media');
   const [scope, setScope] = useState<Scope>('all');
   const [selectedPlace, setSelectedPlace] = useState<string | undefined>();
   const [connectOpen, setConnectOpen] = useState(false);
@@ -197,6 +197,79 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         setLibrary([]);
       }
     })();
+  }, []);
+
+  // Refresh library when selected place changes
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.mediaAPI.getItems();
+        if (res?.success && Array.isArray(res.items)) {
+          const items: any[] = res.items;
+          const mapped: MediaT[] = items.map((it: any) => {
+            const mime = (it.mimeType || '').toLowerCase();
+            let kind: 'image' | 'video' | 'audio' = 'image';
+            if (mime.startsWith('video/')) kind = 'video';
+            else if (mime.startsWith('audio/')) kind = 'audio';
+            else if (typeof it.type === 'string') {
+              const t = it.type.toLowerCase();
+              if (t.includes('video')) kind = 'video';
+              else if (t.includes('audio')) kind = 'audio';
+            }
+            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+          });
+          const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
+          mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
+          setLibrary(mapped);
+        }
+      } catch {}
+    })();
+  }, [selectedPlace]);
+
+  // Poll indexing status; when jobs finish, refresh places and library
+  useEffect(() => {
+    let mounted = true;
+    let prevActive = false;
+    const tick = async () => {
+      try {
+        const st = await window.mediaAPI.getIndexingStatus();
+        const active = !!(st?.success && Array.isArray(st.activeJobs) && st.activeJobs.length > 0);
+        if (!active && prevActive && mounted) {
+          // Jobs just finished — refresh sources and items
+          try {
+            const res = await window.mediaAPI.getSources();
+            if (res.success && Array.isArray(res.sources)) {
+              const mapped: Place[] = res.sources.map((s) => ({ id: s.id, kind: 'local', label: s.name, path: s.path || '', pinned: false }));
+              setPlaces(mapped);
+            }
+          } catch {}
+          try {
+            const itemsRes = await window.mediaAPI.getItems();
+            if (itemsRes?.success && Array.isArray(itemsRes.items)) {
+              const items: any[] = itemsRes.items;
+              const mapped: MediaT[] = items.map((it: any) => {
+                const mime = (it.mimeType || '').toLowerCase();
+                let kind: 'image' | 'video' | 'audio' = 'image';
+                if (mime.startsWith('video/')) kind = 'video';
+                else if (mime.startsWith('audio/')) kind = 'audio';
+                else if (typeof it.type === 'string') {
+                  const t = it.type.toLowerCase();
+                  if (t.includes('video')) kind = 'video';
+                  else if (t.includes('audio')) kind = 'audio';
+                }
+                return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+              });
+              const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
+              mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
+              setLibrary(mapped);
+            }
+          } catch {}
+        }
+        prevActive = active;
+      } catch {}
+    };
+    const h = setInterval(tick, 1500);
+    return () => { mounted = false; clearInterval(h); };
   }, []);
 
   // Real search integration (debounced ~4s) when not on Folders tab
@@ -393,14 +466,14 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               Media Search
             </button>
             <button
-              onClick={() => setActiveTab('video')}
+              onClick={() => setActiveTab('videos')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'video'
+                activeTab === 'videos'
                   ? 'bg-blue-600 text-white'
                   : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
               }`}
             >
-              Video Search
+              Add Videos
             </button>
           </div>
 
@@ -472,12 +545,48 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
       {/* Main */}
       <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-        {activeTab === 'video' ? (
-          <VideoSearch 
-            query={q}
-            onResultClick={(result) => {
-              console.log('Video result clicked:', result);
-              // TODO: Implement video player or segment viewer
+        {activeTab === 'videos' ? (
+          <VideoSelection 
+            onVideoAdded={async () => {
+              // Refresh sources when video is added
+              try {
+                const res = await window.mediaAPI.getSources();
+                if (res.success && Array.isArray(res.sources)) {
+                  const mapped: Place[] = res.sources.map((s) => ({
+                    id: s.id,
+                    kind: 'local',
+                    label: s.name,
+                    path: s.path || '',
+                    pinned: false,
+                    count: 0
+                  }));
+                  setPlaces(mapped);
+                }
+                // Also refresh items so the new video shows up in the Videos group immediately
+                try {
+                  const itemsRes = await window.mediaAPI.getItems();
+                  if (itemsRes?.success && Array.isArray(itemsRes.items)) {
+                    const items: any[] = itemsRes.items;
+                    const mappedItems: MediaT[] = items.map((it: any) => {
+                      const mime = (it.mimeType || '').toLowerCase();
+                      let kind: 'image' | 'video' | 'audio' = 'image';
+                      if (mime.startsWith('video/')) kind = 'video';
+                      else if (mime.startsWith('audio/')) kind = 'audio';
+                      else if (typeof it.type === 'string') {
+                        const t = it.type.toLowerCase();
+                        if (t.includes('video')) kind = 'video';
+                        else if (t.includes('audio')) kind = 'audio';
+                      }
+                      return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                    });
+                    const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
+                    mappedItems.sort((a: any, b: any) => withDate(b) - withDate(a));
+                    setLibrary(mappedItems);
+                  }
+                } catch {}
+              } catch (error) {
+                console.error('Failed to refresh sources:', error);
+              }
             }}
           />
         ) : scope === 'folders' ? (
@@ -506,7 +615,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     icon={<Icon.Image />}
                     items={grouped.image}
                     places={places}
-                    maxVisible={8}
+                    maxVisible={6}
                     onShowMore={() => setExpandedType('image')}
                   />
                   <MediaGroup
@@ -514,7 +623,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     icon={<Icon.Video />}
                     items={grouped.video}
                     places={places}
-                    maxVisible={8}
+                    maxVisible={6}
                     onShowMore={() => setExpandedType('video')}
                   />
                   <MediaGroup
@@ -522,7 +631,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     icon={<Icon.Audio />}
                     items={grouped.audio}
                     places={places}
-                    maxVisible={8}
+                    maxVisible={6}
                     onShowMore={() => setExpandedType('audio')}
                   />
                 </>

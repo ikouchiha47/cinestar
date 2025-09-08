@@ -1,5 +1,5 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
-import { detectScenes, createVideoSegments, getCacheDir } from '../video-processing';
+import { detectScenes, createVideoSegments } from '../video-processing';
 
 export class SegmentationProcessor extends BaseVideoProcessor {
   public name = 'segmentation';

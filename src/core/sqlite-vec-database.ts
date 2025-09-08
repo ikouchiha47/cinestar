@@ -193,6 +193,42 @@ export class SqliteVecDatabase {
   }
 
   /**
+   * Add or update media item with a specific ID (to align with main DB)
+   */
+  async addMediaItemWithIdAsync(id: string, item: Omit<MediaItem, 'id'>): Promise<string> {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO media_items (
+        id, source_id, name, path, size, type, created_at, updated_at,
+        caption, caption_generated_at, caption_status,
+        embedding_generated_at, embedding_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      id,
+      item.sourceId,
+      item.name,
+      item.path,
+      item.size,
+      item.type,
+      item.createdAt.toISOString(),
+      item.updatedAt.toISOString(),
+      item.caption || null,
+      item.captionGeneratedAt?.toISOString() || null,
+      item.captionStatus,
+      item.embeddingGeneratedAt?.toISOString() || null,
+      item.embeddingStatus
+    );
+
+    // Add embedding to vector table if available
+    if ((item as any).embedding && item.embeddingStatus === 'completed') {
+      await this.addEmbedding(id, (item as any).embedding as Float32Array);
+    }
+
+    return id;
+  }
+
+  /**
    * Update caption for a media item
    */
   updateCaption(id: string, caption: string, status: 'completed' | 'failed' = 'completed'): void {

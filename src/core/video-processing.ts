@@ -150,11 +150,16 @@ export async function createVideoSegments(
   const allCuts = [0, ...sceneCuts, duration].sort((a, b) => a - b);
   
   for (let i = 0; i < allCuts.length - 1; i++) {
-    const start = Math.max(0, allCuts[i] - overlapSeconds);
-    const end = Math.min(duration, allCuts[i + 1] + overlapSeconds);
+    let start = allCuts[i];
+    let end = allCuts[i + 1];
+    
+    // Add overlap, but ensure we don't create zero-duration segments
+    if (i > 0) start = Math.max(0, start - overlapSeconds);
+    if (i < allCuts.length - 2) end = Math.min(duration, end + overlapSeconds);
     
     // Skip segments that are too short
     if (end - start < minSegmentLength) {
+      console.warn(`Skipping short segment: ${start}s - ${end}s (duration: ${end - start}s)`);
       continue;
     }
     

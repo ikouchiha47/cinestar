@@ -13,6 +13,7 @@ export interface VideoSegment {
   sceneIndex: number;
   thumbnailPath?: string;
   keyframePath?: string;
+  audioPath?: string;
   transcription?: string;
   caption?: string;
   ocrText?: string;
@@ -35,6 +36,22 @@ export interface VideoFile {
   totalSegments: number;
   processingStatus: 'pending' | 'processing' | 'completed' | 'failed';
   processingError?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface VideoProcessingJob {
+  id: string;
+  videoPath: string;
+  fileName: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  error?: string;
+  startTime?: Date;
+  endTime?: Date;
+  segmentCount?: number;
+  totalSegments?: number;
+  currentStage?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -131,6 +148,7 @@ export class VideoDatabase {
         scene_index INTEGER NOT NULL,
         thumbnail_path TEXT,
         keyframe_path TEXT,
+        audio_path TEXT,
         transcription TEXT,
         caption TEXT,
         ocr_text TEXT,
@@ -138,6 +156,25 @@ export class VideoDatabase {
         metadata TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (video_id) REFERENCES video_files (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Video processing jobs table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS video_processing_jobs (
+        id TEXT PRIMARY KEY,
+        video_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        progress INTEGER DEFAULT 0,
+        error TEXT,
+        start_time DATETIME,
+        end_time DATETIME,
+        segment_count INTEGER DEFAULT 0,
+        total_segments INTEGER,
+        current_stage TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -244,6 +281,40 @@ export class VideoDatabase {
     const stmt = this.db.prepare('SELECT * FROM video_files WHERE file_path = ?');
     const row = stmt.get(filePath) as any;
     return row ? this.mapVideoFileRow(row) : undefined;
+  }
+
+  async resetFailedVideo(videoId: string): Promise<void> {
+    const stmt = this.db.prepare(`
+      UPDATE video_files 
+      SET processing_status = 'pending', processing_error = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    stmt.run(videoId);
+    
+    // Also delete any partial segments for this video
+    const deleteSegments = this.db.prepare('DELETE FROM video_segments WHERE video_id = ?');
+    deleteSegments.run(videoId);
+  }
+
+  async resetFailedVideoByPath(filePath: string): Promise<boolean> {
+    const video = await this.getVideoFileByPath(filePath);
+    if (video && video.processingStatus === 'failed') {
+      await this.resetFailedVideo(video.id);
+      return true;
+    }
+    return false;
+  }
+
+  async getFailedVideos(): Promise<VideoFile[]> {
+    const stmt = this.db.prepare('SELECT * FROM video_files WHERE processing_status = ?');
+    const rows = stmt.all('failed') as any[];
+    return rows.map(row => this.mapVideoFileRow(row));
+  }
+
+  async getSegmentCount(videoId: string): Promise<number> {
+    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM video_segments WHERE video_id = ?');
+    const result = stmt.get(videoId) as any;
+    return result.count;
   }
 
   async updateVideoFile(id: string, updates: Partial<VideoFile>): Promise<void> {
@@ -454,6 +525,7 @@ export class VideoDatabase {
       sceneIndex: row.scene_index,
       thumbnailPath: row.thumbnail_path,
       keyframePath: row.keyframe_path,
+      audioPath: row.audio_path,
       transcription: row.transcription,
       caption: row.caption,
       ocrText: row.ocr_text,
@@ -465,6 +537,118 @@ export class VideoDatabase {
 
   private camelToSnake(str: string): string {
     return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+  }
+
+  // Video Processing Jobs methods
+  async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+    const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const now = new Date().toISOString();
+    
+    const stmt = this.db.prepare(`
+      INSERT INTO video_processing_jobs (
+        id, video_path, file_name, status, progress, error,
+        start_time, end_time, segment_count, total_segments,
+        current_stage, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      id,
+      job.videoPath,
+      job.fileName,
+      job.status,
+      job.progress,
+      job.error || null,
+      job.startTime?.toISOString() || null,
+      job.endTime?.toISOString() || null,
+      job.segmentCount || 0,
+      job.totalSegments || null,
+      job.currentStage || null,
+      now,
+      now
+    );
+    
+    return id;
+  }
+
+  async updateJob(id: string, updates: Partial<Omit<VideoProcessingJob, 'id' | 'createdAt'>>): Promise<void> {
+    const fields = [];
+    const values = [];
+    
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        const dbKey = this.camelToSnake(key);
+        fields.push(`${dbKey} = ?`);
+        
+        if (value instanceof Date) {
+          values.push(value.toISOString());
+        } else {
+          values.push(value);
+        }
+      }
+    }
+    
+    if (fields.length === 0) return;
+    
+    fields.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(id);
+    
+    const stmt = this.db.prepare(`
+      UPDATE video_processing_jobs 
+      SET ${fields.join(', ')} 
+      WHERE id = ?
+    `);
+    
+    stmt.run(...values);
+  }
+
+  async getJob(id: string): Promise<VideoProcessingJob | null> {
+    const stmt = this.db.prepare('SELECT * FROM video_processing_jobs WHERE id = ?');
+    const row = stmt.get(id);
+    return row ? this.mapJobRow(row) : null;
+  }
+
+  async getJobs(status?: string): Promise<VideoProcessingJob[]> {
+    let stmt;
+    if (status) {
+      stmt = this.db.prepare('SELECT * FROM video_processing_jobs WHERE status = ? ORDER BY created_at DESC');
+      return stmt.all(status).map(row => this.mapJobRow(row));
+    } else {
+      stmt = this.db.prepare('SELECT * FROM video_processing_jobs ORDER BY created_at DESC');
+      return stmt.all().map(row => this.mapJobRow(row));
+    }
+  }
+
+  async deleteJob(id: string): Promise<void> {
+    const stmt = this.db.prepare('DELETE FROM video_processing_jobs WHERE id = ?');
+    stmt.run(id);
+  }
+
+  async getActiveJobs(): Promise<VideoProcessingJob[]> {
+    return this.getJobs('processing');
+  }
+
+  async getPendingJobs(): Promise<VideoProcessingJob[]> {
+    return this.getJobs('pending');
+  }
+
+  private mapJobRow(row: any): VideoProcessingJob {
+    return {
+      id: row.id,
+      videoPath: row.video_path,
+      fileName: row.file_name,
+      status: row.status,
+      progress: row.progress,
+      error: row.error,
+      startTime: row.start_time ? new Date(row.start_time) : undefined,
+      endTime: row.end_time ? new Date(row.end_time) : undefined,
+      segmentCount: row.segment_count,
+      totalSegments: row.total_segments,
+      currentStage: row.current_stage,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at || row.created_at)
+    };
   }
 
   private extractSnippet(row: any, query: string): string {

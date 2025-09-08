@@ -1,5 +1,10 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
 import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import sharp from 'sharp';
+import { ConfigManager } from '../config';
+import { OllamaCaptioningService } from './ollama-captioning-service';
 
 // Pluggable captioning interface
 export interface CaptioningService {
@@ -119,8 +124,9 @@ export class CaptioningProcessor extends BaseVideoProcessor {
       ...config
     });
 
-    // Register default services
+    // Register default services - prefer Ollama, fallback to HTTP service
     this.services = config.services || [
+      new OllamaCaptioningService(),
       new MoondreamService()
     ];
   }
@@ -140,13 +146,13 @@ export class CaptioningProcessor extends BaseVideoProcessor {
     return true;
   }
 
-  private async findAvailableService(): Promise<CaptioningService | null> {
+  private async findAvailableService(): Promise<CaptioningService | undefined> {
     for (const service of this.services) {
       if (await service.isAvailable()) {
         return service;
       }
     }
-    return null;
+    return undefined;
   }
 
   private async processImageBatch(
@@ -157,16 +163,51 @@ export class CaptioningProcessor extends BaseVideoProcessor {
     
     for (const imagePath of imagePaths) {
       try {
-        const result = await service.caption(imagePath);
+        // Optionally compress large images to reduce payload/timeout errors
+        let inputPath = imagePath;
+        try {
+          const st = await fs.stat(imagePath);
+          const sizeKB = Math.round((st.size || 0) / 1024);
+          let usedCompressed = false;
+          if (st.size > 1_500_000) {
+            const tmpDir = path.join(os.tmpdir(), 'driller-caption');
+            await fs.mkdir(tmpDir, { recursive: true });
+            const base = path.basename(imagePath).replace(/\.[^.]+$/, '');
+            const outPath = path.join(tmpDir, `${base}_c.jpg`);
+            try {
+              const config = ConfigManager.getConfig();
+              const [maxWidth, maxHeight] = config.ai.visionModelDims;
+              await sharp(await fs.readFile(imagePath))
+                .resize({ width: maxWidth, height: maxHeight, fit: 'inside', withoutEnlargement: true })
+                .jpeg({ quality: 80 })
+                .toFile(outPath);
+              const st2 = await fs.stat(outPath);
+              const sizeKB2 = Math.round((st2.size || 0) / 1024);
+              this.log('debug', `Compressing image for captioning: ${path.basename(imagePath)} ${sizeKB}KB -> ${sizeKB2}KB`);
+              inputPath = outPath;
+              usedCompressed = true;
+            } catch (e) {
+              this.log('warn', `Image compression failed, using original: ${path.basename(imagePath)}`);
+            }
+          }
+          if (!usedCompressed) {
+            this.log('debug', `Captioning image: ${path.basename(imagePath)} ~${sizeKB}KB`);
+          }
+        } catch { /* ignore compression errors */ }
+
+        const result = await service.caption(inputPath);
         results.push({
           path: imagePath,
           caption: result.caption
         });
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Per-image failure logging with path and concise error
+        this.log('error', `Captioning failed for image: ${imagePath}`, msg);
         results.push({
           path: imagePath,
           caption: '',
-          error: error instanceof Error ? error.message : 'Unknown error'
+          error: msg || 'Unknown error'
         });
       }
     }
@@ -214,6 +255,7 @@ export class CaptioningProcessor extends BaseVideoProcessor {
       }
 
       this.log('info', `Captioning ${imagesToProcess.length} images`);
+      this.log('info', `Caption batch size: ${config.batchSize}`);
 
       // Process images in batches
       const allCaptions = [];
@@ -231,6 +273,21 @@ export class CaptioningProcessor extends BaseVideoProcessor {
       const failedCaptions = allCaptions.filter(c => c.error);
 
       this.log('info', `Captioning completed: ${successfulCaptions.length} success, ${failedCaptions.length} failed`);
+      if (failedCaptions.length > 0) {
+        // Log a compact sample of errors to aid diagnostics
+        const sample = failedCaptions.slice(0, 5).map((f) => ({ path: f.path, error: f.error }));
+        this.log('warn', `Captioning failure samples (showing up to 5 of ${failedCaptions.length}):`, sample);
+        // Summarize top error types/frequencies
+        const freq = new Map<string, number>();
+        for (const f of failedCaptions) {
+          const key = (f.error || 'Unknown').slice(0, 120);
+          freq.set(key, (freq.get(key) || 0) + 1);
+        }
+        const top = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        if (top.length) {
+          this.log('warn', 'Top captioning error types:', top.map(([k, v]) => `${v}x ${k}`));
+        }
+      }
 
       return {
         success: true,

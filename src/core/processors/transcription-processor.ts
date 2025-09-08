@@ -1,5 +1,7 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
-import { WhisperNodeService } from './whisper-node-service';
+// import { DockerWhisperService } from './docker-whisper-service';
+// import { WhisperCppService } from './whisper-cpp-service';
+// import { WhisperCliService } from './whisper-cli-service';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -28,7 +30,7 @@ export class HttpTranscriptionService implements TranscriptionService {
   async transcribe(audioPath: string, options: any = {}) {
     const audioBuffer = await fs.readFile(audioPath);
     const formData = new FormData();
-    formData.append('audio', new Blob([audioBuffer]));
+    formData.append('audio', new Blob([new Uint8Array(audioBuffer.buffer)]));
     
     if (options.language) {
       formData.append('language', options.language);
@@ -76,8 +78,7 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
 
     // Register default services (can be extended)
     this.services = config.services || [
-      new HttpTranscriptionService(),
-      new WhisperNodeService()
+      new HttpTranscriptionService()
     ];
   }
 
@@ -99,13 +100,13 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
   }
 
   // Find the first available service
-  private async findAvailableService(): Promise<TranscriptionService | null> {
+  private async findAvailableService(): Promise<TranscriptionService | undefined> {
     for (const service of this.services) {
       if (await service.isAvailable()) {
         return service;
       }
     }
-    return null;
+    return undefined;
   }
 
   async process(context: ProcessingContext): Promise<ProcessingResult> {
@@ -128,12 +129,19 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
         this.log('info', `Using transcription service: ${this.activeService.name}`);
       }
 
-      // Extract audio if needed (placeholder - would use ffmpeg)
+      // Use pre-extracted audio if available, otherwise use video directly
       let audioPath = segment.videoPath;
-      if (config.extractAudio) {
-        // TODO: Extract audio segment using ffmpeg
-        // audioPath = await this.extractAudioSegment(segment);
-        this.log('info', 'Audio extraction not implemented yet');
+      this.log('info', `Segment audioPath from pipeline: ${segment.audioPath || 'undefined'}`);
+      this.log('info', `Segment videoPath: ${segment.videoPath}`);
+      
+      if (segment.audioPath) {
+        // Use the audioPath set by the audio extraction processor
+        audioPath = path.isAbsolute(segment.audioPath) 
+          ? segment.audioPath 
+          : path.resolve(segment.audioPath);
+        this.log('info', `Using pipeline audioPath: ${path.basename(audioPath)}`);
+      } else if (config.extractAudio) {
+        this.log('warn', 'Audio extraction requested but no audioPath in segment');
       }
 
       // Perform transcription
@@ -157,6 +165,14 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
       };
     } catch (error) {
       this.log('error', 'Transcription failed', error);
+      this.log('error', `Failed segment details: ${JSON.stringify({
+        segmentId: context.segment.id,
+        videoPath: context.segment.videoPath,
+        startTime: context.segment.startTime,
+        endTime: context.segment.endTime,
+        duration: context.segment.endTime - context.segment.startTime,
+        audioPath: context.data.audioPath
+      }, null, 2)}`);
       
       // Try next available service on failure
       this.activeService = undefined;

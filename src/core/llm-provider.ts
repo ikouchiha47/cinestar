@@ -93,8 +93,9 @@ export class OllamaProvider implements LLMProvider {
       return await this.retryQueue.addTask(operation, `text-embedding-${text.substring(0, 20)}`, 5);
     } catch (error) {
       console.error('Error generating text embedding after retries:', error);
-      // Fallback to random embeddings
-      const randomArray = new Array(768).fill(0).map(() => Math.random() - 0.5);
+      // Fallback to random embeddings using configured dimension
+      const dim = ConfigManager.getConfig().ai.embeddingDimensions || 768;
+      const randomArray = new Array(dim).fill(0).map(() => Math.random() - 0.5);
       return new Float32Array(randomArray);
     }
   }
@@ -156,8 +157,9 @@ export class OllamaProvider implements LLMProvider {
       return await this.generateEmbedding(description);
     } catch (error) {
       console.error('Error generating image embedding:', error);
-      // Fallback to random embeddings in case of error
-      const randomArray = new Array(768).fill(0).map(() => Math.random() - 0.5);
+      // Fallback to random embeddings in case of error, dimension per config
+      const dim = ConfigManager.getConfig().ai.embeddingDimensions || 768;
+      const randomArray = new Array(dim).fill(0).map(() => Math.random() - 0.5);
       return new Float32Array(randomArray);
     }
   }

@@ -19,8 +19,24 @@ export interface AppConfig {
   ai: {
     provider: string;
     embeddingModel: string;
+    embeddingDimensions: number;
     visionModel: string;
     visionModelDims: [number, number];
+    maxTokens: number;
+    temperature: number;
+  };
+  video?: {
+    pipeline?: {
+      parallel?: boolean;
+      maxWorkers?: number;
+    };
+    frameSelection?: {
+      maxCandidateFrames: number;
+      maxFinalFrames: number;
+      sampleInterval: number;
+      sceneThreshold: number;
+      similarityThreshold: number;
+    };
   };
   debug: {
     enabled: boolean;
@@ -56,10 +72,25 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ai: {
     provider: 'ollama',
-    embeddingModel: 'qllama/bge-large-en-v1.5:latest', // 1024-d embeddings (previous default)
-    // visionModel: 'llava:7b',
-    visionModelDims: [378, 378], // Default for LLaVA; change to [378, 378] for Moondream
+    embeddingModel: 'qllama/bge-large-en-v1.5:latest',
+    embeddingDimensions: 1024,
     visionModel: 'moondream:v2',
+    visionModelDims: [378, 378], // Moondream v2 dimensions
+    maxTokens: 2048,
+    temperature: 0.1,
+  },
+  video: {
+    pipeline: {
+      parallel: true,
+      maxWorkers: Math.max(1, Math.min((os.cpus()?.length || 4) - 1, parseInt(process.env.VIDEO_MAX_WORKERS || '4', 10)))
+    },
+    frameSelection: {
+      maxCandidateFrames: 150,   // Stage 1: FFmpeg analysis candidates (increased for longer videos)
+      maxFinalFrames: 60,        // Stage 6: Final selected frames per segment (1 frame every ~1-2 seconds)
+      sampleInterval: 30,        // Sample every N frames
+      sceneThreshold: 0.15,      // Scene detection threshold
+      similarityThreshold: 0.15, // Frame similarity threshold
+    },
   },
   debug: {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true
@@ -95,6 +126,14 @@ export class ConfigManager {
       indexing: { ...this.config.indexing, ...updates.indexing },
       compression: { ...this.config.compression, ...updates.compression },
       ai: { ...this.config.ai, ...updates.ai },
+      video: {
+        ...(this.config.video || {}),
+        ...(updates.video || {}),
+        pipeline: {
+          ...((this.config.video || {}).pipeline || {}),
+          ...((updates.video || {}).pipeline || {}),
+        }
+      },
       // Ensure visionModelDims is always present
       ...(updates.ai?.visionModelDims ? { ai: { ...this.config.ai, visionModelDims: updates.ai.visionModelDims } } : {})
     };

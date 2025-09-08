@@ -1,27 +1,22 @@
-import { VideoDatabase, VideoFile, VideoSegment, SearchResult } from '../core/video-database';
-import { EmbeddingService } from '../core/embedding-service';
-import { VideoPipeline } from '../core/video-pipeline';
-import { TemporalMerger, MergedResult } from '../core/temporal-merger';
-import { SegmentationProcessor } from '../core/processors/segmentation-processor';
-import { VisualProcessor } from '../core/processors/visual-processor';
-import { TranscriptionProcessor } from '../core/processors/transcription-processor';
-import { CaptioningProcessor } from '../core/processors/captioning-processor';
-import { OCRProcessor } from '../core/processors/ocr-processor';
-import { WhisperNodeService } from '../core/processors/whisper-node-service';
-import { ConcurrencyLimiter } from '../core/concurrency-limiter';
-import * as fs from 'fs';
-import * as path from 'path';
+import { VideoDatabase } from '../core/video-database.js';
+import { EmbeddingService } from '../core/embedding-service.js';
+import { VideoPipeline } from '../core/video-pipeline.js';
+import { ConcurrencyLimiter } from '../core/concurrency-limiter.js';
+import { MainMediaAPI } from './main-media-api';
+import { VideoFile, VideoSegment, SearchResult, VideoProcessingJob } from '../core/video-database.js';
+import { getVideoDuration } from '../core/video-processing';
+import { SegmentationProcessor } from '../core/processors/segmentation-processor.js';
+import { AudioExtractionProcessor } from '../core/processors/audio-extraction-processor.js';
+import { VisualProcessor } from '../core/processors/visual-processor.js';
+import { TranscriptionProcessor } from '../core/processors/transcription-processor.js';
+import { CaptioningProcessor } from '../core/processors/captioning-processor.js';
+import { OCRProcessor } from '../core/processors/ocr-processor.js';
+import { DockerWhisperService } from '../core/processors/docker-whisper-service.js';
+import { WhisperCliService } from '../core/processors/whisper-cli-service.js';
+import { WhisperCppService } from '../core/processors/whisper-cpp-service.js';
+import fs from 'fs';
+import path from 'path';
 
-export interface VideoProcessingJob {
-  id: string;
-  videoPath: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  progress: number;
-  error?: string;
-  startTime?: Date;
-  endTime?: Date;
-  segmentCount?: number;
-}
 
 export interface VideoSearchQuery {
   query: string;
@@ -44,15 +39,13 @@ export class VideoMediaAPI {
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
   private concurrencyLimiter: ConcurrencyLimiter;
-  private temporalMerger: TemporalMerger;
-  private activeJobs = new Map<string, VideoProcessingJob>();
+  // Main sources/items are managed by MainMediaAPI (SQLite-backed)
   private initialized = false;
 
   private constructor() {
     this.embeddingService = new EmbeddingService();
     this.videoDb = new VideoDatabase(this.embeddingService);
     this.concurrencyLimiter = new ConcurrencyLimiter(2); // Limit to 2 concurrent video processing jobs
-    this.temporalMerger = new TemporalMerger();
     this.videoPipeline = new VideoPipeline();
     this.setupVideoPipeline();
   }
@@ -67,48 +60,63 @@ export class VideoMediaAPI {
   private setupVideoPipeline(): void {
     // Create processors
     const segmentationProcessor = new SegmentationProcessor();
+    const audioExtractionProcessor = new AudioExtractionProcessor();
     const visualProcessor = new VisualProcessor();
     const transcriptionProcessor = new TranscriptionProcessor();
-    const captioningProcessor = new CaptioningProcessor();
+    const captioningProcessor = new CaptioningProcessor({ batchSize: 3, captionThumbnails: false });
     const ocrProcessor = new OCRProcessor();
 
-    // Add Whisper-node service to transcription processor
-    const whisperService = new WhisperNodeService();
-    transcriptionProcessor.addService('whisper-node', whisperService);
+    // Setup transcription processor with available services
+    // Use Docker API as primary service (fastest with faster_whisper)
+    const dockerWhisperService = new DockerWhisperService();
+    transcriptionProcessor.addService(dockerWhisperService);
+    
+    // Add CLI and local services only in debug mode
+    if (process.env.NODE_ENV === 'development' || process.env.DEBUG === 'true') {
+      const whisperCliService = new WhisperCliService();
+      const whisperCppService = new WhisperCppService();
+      transcriptionProcessor.addService(whisperCliService);
+      transcriptionProcessor.addService(whisperCppService);
+    }
 
     // Register processors into pipeline
     this.videoPipeline.addProcessor('segmentation', segmentationProcessor);
+    this.videoPipeline.addProcessor('audio-extraction', audioExtractionProcessor);
     this.videoPipeline.addProcessor('visual', visualProcessor);
     this.videoPipeline.addProcessor('transcription', transcriptionProcessor);
     this.videoPipeline.addProcessor('captioning', captioningProcessor);
     this.videoPipeline.addProcessor('ocr', ocrProcessor);
 
     // Setup event listeners
-    this.videoPipeline.on('progress', (data) => {
-      const job = this.activeJobs.get(data.videoPath);
+    this.videoPipeline.on('progress', async (data) => {
+      const job = await this.videoDb.getJob(data.videoPath);
       if (job) {
-        job.progress = data.progress;
+        await this.videoDb.updateJob(job.id, { progress: data.progress });
         console.log(`Video processing progress: ${data.videoPath} - ${data.progress}%`);
       }
     });
 
-    this.videoPipeline.on('error', (data) => {
-      const job = this.activeJobs.get(data.videoPath);
+    this.videoPipeline.on('error', async (data) => {
+      const job = await this.videoDb.getJob(data.videoPath);
       if (job) {
-        job.status = 'failed';
-        job.error = data.error;
-        job.endTime = new Date();
+        await this.videoDb.updateJob(job.id, { 
+          status: 'failed', 
+          error: data.error,
+          endTime: new Date()
+        });
         console.error(`Video processing failed: ${data.videoPath}`, data.error);
       }
     });
 
     this.videoPipeline.on('completed', async (data) => {
-      const job = this.activeJobs.get(data.videoPath);
+      const job = await this.videoDb.getJob(data.videoPath);
       if (job) {
-        job.status = 'completed';
-        job.progress = 100;
-        job.endTime = new Date();
-        job.segmentCount = data.segments?.length || 0;
+        await this.videoDb.updateJob(job.id, {
+          status: 'completed',
+          progress: 100,
+          endTime: new Date(),
+          segmentCount: data.segments?.length || 0
+        });
         
         // Store segments in database
         if (data.segments) {
@@ -153,28 +161,75 @@ export class VideoMediaAPI {
       throw new Error(`Video file not found: ${videoPath}`);
     }
 
+    // Add video as source to main SQLite database via MainMediaAPI (no JSON paths)
+    try {
+      const videoName = path.basename(videoPath, path.extname(videoPath));
+      const videoDir = path.dirname(videoPath);
+      const res = await MainMediaAPI.addSource({
+        name: videoName,
+        type: 'local',
+        path: videoDir,
+        enabled: true,
+        config: { videoFile: videoPath }
+      } as any);
+      if (res.success && res.id) {
+        console.log(`[Video Source] Added video source to main database: ${videoName} (${res.id})`);
+        // Also insert this specific video file as an item so it appears in the home UI immediately
+        try {
+          const addItem = await MainMediaAPI.addItemForFile(res.id, videoPath, `Video file: ${videoName}`, { via: 'VideoMediaAPI' });
+          if (addItem.success) {
+            console.log(`[Video Source] Inserted video item into main DB: ${videoName}`);
+          } else {
+            console.warn(`[Video Source] Failed to insert video item into main DB: ${addItem.error}`);
+          }
+        } catch (e) {
+          console.warn('[Video Source] Error inserting video item into main DB:', e);
+        }
+      } else {
+        console.warn(`[Video Source] Failed to add video source to main database (no id returned):`, res.error);
+      }
+    } catch (error) {
+      console.warn(`[Video Source] Failed to add video source to main database:`, error);
+    }
+
     // Check if already processed or previously inserted
     const existingVideo = await this.videoDb.getVideoFileByPath(videoPath);
     if (existingVideo) {
       if (existingVideo.processingStatus === 'completed') {
-        console.log(`Video already processed: ${videoPath}`);
-        return existingVideo.id;
+        // Validate that segments actually exist
+        const segmentCount = await this.videoDb.getSegmentCount(existingVideo.id);
+        if (segmentCount === 0) {
+          console.log(`Video marked completed but has no segments, resetting: ${videoPath}`);
+          await this.videoDb.resetFailedVideo(existingVideo.id);
+        } else {
+          console.log(`Video already processed: ${videoPath}`);
+          return existingVideo.id;
+        }
       }
-      // If a row exists (pending/processing/failed), reuse it to avoid UNIQUE constraint error
-      console.log(`Reusing existing video record for ${videoPath} with status ${existingVideo.processingStatus}`);
+      if (existingVideo.processingStatus === 'failed') {
+        console.log(`Resetting failed video for retry: ${videoPath}`);
+        await this.videoDb.resetFailedVideo(existingVideo.id);
+      } else {
+        // If a row exists (pending/processing), reuse it to avoid UNIQUE constraint error
+        console.log(`Reusing existing video record for ${videoPath} with status ${existingVideo.processingStatus}`);
+      }
     }
 
-    // Create job
+    // Create job in database
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const fileName = path.basename(videoPath);
     const job: VideoProcessingJob = {
       id: jobId,
       videoPath,
+      fileName,
       status: 'pending',
       progress: 0,
       startTime: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date()
     };
 
-    this.activeJobs.set(videoPath, job);
+    await this.videoDb.createJob(job);
 
     try {
       // Add video file to database
@@ -205,13 +260,14 @@ export class VideoMediaAPI {
       await this.concurrencyLimiter.add(async () => {
         job.status = 'processing';
         
-        // Run video pipeline: start with an initial segment representing the whole video (time bounds may be refined by processors)
+        // Create initial segment for pipeline processing - segmentation will determine actual bounds
+        const duration = await getVideoDuration(videoPath);
         const initialSegment = {
           id: `seg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           videoId,
           videoPath,
           startTime: 0,
-          endTime: 0,
+          endTime: duration,
         } as any; // conforms to VideoPipeline.VideoSegment shape
         const context = await this.videoPipeline.processSegment(initialSegment);
 
@@ -254,25 +310,52 @@ export class VideoMediaAPI {
    */
   private async storeVideoSegments(videoPath: string, segments: any[]): Promise<void> {
     try {
-      const segmentsToStore = await Promise.all(
-        segments.map(async (segment) => {
-          // Generate embedding for segment content
-          let embedding: Float32Array | undefined;
-          const content = [
-            segment.transcription,
-            segment.caption,
-            segment.ocrText,
-          ].filter(Boolean).join(' ');
+      // Fetch existing segments (if any) for idempotency and enrichment
+      const file = await this.videoDb.getVideoFileByPath(videoPath);
+      const existing = file ? await this.videoDb.getVideoSegments(file.id) : [];
+      const existingByScene = new Map<number, any>();
+      for (const seg of existing) existingByScene.set(seg.sceneIndex, seg);
 
-          if (content.trim()) {
-            try {
-              embedding = await this.embeddingService.embedSingle(content);
-            } catch (error) {
-              console.warn(`Failed to generate embedding for segment: ${error}`);
-            }
+      const toInsert: any[] = [];
+
+      for (const segment of segments) {
+        // Generate embedding on the fly (best effort)
+        let embedding: Float32Array | undefined;
+        const content = [segment.transcription, segment.caption, segment.ocrText]
+          .filter(Boolean).join(' ');
+
+        if (content && content.trim().length > 0) {
+          console.log(`[Video Embedding] Content for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
+          try {
+            embedding = await this.embeddingService.embedSingle(content);
+            console.log(`[Video Embedding] Generated embedding of length ${embedding?.length} for segment ${segment.sceneIndex}`);
+          } catch (error) {
+            console.warn(`Failed to generate embedding for segment: ${error}`);
           }
+        }
 
-          return {
+        const existingSeg = existingByScene.get(segment.sceneIndex);
+        if (existingSeg) {
+          // Update existing partial row with new data
+          const patch: any = {
+            startTime: segment.startTime ?? existingSeg.startTime,
+            endTime: segment.endTime ?? existingSeg.endTime,
+            duration: segment.duration ?? existingSeg.duration,
+            thumbnailPath: segment.thumbnailPath ?? existingSeg.thumbnailPath,
+            keyframePath: segment.keyframePath ?? existingSeg.keyframePath,
+            transcription: segment.transcription ?? existingSeg.transcription,
+            caption: segment.caption ?? existingSeg.caption,
+            ocrText: segment.ocrText ?? existingSeg.ocrText,
+            metadata: segment.metadata ?? existingSeg.metadata,
+          };
+          if (embedding) patch.embedding = embedding;
+          try {
+            await this.videoDb.updateVideoSegment(existingSeg.id, patch);
+          } catch (e) {
+            console.warn(`Failed to update existing segment ${existingSeg.id}:`, e);
+          }
+        } else {
+          toInsert.push({
             videoPath,
             startTime: segment.startTime,
             endTime: segment.endTime,
@@ -285,13 +368,14 @@ export class VideoMediaAPI {
             ocrText: segment.ocrText,
             embedding,
             metadata: segment.metadata,
-          };
-        })
-      );
+          });
+        }
+      }
 
-      // Batch insert segments
-      await this.videoDb.addVideoSegmentsBatch(segmentsToStore);
-      console.log(`Stored ${segmentsToStore.length} video segments for ${videoPath}`);
+      if (toInsert.length > 0) {
+        await this.videoDb.addVideoSegmentsBatch(toInsert);
+        console.log(`Stored ${toInsert.length} new video segments for ${videoPath}`);
+      }
     } catch (error) {
       console.error('Failed to store video segments:', error);
       throw error;
@@ -331,15 +415,23 @@ export class VideoMediaAPI {
   /**
    * Get processing job status
    */
-  getJobStatus(videoPath: string): VideoProcessingJob | undefined {
-    return this.activeJobs.get(videoPath);
+  async getJobStatus(videoPath: string): Promise<VideoProcessingJob | null> {
+    return await this.videoDb.getJob(videoPath);
+  }
+
+  /**
+   * Allow external adapters to listen to underlying pipeline events
+   * without exposing internal state or mutating behavior.
+   */
+  onPipeline(eventName: string, listener: (payload: any) => void): void {
+    this.videoPipeline.on(eventName as any, listener as any);
   }
 
   /**
    * Get all active jobs
    */
-  getActiveJobs(): VideoProcessingJob[] {
-    return Array.from(this.activeJobs.values());
+  async getActiveJobs(): Promise<VideoProcessingJob[]> {
+    return await this.videoDb.getActiveJobs();
   }
 
   /**
@@ -377,6 +469,20 @@ export class VideoMediaAPI {
   /**
    * Process audio file (transcription only)
    */
+  async resetFailedVideo(videoPath: string): Promise<boolean> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    return await this.videoDb.resetFailedVideoByPath(videoPath);
+  }
+
+  async getFailedVideos(): Promise<any[]> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    return await this.videoDb.getFailedVideos();
+  }
+
   async processAudio(audioPath: string): Promise<string> {
     if (!this.initialized) {
       await this.initialize();
@@ -389,7 +495,7 @@ export class VideoMediaAPI {
 
     try {
       // Create a simplified pipeline for audio-only processing
-      const whisperService = new WhisperNodeService();
+      const whisperService = new WhisperCppService();
       const transcription = await whisperService.transcribe(audioPath);
 
       // Store as a single segment
