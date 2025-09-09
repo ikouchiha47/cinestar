@@ -11,32 +11,34 @@ export interface LLMProvider {
    * Check if the LLM provider is available
    */
   isAvailable(): Promise<boolean>;
-  
+
   /**
    * Generate embeddings for text content
    */
   generateEmbedding(text: string): Promise<Float32Array>;
-  
+
   /**
    * Generate description for image content
    */
   generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string>;
-  
+
   /**
    * Generate embeddings for image content
    */
   generateImageEmbedding(imagePath: string): Promise<Float32Array>;
-  
+
   /**
    * Get the name of the provider
    */
   getName(): string;
-  
+
   /**
    * Get the model being used
    */
   getModel(): string;
 }
+
+const CaptionQuery = "Describe the: Objects, Actions, Intent of Action and Scene in the image."
 
 /**
  * Ollama LLM provider implementation
@@ -45,14 +47,14 @@ export class OllamaProvider implements LLMProvider {
   private visionModel: string;
   private embeddingModel: string;
   private retryQueue: RetryQueue;
-  
+
   constructor(visionModel?: string, embeddingModel?: string) {
     const config = ConfigManager.getConfig();
     this.visionModel = visionModel || config.ai.visionModel;
     this.embeddingModel = embeddingModel || config.ai.embeddingModel;
     this.retryQueue = RetryQueue.getInstance();
   }
-  
+
   async isAvailable(): Promise<boolean> {
     try {
       const response = await fetch('http://localhost:11434/api/tags');
@@ -64,11 +66,11 @@ export class OllamaProvider implements LLMProvider {
       return false;
     }
   }
-  
+
   async generateEmbedding(text: string): Promise<Float32Array> {
     const operation = async (): Promise<Float32Array> => {
       console.log(`Generating text embedding for "${text.substring(0, 30)}..." using ${this.embeddingModel}`);
-      
+
       const response = await fetch('http://localhost:11434/api/embeddings', {
         method: 'POST',
         headers: {
@@ -79,12 +81,12 @@ export class OllamaProvider implements LLMProvider {
           prompt: text
         })
       });
-      
+
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Ollama API error: ${response.status} ${errorText}`);
       }
-      
+
       const data = await response.json();
       return new Float32Array(data.embedding);
     };
@@ -99,11 +101,11 @@ export class OllamaProvider implements LLMProvider {
       return new Float32Array(randomArray);
     }
   }
-  
+
   async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
     const operation = async (): Promise<string> => {
       console.log(`Generating description for image ${imagePath} using ${this.visionModel}`);
-      
+
       // Read and encode the image
       const fs = await import('fs');
       const imageBuffer = await fs.promises.readFile(imagePath);
@@ -116,7 +118,7 @@ export class OllamaProvider implements LLMProvider {
         },
         body: JSON.stringify({
           model: this.visionModel,
-          prompt: "Describe this image in detail. Focus on the main subjects, objects, colors, and overall composition.",
+          prompt: CaptionQuery,
           images: [base64Image],
           stream: false
         })
@@ -146,13 +148,13 @@ export class OllamaProvider implements LLMProvider {
       return 'Error generating description';
     }
   }
-  
+
   async generateImageEmbedding(imagePath: string): Promise<Float32Array> {
     try {
       // First get the image description
       const description = await this.generateImageDescription(imagePath);
       console.log(`Generated description: ${description.substring(0, 100)}...`);
-      
+
       // Then generate embedding from the description
       return await this.generateEmbedding(description);
     } catch (error) {
@@ -163,11 +165,11 @@ export class OllamaProvider implements LLMProvider {
       return new Float32Array(randomArray);
     }
   }
-  
+
   getName(): string {
     return 'Ollama';
   }
-  
+
   getModel(): string {
     return `Vision: ${this.visionModel}, Embedding: ${this.embeddingModel}`;
   }
@@ -179,12 +181,12 @@ export class OllamaProvider implements LLMProvider {
 export class LiteLLMProvider implements LLMProvider {
   private model: string;
   private apiKey: string;
-  
+
   constructor(model: string = 'openai/clip', apiKey: string = '') {
     this.model = model;
     this.apiKey = apiKey;
   }
-  
+
   async isAvailable(): Promise<boolean> {
     try {
       // Check if API key is provided
@@ -192,7 +194,7 @@ export class LiteLLMProvider implements LLMProvider {
         console.warn('LiteLLM API key not provided');
         return false;
       }
-      
+
       // In a real implementation, this would make a test call to the LiteLLM API
       return true;
     } catch (error) {
@@ -200,31 +202,31 @@ export class LiteLLMProvider implements LLMProvider {
       return false;
     }
   }
-  
+
   async generateEmbedding(text: string): Promise<Float32Array> {
     // Simplified implementation - would call LiteLLM API
     console.log(`Generating embedding for text "${text.substring(0, 30)}..." using LiteLLM model ${this.model}`);
     const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
     return new Float32Array(randomArray);
   }
-  
+
   async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
     // Simplified implementation - would call LiteLLM API with image
     console.log(`Generating description for image ${imagePath} using LiteLLM model ${this.model}`);
     return 'LiteLLM image description placeholder';
   }
-  
+
   async generateImageEmbedding(imagePath: string): Promise<Float32Array> {
     // Simplified implementation - would call LiteLLM API with image
     console.log(`Generating embedding for image ${imagePath} using LiteLLM model ${this.model}`);
     const randomArray = new Array(384).fill(0).map(() => Math.random() - 0.5);
     return new Float32Array(randomArray);
   }
-  
+
   getName(): string {
     return 'LiteLLM';
   }
-  
+
   getModel(): string {
     return this.model;
   }

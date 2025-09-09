@@ -7,15 +7,30 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - ./ollama_data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          memory: 8g
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s
       timeout: 10s
       retries: 3
+    entrypoint: >
+      sh -c "
+        ollama serve &
+        sleep 5 &&
+        ollama pull qllama/bge-large-en-v1.5
+        ollama pull moondream:v2 &&
+        wait
+      "
 
   whisper:
     image: onerahmet/openai-whisper-asr-webservice:latest
