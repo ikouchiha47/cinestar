@@ -8,8 +8,7 @@
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "postinstall": "npx electron-rebuild -f -w better-sqlite3 && npx --yes nodejs-whisper download base.en",
-    "download:whisper": "npx --yes nodejs-whisper download base.en"
+    "postinstall": "npx electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

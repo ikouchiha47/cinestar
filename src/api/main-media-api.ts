@@ -1,4 +1,3 @@
-import { MainDatabase } from '../core/main-database';
 import { SqliteMainDatabase } from '../core/sqlite-main-database';
 import { MediaSource } from '../core/types';
 import { LLMProvider, LLMProviderFactory } from '../core/llm-provider';
@@ -6,9 +5,10 @@ import { SqliteVecDatabase } from '../core/sqlite-vec-database';
 import { ImageCompressor } from '../core/image-compressor';
 import { ConfigManager } from '../core/config';
 import { DatabaseMigrator, getDefaultDataDir } from '../core/database-migrator';
-import fs from 'fs/promises';
-import path from 'path';
-import os from 'os';
+import { getMimeType } from '../core/utils';
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 /**
  * Minimal Main process MediaAPI for basic functionality
@@ -29,41 +29,33 @@ export class MainMediaAPI {
     // Use default data directory if no path provided (fresh install scenario)
     const dataDir = dbPath ?? getDefaultDataDir();
     
-    // Select backend (default: sqlite)
-    const backend = (process.env.MAIN_DB_BACKEND || 'sqlite').toLowerCase();
-    if (backend === 'sqlite') {
-      // If a directory was passed, append a filename
-      const isFile = path.extname(dataDir).toLowerCase() === '.db';
-      const filePath = isFile ? dataDir : path.join(dataDir, process.env.VECTOR_DB_FILENAME || 'vector.db');
-      
-      // Run database migrations for fresh installs
-      console.log('[MainMediaAPI] Checking database migrations...');
-      const migrator = new DatabaseMigrator(filePath);
-      const migrationResult = await migrator.migrate();
-      
-      if (!migrationResult.success) {
-        throw new Error(`Database migration failed: ${migrationResult.error}`);
-      }
-      
-      if (migrationResult.migrationsRun.length > 0) {
-        console.log(`[MainMediaAPI] Applied ${migrationResult.migrationsRun.length} migrations:`, migrationResult.migrationsRun);
-      }
-      
-      this.db = new SqliteMainDatabase(filePath);
-      this.backendType = 'sqlite';
-      this.dbPathInfo = filePath;
-      // Initialize sqlite-vec on the same file for unified storage
-      try {
-        this.vecDb = new SqliteVecDatabase(filePath);
-      } catch (e) {
-        console.error('[MainMediaAPI] Failed to initialize sqlite-vec database:', e);
-        this.vecDb = null;
-      }
-    } else {
-      // Legacy JSON-backed implementation
-      this.db = new MainDatabase(dataDir);
-      this.backendType = 'json';
-      this.dbPathInfo = dataDir;
+    // Force SQLite backend (JSON backend deprecated)
+    // If a directory was passed, append a filename
+    const isFile = path.extname(dataDir).toLowerCase() === '.db';
+    const filePath = isFile ? dataDir : path.join(dataDir, 'vector.db');
+    
+    // Run database migrations for fresh installs
+    console.log('[MainMediaAPI] Checking database migrations...');
+    const migrator = new DatabaseMigrator(filePath);
+    const migrationResult = await migrator.migrate();
+    
+    if (!migrationResult.success) {
+      throw new Error(`Database migration failed: ${migrationResult.error}`);
+    }
+    
+    if (migrationResult.migrationsRun.length > 0) {
+      console.log(`[MainMediaAPI] Applied ${migrationResult.migrationsRun.length} migrations:`, migrationResult.migrationsRun);
+    }
+    
+    this.db = new SqliteMainDatabase(filePath);
+    this.backendType = 'sqlite';
+    this.dbPathInfo = filePath;
+    // Initialize sqlite-vec on the same file for unified storage
+    try {
+      this.vecDb = new SqliteVecDatabase(filePath);
+    } catch (e) {
+      console.error('[MainMediaAPI] Failed to initialize sqlite-vec database:', e);
+      this.vecDb = null;
     }
     await this.db.initialize();
     // Initialize LLM provider (Ollama by default)
@@ -217,7 +209,7 @@ export class MainMediaAPI {
       await this.ensureInitialized();
       const stats = await fs.stat(filePath);
       const name = path.basename(filePath);
-      const mime = this.getMimeType(filePath);
+      const mime = getMimeType(filePath);
       const lower = (mime || '').toLowerCase();
       let type: 'image' | 'video' | 'audio' | 'other' = 'other';
       if (lower.startsWith('image/')) type = 'image';
@@ -400,7 +392,7 @@ export class MainMediaAPI {
             path: file.path,
             size: file.size,
             type: file.type,
-            mimeType: this.getMimeType(file.path),
+            mimeType: getMimeType(file.path),
             createdAt: new Date(),
             modifiedAt: file.lastModified,
             description: `${file.type} file: ${file.name}`,
@@ -491,7 +483,7 @@ export class MainMediaAPI {
             path: r.path,
             size: r.size,
             type: 'image',
-            mimeType: this.getMimeType(r.path),
+            mimeType: getMimeType(r.path),
             sourceId: r.sourceId,
             createdAt: new Date(),
           }));
@@ -608,7 +600,7 @@ export class MainMediaAPI {
       const data = await fs.readFile(imagePath);
       // Derive mime type from extension
       const ext = (path.extname(imagePath) || '').replace('.', '').toLowerCase();
-      const mime = this.getMimeType(imagePath) || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'application/octet-stream');
+      const mime = getMimeType(imagePath) || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'application/octet-stream');
       const base64 = data.toString('base64');
       const dataUrl = `data:${mime};base64,${base64}`;
       return { success: true, dataUrl };
@@ -617,32 +609,4 @@ export class MainMediaAPI {
     }
   }
 
-  /**
-   * Simple mime type detection
-   */
-  private static getMimeType(filePath: string): string {
-    const ext = filePath.toLowerCase().split('.').pop() || '';
-    const mimeTypes: { [key: string]: string } = {
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'webp': 'image/webp',
-      'mp4': 'video/mp4',
-      'mov': 'video/quicktime',
-      'avi': 'video/x-msvideo',
-      'mkv': 'video/x-matroska',
-      'webm': 'video/webm',
-      'm4v': 'video/x-m4v',
-      'flv': 'video/x-flv',
-      'wmv': 'video/x-ms-wmv',
-      'mp3': 'audio/mpeg',
-      'wav': 'audio/wav',
-      'flac': 'audio/flac',
-      'm4a': 'audio/mp4',
-      'aac': 'audio/aac',
-      'ogg': 'audio/ogg'
-    };
-    return mimeTypes[ext] || 'application/octet-stream';
-  }
 }

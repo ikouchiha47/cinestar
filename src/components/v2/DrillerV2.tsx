@@ -658,7 +658,15 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                 const res = await window.mediaAPI.selectDirectory();
                 if (!res.canceled && res.path) {
                   const add = await window.mediaAPI.addSource(res.path.split('/').pop() || 'Folder', 'local', res.path);
-                  if (add.success) {
+                  if (add.success && add.id) {
+                    // Auto-start indexing for newly added source
+                    const indexResult = await window.mediaAPI.startIndexing(add.id);
+                    if (indexResult.success) {
+                      console.log(`Started indexing for source ${add.id}`);
+                    } else {
+                      console.warn(`Failed to start indexing: ${indexResult.error}`);
+                    }
+                    
                     const sync = await window.mediaAPI.getSources();
                     if (sync.success && sync.sources) {
                       setPlaces(sync.sources.map((s) => ({ id: s.id, kind: 'local', label: s.name, path: s.path || '' })));

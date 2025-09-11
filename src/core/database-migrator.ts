@@ -16,7 +16,9 @@ export class DatabaseMigrator {
 
   constructor(dbPath: string, migrationsDir?: string) {
     this.dbPath = dbPath;
-    this.migrationsDir = migrationsDir || path.join(__dirname, '../../migrations');
+    // Use project root relative path that works in both dev and production
+    const projectRoot = process.cwd();
+    this.migrationsDir = migrationsDir || path.join(projectRoot, 'migrations');
   }
 
   /**

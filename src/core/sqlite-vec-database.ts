@@ -96,24 +96,8 @@ export class SqliteVecDatabase {
   }
 
   private initializeTables(): void {
-    // Create media items table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS media_items (
-        id TEXT PRIMARY KEY,
-        source_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        path TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        caption TEXT,
-        caption_generated_at TEXT,
-        caption_status TEXT NOT NULL DEFAULT 'pending',
-        embedding_generated_at TEXT,
-        embedding_status TEXT NOT NULL DEFAULT 'pending'
-      )
-    `);
+    // Skip creating media_items table - it should be created by migrations
+    // The main database migrations handle the media_items table with proper foreign keys
 
     // Meta table to track embedding model/dimension
     this.db.exec(`
@@ -511,7 +495,7 @@ export class SqliteVecDatabase {
       
       // TEMPORARILY DISABLED: Apply enhanced ranking
       let enhancedScore = baseSimilarity; // Use base similarity only
-      let boostFactors: string[] = [];
+      // let boostFactors: string[] = []; // Temporarily disabled
       
       // DISABLED: Caption boost
       // if (query && (row as any).caption) {
@@ -560,90 +544,101 @@ export class SqliteVecDatabase {
 
   /**
    * Calculate relevance boost based on caption content matching query
+   * Currently disabled but kept for future use
    */
-  private calculateCaptionRelevanceBoost(query: string, caption: string): number {
-    const queryLower = query.toLowerCase();
-    const captionLower = caption.toLowerCase();
-    
-    let boost = 0;
-    
-    // Direct keyword match
-    if (captionLower.includes(queryLower)) {
-      boost += 1.0;
-    }
-    
-    // Semantic keyword matching for common queries
-    const semanticMatches = this.getSemanticMatches(queryLower);
-    for (const match of semanticMatches) {
-      if (captionLower.includes(match)) {
-        boost += 0.5;
-      }
-    }
-    
-    return Math.min(boost, 2.0); // Cap boost at 2.0
-  }
+  // private calculateCaptionRelevanceBoost(query: string, caption: string): number {
+  //   const queryLower = query.toLowerCase();
+  //   const captionLower = caption.toLowerCase();
+  //   
+  //   let boost = 0;
+  //   
+  //   // Direct keyword match
+  //   if (captionLower.includes(queryLower)) {
+  //     boost += 1.0;
+  //   }
+  //   
+  //   // Semantic keyword matching for common queries
+  //   const semanticMatches = this.getSemanticMatches(queryLower);
+  //   for (const match of semanticMatches) {
+  //     if (captionLower.includes(match)) {
+  //       boost += 0.5;
+  //     }
+  //   }
+  //   
+  //   return Math.min(boost, 2.0); // Cap boost at 2.0
+  // }
 
   /**
    * Get semantic matches for common query terms
+   * Currently disabled but kept for future use
    */
-  private getSemanticMatches(query: string): string[] {
-    const semanticMap: { [key: string]: string[] } = {
-      'woman': ['female', 'lady', 'girl', 'person'],
-      'man': ['male', 'guy', 'person'],
-      'person': ['human', 'individual', 'people'],
-      'car': ['vehicle', 'automobile', 'auto'],
-      'house': ['home', 'building', 'residence'],
-      'dog': ['canine', 'puppy', 'pet'],
-      'cat': ['feline', 'kitten', 'pet']
-    };
-    
-    return semanticMap[query] || [];
-  }
+  // private getSemanticMatches(query: string): string[] {
+  //   const semanticMap: { [key: string]: string[] } = {
+  //     'woman': ['female', 'lady', 'girl', 'person'],
+  //     'man': ['male', 'guy', 'person'],
+  //     'person': ['human', 'individual', 'people'],
+  //     'car': ['vehicle', 'automobile', 'auto'],
+  //     'house': ['home', 'building', 'residence'],
+  //     'dog': ['canine', 'puppy', 'pet'],
+  //     'cat': ['feline', 'kitten', 'pet']
+  //   };
+  //   
+  //   return semanticMap[query] || [];
+  // }
 
   /**
    * Check if query is human-related
+   * Currently disabled but kept for future use
    */
-  private isHumanRelatedQuery(query: string): boolean {
-    const humanKeywords = ['woman', 'man', 'person', 'people', 'human', 'girl', 'boy', 'lady', 'guy', 'individual'];
-    return humanKeywords.some(keyword => query.toLowerCase().includes(keyword));
-  }
+  // private isHumanRelatedQuery(query: string): boolean {
+  //   const humanKeywords = ['woman', 'man', 'person', 'people', 'human', 'girl', 'boy', 'lady', 'guy', 'individual'];
+  //   return humanKeywords.some(keyword => query.toLowerCase().includes(keyword));
+  // }
 
   /**
    * Calculate penalty for technical content when searching for human-related terms
+   * Currently disabled but kept for future use
    */
-  private calculateTechnicalContentPenalty(caption: string): number {
-    const captionLower = caption.toLowerCase();
-    
-    // High penalty keywords (very irrelevant for human searches)
-    const highPenaltyKeywords = [
-      'warhammer', 'miniature', 'fantasy', 'game', 'gaming',
-      'bsod', 'blue screen', 'error', 'crash', 'system'
-    ];
-    
-    // Medium penalty keywords (somewhat irrelevant)
-    const mediumPenaltyKeywords = [
-      'computer', 'screen', 'software', 'hardware', 'code', 
-      'programming', 'terminal', 'console', 'technology'
-    ];
-    
-    let penalty = 0;
-    
-    // Check for high penalty keywords
-    for (const keyword of highPenaltyKeywords) {
-      if (captionLower.includes(keyword)) {
-        penalty += 1.0; // Strong penalty
-      }
-    }
-    
-    // Check for medium penalty keywords
-    for (const keyword of mediumPenaltyKeywords) {
-      if (captionLower.includes(keyword)) {
-        penalty += 0.3; // Moderate penalty
-      }
-    }
-    
-    return Math.min(penalty, 2.0); // Cap penalty at 2.0 (60% reduction max)
-  }
+  // private calculateTechnicalContentPenalty(caption: string): number {
+  //   const captionLower = caption.toLowerCase();
+  //   const technicalKeywords = [
+  //     'bsod', 'blue screen', 'error', 'crash', 'system', 'computer', 'screen',
+  //     'software', 'hardware', 'code', 'programming', 'terminal', 'console',
+  //     'warhammer', 'game', 'gaming', 'fantasy', 'miniature'
+  //   ];
+  //   
+  //   let penalty = 0;
+  //   for (const keyword of technicalKeywords) {
+  //     if (captionLower.includes(keyword)) {
+  //       penalty += 0.5;
+  //     }
+  //   }
+  //   
+  //   return Math.min(penalty, 2.0); // Cap penalty at 2.0
+  // }
+
+  /**
+   * Calculate cosine similarity between two vectors
+   * Currently disabled but kept for future use
+   */
+  // private cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  //   if (a.length !== b.length) {
+  //     throw new Error('Vectors must have the same length');
+  //   }
+
+  //   let dotProduct = 0;
+  //   let normA = 0;
+  //   let normB = 0;
+
+  //   for (let i = 0; i < a.length; i++) {
+  //     dotProduct += a[i] * b[i];
+  //     normA += a[i] * a[i];
+  //     normB += b[i] * b[i];
+  //   }
+
+  //   const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
+  //   return magnitude === 0 ? 0 : dotProduct / magnitude;
+  // }
 
   /**
    * Generate unique ID
@@ -697,29 +692,6 @@ export class SqliteVecDatabase {
       },
       similarity: r.similarity
     }));
-  }
-
-  /**
-   * Calculate cosine similarity (compatibility method - not used with sqlite-vec)
-   */
-  private cosineSimilarity(a: Float32Array, b: Float32Array): number {
-    // This method is not used with sqlite-vec but needed for interface compatibility
-    if (a.length !== b.length) {
-      throw new Error('Vectors must have the same length');
-    }
-
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-
-    const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
-    return magnitude === 0 ? 0 : dotProduct / magnitude;
   }
 
   /**

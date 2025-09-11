@@ -102,7 +102,7 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
+  async generateImageDescription(imagePath: string, _originalImagePath?: string): Promise<string> {
     const operation = async (): Promise<string> => {
       console.log(`Generating description for image ${imagePath} using ${this.visionModel}`);
 
@@ -210,7 +210,7 @@ export class LiteLLMProvider implements LLMProvider {
     return new Float32Array(randomArray);
   }
 
-  async generateImageDescription(imagePath: string, originalImagePath?: string): Promise<string> {
+  async generateImageDescription(imagePath: string, _originalImagePath?: string): Promise<string> {
     // Simplified implementation - would call LiteLLM API with image
     console.log(`Generating description for image ${imagePath} using LiteLLM model ${this.model}`);
     return 'LiteLLM image description placeholder';

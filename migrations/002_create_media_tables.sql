@@ -27,9 +27,14 @@ CREATE TABLE IF NOT EXISTS media_items (
   height INTEGER,
   duration REAL,
   caption TEXT,
+  caption_generated_at TEXT,
+  caption_status TEXT NOT NULL DEFAULT 'pending',
   embedding BLOB,
+  embedding_generated_at TEXT,
+  embedding_status TEXT NOT NULL DEFAULT 'pending',
   metadata TEXT, -- JSON metadata
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   modified_at DATETIME,
   indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (source_id) REFERENCES media_sources (id) ON DELETE CASCADE
