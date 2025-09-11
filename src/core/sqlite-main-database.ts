@@ -28,6 +28,12 @@ export class SqliteMainDatabase {
 
   // Sources
   async addSource(source: Omit<MediaSource, 'id' | 'createdAt'>): Promise<string> {
+    // Check if source with same path already exists
+    const existing = this.db.prepare(`SELECT id FROM media_sources WHERE path = ?`).get(source.path) as any;
+    if (existing) {
+      throw new Error(`Source with path "${source.path}" already exists`);
+    }
+
     const id = crypto.randomUUID();
     this.db.prepare(`INSERT INTO media_sources(id,name,type,path,enabled,config,created_at) VALUES(?,?,?,?,?,?,?)`).run(
       id,
@@ -40,6 +46,45 @@ export class SqliteMainDatabase {
     );
     return id;
   }
+  async removeDuplicateSources(): Promise<{ removed: number; kept: number }> {
+    // Find duplicates by path, keeping the most recent one
+    const duplicates = this.db.prepare(`
+      SELECT path, COUNT(*) as count, GROUP_CONCAT(id) as ids, MAX(datetime(created_at)) as latest_date
+      FROM media_sources 
+      GROUP BY path 
+      HAVING COUNT(*) > 1
+    `).all() as any[];
+
+    let removedCount = 0;
+    let keptCount = 0;
+
+    for (const duplicate of duplicates) {
+      const ids = duplicate.ids.split(',');
+      // Get the most recent source for this path
+      const latest = this.db.prepare(`
+        SELECT id FROM media_sources 
+        WHERE path = ? 
+        ORDER BY datetime(created_at) DESC 
+        LIMIT 1
+      `).get(duplicate.path) as any;
+
+      // Remove all except the latest
+      for (const id of ids) {
+        if (id !== latest.id) {
+          this.db.prepare(`DELETE FROM media_sources WHERE id = ?`).run(id);
+          // Also clean up related data
+          this.db.prepare(`DELETE FROM media_items WHERE source_id = ?`).run(id);
+          this.db.prepare(`DELETE FROM indexing_jobs WHERE source_id = ?`).run(id);
+          removedCount++;
+        } else {
+          keptCount++;
+        }
+      }
+    }
+
+    return { removed: removedCount, kept: keptCount };
+  }
+
   async getSources(): Promise<MediaSource[]> {
     const rows = this.db.prepare(`SELECT * FROM media_sources ORDER BY datetime(created_at) DESC`).all() as any[];
     return rows.map(r => ({

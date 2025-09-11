@@ -268,7 +268,7 @@ export class MainMediaAPI {
       const jobId = await this.db.createJob({ sourceId });
       
       // Start indexing in background (simplified version)
-      this.performIndexing(jobId, sourceId).catch(error => {
+      this.performIndexing(jobId, sourceId, false).catch(error => {
         console.error('Indexing failed:', error);
         this.db.updateJobStatus(jobId, 'failed', 0);
       });
@@ -276,6 +276,47 @@ export class MainMediaAPI {
       return { success: true, jobId };
     } catch (error) {
       console.error('Failed to start indexing:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Clean up duplicate sources
+   */
+  static async cleanupDuplicateSources(): Promise<{ success: boolean; removed?: number; kept?: number; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      const result = await this.db.removeDuplicateSources();
+      return { success: true, removed: result.removed, kept: result.kept };
+    } catch (error) {
+      console.error('Failed to cleanup duplicate sources:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Force re-index a source (regenerates all captions and embeddings)
+   */
+  static async forceReindex(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      const source = await this.db.getSource(sourceId);
+      if (!source) {
+        return { success: false, error: 'Source not found' };
+      }
+
+      const jobId = await this.db.createJob({ sourceId });
+      
+      // Start force re-indexing in background
+      this.performIndexing(jobId, sourceId, true).catch(error => {
+        console.error('Force re-indexing failed:', error);
+        this.db.updateJobStatus(jobId, 'failed', 0);
+      });
+      
+      return { success: true, jobId };
+    } catch (error) {
+      console.error('Failed to start force re-indexing:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
@@ -342,7 +383,7 @@ export class MainMediaAPI {
   /**
    * Simplified indexing implementation
    */
-  private static async performIndexing(jobId: string, sourceId: string): Promise<void> {
+  private static async performIndexing(jobId: string, sourceId: string, forceReindex: boolean = false): Promise<void> {
     try {
       console.log(`Starting indexing job ${jobId} for source ${sourceId}`);
       
@@ -385,10 +426,9 @@ export class MainMediaAPI {
             console.warn('[INDEX] Compression step failed, falling back to original:', e);
           }
 
-          // 1) Generate deterministic ID based on path hash
-          const crypto = await import('crypto');
-          const pathHash = crypto.createHash('sha256').update(file.path).digest('hex');
-          const itemId = `${pathHash.substring(0, 8)}-${pathHash.substring(8, 12)}-${pathHash.substring(12, 16)}-${pathHash.substring(16, 20)}-${pathHash.substring(20, 32)}`;
+          // Generate deterministic ID based on path hash for consistent duplicate detection
+          const { generateDeterministicId } = await import('../core/utils/crypto-utils');
+          const itemId = await generateDeterministicId(file.path);
 
           // 2) Persist to main items table (upsert by sourceId+path)
           await this.db.addMediaItem({
@@ -429,14 +469,14 @@ export class MainMediaAPI {
             }
           }
 
-          // 4) If LLM available, generate caption + embeddings (only if not already completed)
+          // 4) If LLM available, generate caption + embeddings (skip status check if force re-index)
           if (this.llm && this.vecDb) {
-            // Check current status after insert/update
+            // Check current status after insert/update (skip if forcing re-index)
             const currentItem = this.vecDb.getMediaItem(itemId);
-            const needsCaption = !currentItem || currentItem.captionStatus !== 'completed';
-            const needsEmbedding = !currentItem || currentItem.embeddingStatus !== 'completed';
+            const needsCaption = forceReindex || !currentItem || currentItem.captionStatus !== 'completed';
+            const needsEmbedding = forceReindex || !currentItem || currentItem.embeddingStatus !== 'completed';
             
-            console.log(`[INDEX] Item ${file.name} status check: caption=${currentItem?.captionStatus}, embedding=${currentItem?.embeddingStatus}, needsCaption=${needsCaption}, needsEmbedding=${needsEmbedding}`);
+            console.log(`[INDEX] Item ${file.name} status check (forceReindex=${forceReindex}): caption=${currentItem?.captionStatus}, embedding=${currentItem?.embeddingStatus}, needsCaption=${needsCaption}, needsEmbedding=${needsEmbedding}`);
             
             if (needsCaption) {
               try {

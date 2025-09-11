@@ -29,6 +29,8 @@ interface Window {
     addSource: (name: string, type: string, path: string, config?: any) => Promise<any>;
     removeSource: (sourceId: string) => Promise<any>;
     startIndexing: (sourceId: string) => Promise<any>;
+    forceReindex: (sourceId: string) => Promise<any>;
+    cleanupDuplicates: () => Promise<any>;
     stopIndexing: (jobId: string) => Promise<any>;
     getIndexingStatus: () => Promise<any>;
     search: (query: any) => Promise<any>;

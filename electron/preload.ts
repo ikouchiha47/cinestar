@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('mediaAPI', {
     ipcRenderer.invoke('media:addSource', name, type, path, config),
   removeSource: (sourceId: string) => ipcRenderer.invoke('media:removeSource', sourceId),
   startIndexing: (sourceId: string) => ipcRenderer.invoke('media:startIndexing', sourceId),
+  forceReindex: (sourceId: string) => ipcRenderer.invoke('media:forceReindex', sourceId),
+  cleanupDuplicates: () => ipcRenderer.invoke('media:cleanupDuplicates'),
   stopIndexing: (jobId: string) => ipcRenderer.invoke('media:stopIndexing', jobId),
   getIndexingStatus: () => ipcRenderer.invoke('media:getIndexingStatus'),
   search: (query: any) => ipcRenderer.invoke('media:search', query),

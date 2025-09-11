@@ -10,12 +10,12 @@ const Icon = {
   ),
   Play: ({ className }: { className?: string }) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h8m2 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h.01M15 14h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
     </svg>
   ),
-  Trash: ({ className }: { className?: string }) => (
+  Refresh: ({ className }: { className?: string }) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
     </svg>
   ),
   Spinner: ({ className }: { className?: string }) => (
@@ -24,11 +24,21 @@ const Icon = {
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
     </svg>
   ),
+  Trash: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  ),
   Plus: ({ className }: { className?: string }) => (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
     </svg>
   ),
+  Clean: ({ className }: { className?: string }) => (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+    </svg>
+  )
 };
 
 interface SourceListProps {
@@ -96,6 +106,43 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
       }
     } catch (err) {
       alert(`Error starting indexing: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
+  const handleForceReindex = async (sourceId: string, sourceName: string) => {
+    if (!confirm(`Force re-index "${sourceName}"? This will regenerate all captions and embeddings, even for items that were already processed.`)) {
+      return;
+    }
+
+    try {
+      const result = await window.mediaAPI.forceReindex(sourceId);
+      if (result.success) {
+        await loadIndexingStatus();
+        // Start polling for progress updates
+        startProgressPolling();
+      } else {
+        alert(`Failed to start force re-indexing: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Error starting force re-indexing: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
+  const handleCleanupDuplicates = async () => {
+    if (!confirm('Clean up duplicate sources? This will remove duplicate folder entries and keep only the most recent one for each path.')) {
+      return;
+    }
+
+    try {
+      const result = await window.mediaAPI.cleanupDuplicates();
+      if (result.success) {
+        alert(`Cleanup completed! Removed ${result.removed} duplicates, kept ${result.kept} sources.`);
+        await loadSources(); // Refresh the list
+      } else {
+        alert(`Failed to cleanup duplicates: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Error cleaning up duplicates: ${err instanceof Error ? err.message : err}`);
     }
   };
 
@@ -187,13 +234,32 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
   return (
     <div>
       {showFilter && sources.length > 0 && (
-        <div className="mb-3">
+        <div className="mb-3 flex gap-2">
           <input
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
             placeholder="Filter sources..."
-            className="w-full rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm focus:outline-none focus:border-neutral-600"
+            className="flex-1 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm focus:outline-none focus:border-neutral-600"
           />
+          <button
+            onClick={handleCleanupDuplicates}
+            className="px-3 py-2 rounded-lg border border-yellow-700 hover:bg-yellow-900/50 text-yellow-400 hover:text-yellow-300 transition text-sm"
+            title="Clean up duplicate sources"
+          >
+            <Icon.Clean className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      {!showFilter && sources.length > 1 && (
+        <div className="mb-3 flex justify-end">
+          <button
+            onClick={handleCleanupDuplicates}
+            className="px-3 py-2 rounded-lg border border-yellow-700 hover:bg-yellow-900/50 text-yellow-400 hover:text-yellow-300 transition text-sm flex items-center gap-2"
+            title="Clean up duplicate sources"
+          >
+            <Icon.Clean className="w-4 h-4" />
+            Clean Duplicates
+          </button>
         </div>
       )}
       {sources.length === 0 ? (
@@ -256,6 +322,18 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
                       )}
                     </button>
                     <button
+                      onClick={() => handleForceReindex(source.id, source.name)}
+                      disabled={indexingJobs.includes(source.id)}
+                      className={`p-2 rounded-lg border transition ${
+                        indexingJobs.includes(source.id)
+                          ? 'border-neutral-600 bg-neutral-800 text-neutral-500'
+                          : 'border-orange-700 hover:bg-orange-900/50 text-orange-400 hover:text-orange-300'
+                      }`}
+                      title={indexingJobs.includes(source.id) ? 'Cannot force re-index while indexing' : 'Force re-index (regenerate all captions and embeddings)'}
+                    >
+                      <Icon.Refresh className="w-4 h-4" />
+                    </button>
+                    <button
                       onClick={() => handleRemoveSource(source.id, source.name)}
                       className="p-2 rounded-lg border border-neutral-700 hover:bg-red-900/50 hover:border-red-700 text-neutral-400 hover:text-red-400 transition"
                       title="Remove this source"
@@ -292,6 +370,18 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
                     ) : (
                       <Icon.Play className="w-4 h-4" />
                     )}
+                  </button>
+                  <button
+                    onClick={() => handleForceReindex(source.id, source.name)}
+                    disabled={indexingJobs.includes(source.id)}
+                    className={`p-1.5 rounded-md border transition ${
+                      indexingJobs.includes(source.id)
+                        ? 'border-neutral-600 bg-neutral-800 text-neutral-500'
+                        : 'border-orange-700 hover:bg-orange-900/50 text-orange-400 hover:text-orange-300'
+                    }`}
+                    title={indexingJobs.includes(source.id) ? 'Cannot force re-index while indexing' : 'Force re-index (regenerate all captions and embeddings)'}
+                  >
+                    <Icon.Refresh className="w-3 h-3" />
                   </button>
                   <button
                     onClick={() => handleRemoveSource(source.id, source.name)}

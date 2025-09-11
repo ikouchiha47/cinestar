@@ -198,6 +198,16 @@ ipcMain.handle('media:startIndexing', async (_, sourceId: string) => {
   return await MainMediaAPI.startIndexing(sourceId);
 });
 
+ipcMain.handle('media:forceReindex', async (_, sourceId: string) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.forceReindex(sourceId);
+});
+
+ipcMain.handle('media:cleanupDuplicates', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  return await MainMediaAPI.cleanupDuplicateSources();
+});
+
 ipcMain.handle('media:stopIndexing', async (_, jobId: string) => {
   if (!mediaAPI) await initializeMediaAPI();
   return await MainMediaAPI.stopIndexing(jobId);

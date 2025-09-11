@@ -29,6 +29,28 @@ const Icon = {
       <path d="M21 15l-5-5L5 21" />
     </svg>
   ),
+  Browse: (p: any) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
+      <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-5l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  ),
+  Index: (p: any) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
+  ),
+  Refresh: (p: any) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
+      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  ),
+  Pin: (p: any) => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
+      <path d="M9 9l3-3 3 3" />
+      <path d="M12 6v12" />
+      <path d="M21 21l-6-6" />
+    </svg>
+  ),
   Video: (p: any) => (
     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
       <rect x="3" y="5" width="15" height="14" rx="2" />
@@ -75,7 +97,7 @@ type Place = { id: string; kind: 'local' | 's3' | 'gdrive'; label: string; path:
 type MediaT = { id: string; placeId: string; type: 'image' | 'video' | 'audio'; name: string; path: string; thumb?: string };
 
 // Early-defined Folders grid to ensure availability during render
-function PlacesGrid({ places, onBrowse, onIndex }: { places: Place[]; onBrowse: (placeId: string) => void; onIndex?: (placeId: string) => void }) {
+function PlacesGrid({ places, onBrowse, onIndex }: { places: Place[]; onBrowse: (placeId: string) => void; onIndex?: (placeId: string, forceReindex?: boolean) => void }) {
   return (
     <section>
       <div className="flex items-center justify-between mb-2">
@@ -102,16 +124,23 @@ function PlacesGrid({ places, onBrowse, onIndex }: { places: Place[]; onBrowse: 
               <div className="mt-1 text-xs text-neutral-500 truncate">{p.path}</div>
               <div className="mt-3 flex items-center justify-between text-xs text-neutral-400">
                 <span>{p.count ? p.count.toLocaleString() : '—'} items</span>
-                <div className="flex gap-2">
-                  <button className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800" onClick={() => onBrowse(p.id)}>
-                    Browse
+                <div className="flex gap-1">
+                  <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" onClick={() => onBrowse(p.id)} title="Browse">
+                    <Icon.Browse />
                   </button>
                   {onIndex && (
-                    <button className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800" onClick={() => onIndex(p.id)}>
-                      Index
+                    <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" onClick={() => onIndex(p.id)} title="Index">
+                      <Icon.Index />
                     </button>
                   )}
-                  <button className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-800">Pin</button>
+                  {onIndex && (
+                    <button className="rounded-md border border-orange-700 p-1.5 hover:bg-orange-900/50 text-orange-400 hover:text-orange-300" onClick={() => onIndex(p.id, true)} title="Force Re-index">
+                      <Icon.Refresh />
+                    </button>
+                  )}
+                  <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" title="Pin">
+                    <Icon.Pin />
+                  </button>
                 </div>
               </div>
             </div>
@@ -357,12 +386,14 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const stacks: string[] = [];
 
   // Start indexing for a place/source
-  const startIndexing = async (placeId: string) => {
+  const startIndexing = async (placeId: string, forceReindex?: boolean) => {
     try {
-      const res = await window.mediaAPI.startIndexing(placeId);
-      if (!res.success) alert(`Failed to start indexing: ${res.error || 'Unknown error'}`);
+      const res = forceReindex 
+        ? await window.mediaAPI.forceReindex(placeId)
+        : await window.mediaAPI.startIndexing(placeId);
+      if (!res.success) alert(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}: ${res.error || 'Unknown error'}`);
     } catch (e) {
-      alert(`Failed to start indexing`);
+      alert(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}`);
     }
   };
 

@@ -182,18 +182,13 @@ export class SqliteVecDatabase {
   async addMediaItemWithIdAsync(id: string, item: Partial<MediaItem>): Promise<void> {
     try {
       // First check if item already exists by path hash (since id is generated fresh each time)
-      const crypto = await import('crypto');
-      const pathHash = crypto.createHash('sha256').update(item.path || '').digest('hex');
-      const existingStmt = this.db.prepare(`SELECT caption_status, embedding_status, caption, embedding, caption_generated_at, embedding_generated_at FROM media_items WHERE path = ? OR id LIKE ?`);
-      const existing = existingStmt.get(item.path, `%${pathHash.substring(0, 8)}%`) as any;
+      const { getHashPrefix } = await import('./utils/crypto-utils');
+      const hashPrefix = await getHashPrefix(item.path || '');
+      const { DATABASE_CONSTANTS } = await import('./constants/database-constants');
+      const existingStmt = this.db.prepare(DATABASE_CONSTANTS.QUERIES.FIND_EXISTING_ITEM);
+      const existing = existingStmt.get(item.path, `%${hashPrefix}%`) as any;
 
-      const stmt = this.db.prepare(`
-        INSERT OR REPLACE INTO media_items (
-          id, source_id, name, path, size, type, created_at, updated_at,
-          caption, caption_generated_at, caption_status,
-          embedding, embedding_generated_at, embedding_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      const stmt = this.db.prepare(DATABASE_CONSTANTS.QUERIES.UPSERT_MEDIA_ITEM);
 
       // Preserve existing status and data if item already exists
       const captionStatus = existing?.caption_status || item.captionStatus || 'pending';
