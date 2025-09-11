@@ -385,8 +385,14 @@ export class MainMediaAPI {
             console.warn('[INDEX] Compression step failed, falling back to original:', e);
           }
 
-          // 1) Persist to main items table (upsert by sourceId+path)
-          const itemId = await this.db.addMediaItem({
+          // 1) Generate deterministic ID based on path hash
+          const crypto = await import('crypto');
+          const pathHash = crypto.createHash('sha256').update(file.path).digest('hex');
+          const itemId = `${pathHash.substring(0, 8)}-${pathHash.substring(8, 12)}-${pathHash.substring(12, 16)}-${pathHash.substring(16, 20)}-${pathHash.substring(20, 32)}`;
+
+          // 2) Persist to main items table (upsert by sourceId+path)
+          await this.db.addMediaItem({
+            id: itemId,
             sourceId,
             name: file.name,
             path: file.path,
@@ -398,7 +404,8 @@ export class MainMediaAPI {
             description: `${file.type} file: ${file.name}`,
             metadata: {}
           });
-          // 2) Persist to sqlite-vec media_items with pending statuses
+
+          // 3) Persist to sqlite-vec media_items (preserves existing status if already exists)
           if (this.vecDb) {
             try {
               await this.vecDb.addMediaItemWithIdAsync(itemId, {
@@ -422,25 +429,42 @@ export class MainMediaAPI {
             }
           }
 
-          // 3) If LLM available, generate caption + embeddings (no fallbacks)
+          // 4) If LLM available, generate caption + embeddings (only if not already completed)
           if (this.llm && this.vecDb) {
-            try {
-              const caption = await this.llm.generateImageDescription(inferencePath, file.path);
-              this.vecDb.updateCaption(itemId, caption, 'completed');
-            } catch (e) {
-              console.warn('[INDEX] Caption generation failed:', e);
-              try { this.vecDb.updateStatus(itemId, 'failed', undefined); } catch {}
-            }
-            try {
-              const embedding = await this.llm!.generateImageEmbedding(inferencePath);
-              this.vecDb.updateEmbedding(itemId, embedding, 'completed');
-              if (typeof (this.db as any).updateItemEmbedding === 'function') {
-                try { await (this.db as any).updateItemEmbedding(itemId, embedding); } catch {}
+            // Check current status after insert/update
+            const currentItem = this.vecDb.getMediaItem(itemId);
+            const needsCaption = !currentItem || currentItem.captionStatus !== 'completed';
+            const needsEmbedding = !currentItem || currentItem.embeddingStatus !== 'completed';
+            
+            console.log(`[INDEX] Item ${file.name} status check: caption=${currentItem?.captionStatus}, embedding=${currentItem?.embeddingStatus}, needsCaption=${needsCaption}, needsEmbedding=${needsEmbedding}`);
+            
+            if (needsCaption) {
+              try {
+                const caption = await this.llm.generateImageDescription(inferencePath, file.path);
+                this.vecDb.updateCaption(itemId, caption, 'completed');
+                console.log(`[INDEX] Generated caption for ${file.name}: "${caption.substring(0, 80)}..."`);
+              } catch (e) {
+                console.warn('[INDEX] Caption generation failed:', e);
+                try { this.vecDb.updateStatus(itemId, 'failed', undefined); } catch {}
               }
-              console.log(`[INDEX] Stored embedding for ${file.name} (${embedding.length} dims)`);
-            } catch (e) {
-              console.warn('[INDEX] Embedding generation failed (no fallback):', e);
-              try { this.vecDb.updateStatus(itemId, undefined, 'failed'); } catch {}
+            } else {
+              console.log(`[INDEX] Skipping caption generation for ${file.name} (already completed)`);
+            }
+            
+            if (needsEmbedding) {
+              try {
+                const embedding = await this.llm!.generateImageEmbedding(inferencePath);
+                this.vecDb.updateEmbedding(itemId, embedding, 'completed');
+                if (typeof (this.db as any).updateItemEmbedding === 'function') {
+                  try { await (this.db as any).updateItemEmbedding(itemId, embedding); } catch {}
+                }
+                console.log(`[INDEX] Generated embedding for ${file.name} (${embedding.length} dims)`);
+              } catch (e) {
+                console.warn('[INDEX] Embedding generation failed (no fallback):', e);
+                try { this.vecDb.updateStatus(itemId, undefined, 'failed'); } catch {}
+              }
+            } else {
+              console.log(`[INDEX] Skipping embedding generation for ${file.name} (already completed)`);
             }
           }
           

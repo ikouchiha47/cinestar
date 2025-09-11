@@ -179,37 +179,49 @@ export class SqliteVecDatabase {
   /**
    * Add or update media item with a specific ID (to align with main DB)
    */
-  async addMediaItemWithIdAsync(id: string, item: Omit<MediaItem, 'id'>): Promise<string> {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO media_items (
-        id, source_id, name, path, size, type, created_at, updated_at,
-        caption, caption_generated_at, caption_status,
-        embedding_generated_at, embedding_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+  async addMediaItemWithIdAsync(id: string, item: Partial<MediaItem>): Promise<void> {
+    try {
+      // First check if item already exists by path hash (since id is generated fresh each time)
+      const crypto = await import('crypto');
+      const pathHash = crypto.createHash('sha256').update(item.path || '').digest('hex');
+      const existingStmt = this.db.prepare(`SELECT caption_status, embedding_status, caption, embedding, caption_generated_at, embedding_generated_at FROM media_items WHERE path = ? OR id LIKE ?`);
+      const existing = existingStmt.get(item.path, `%${pathHash.substring(0, 8)}%`) as any;
 
-    stmt.run(
-      id,
-      item.sourceId,
-      item.name,
-      item.path,
-      item.size,
-      item.type,
-      item.createdAt.toISOString(),
-      item.updatedAt.toISOString(),
-      item.caption || null,
-      item.captionGeneratedAt?.toISOString() || null,
-      item.captionStatus,
-      item.embeddingGeneratedAt?.toISOString() || null,
-      item.embeddingStatus
-    );
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO media_items (
+          id, source_id, name, path, size, type, created_at, updated_at,
+          caption, caption_generated_at, caption_status,
+          embedding, embedding_generated_at, embedding_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    // Add embedding to vector table if available
-    if ((item as any).embedding && item.embeddingStatus === 'completed') {
-      await this.addEmbedding(id, (item as any).embedding as Float32Array);
+      // Preserve existing status and data if item already exists
+      const captionStatus = existing?.caption_status || item.captionStatus || 'pending';
+      const embeddingStatus = existing?.embedding_status || item.embeddingStatus || 'pending';
+      const caption = existing?.caption || item.caption || null;
+      const embedding = existing?.embedding || (item.embedding ? JSON.stringify(item.embedding) : null);
+      const captionGeneratedAt = existing?.caption_generated_at || item.captionGeneratedAt?.toISOString() || null;
+      const embeddingGeneratedAt = existing?.embedding_generated_at || item.embeddingGeneratedAt?.toISOString() || null;
+
+      stmt.run(
+        id,
+        item.sourceId,
+        item.name,
+        item.path,
+        item.size,
+        item.type,
+        item.createdAt?.toISOString() || new Date().toISOString(),
+        item.updatedAt?.toISOString() || new Date().toISOString(),
+        caption,
+        captionGeneratedAt,
+        captionStatus,
+        embedding,
+        embeddingGeneratedAt,
+        embeddingStatus
+      );
+    } catch (error) {
+      throw error;
     }
-
-    return id;
   }
 
   /**
@@ -282,6 +294,30 @@ export class SqliteVecDatabase {
     `);
 
     stmt.run(...values);
+  }
+
+  /**
+   * Get a single media item by ID
+   */
+  getMediaItem(id: string): MediaItem | null {
+    const stmt = this.db.prepare(`
+      SELECT * FROM media_items WHERE id = ?
+    `);
+    
+    const row = stmt.get(id);
+    return row ? this.rowToMediaItem(row) : null;
+  }
+
+  /**
+   * Search for media items by file path
+   */
+  searchByPath(path: string): MediaItem[] {
+    const stmt = this.db.prepare(`
+      SELECT * FROM media_items WHERE path = ?
+    `);
+    
+    const rows = stmt.all(path);
+    return rows.map(row => this.rowToMediaItem(row));
   }
 
   /**

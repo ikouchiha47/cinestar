@@ -42,22 +42,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS media_fts USING fts5(
 );
 
 -- Triggers to keep FTS in sync with media_items
+-- Note: Using INSERT OR REPLACE to avoid FTS virtual table safety issues
 CREATE TRIGGER IF NOT EXISTS media_fts_insert AFTER INSERT ON media_items
 BEGIN
-  INSERT INTO media_fts(item_id, name, caption)
-  VALUES (NEW.id, NEW.name, NEW.caption);
+  INSERT OR REPLACE INTO media_fts(rowid, item_id, name, caption)
+  VALUES (NEW.rowid, NEW.id, NEW.name, COALESCE(NEW.caption, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS media_fts_update AFTER UPDATE ON media_items
 BEGIN
-  UPDATE media_fts SET
-    name = NEW.name,
-    caption = NEW.caption
-  WHERE item_id = NEW.id;
+  INSERT OR REPLACE INTO media_fts(rowid, item_id, name, caption)
+  VALUES (NEW.rowid, NEW.id, NEW.name, COALESCE(NEW.caption, ''));
 END;
 
 CREATE TRIGGER IF NOT EXISTS media_fts_delete AFTER DELETE ON media_items
 BEGIN
-  DELETE FROM media_fts WHERE item_id = OLD.id;
+  DELETE FROM media_fts WHERE rowid = OLD.rowid;
   DELETE FROM vec_embeddings WHERE item_id = OLD.id;
 END;

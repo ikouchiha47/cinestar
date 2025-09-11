@@ -23,7 +23,18 @@ export interface OCRService {
 export class TesseractService implements OCRService {
   public name = 'tesseract-js';
 
-  async extractText(imagePath: string, options: any = {}) {
+  async extractText(_imagePath: string, _options: any = {}): Promise<{
+    text: string;
+    confidence?: number;
+    boundingBoxes?: Array<{
+      text: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      confidence?: number;
+    }>;
+  }> {
     // Note: Tesseract.js would be imported here when needed
     // For now, this is a placeholder that can be easily implemented
     throw new Error('Tesseract.js not implemented yet - pluggable architecture ready');
@@ -32,7 +43,7 @@ export class TesseractService implements OCRService {
   async isAvailable(): Promise<boolean> {
     try {
       // Check if tesseract.js is available
-      // const Tesseract = require('tesseract.js');
+      // const Tesseract = await import('tesseract.js');
       return false; // Placeholder
     } catch {
       return false;
@@ -171,13 +182,13 @@ export class OCRProcessor extends BaseVideoProcessor {
     return true;
   }
 
-  private async findAvailableService(): Promise<OCRService | null> {
+  private async findAvailableService(): Promise<OCRService | undefined> {
     for (const service of this.services) {
       if (await service.isAvailable()) {
         return service;
       }
     }
-    return null;
+    return undefined;
   }
 
   private async processImageBatch(
