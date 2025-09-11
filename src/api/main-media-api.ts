@@ -527,21 +527,22 @@ export class MainMediaAPI {
   }
 
   /**
-   * Search functionality (simplified implementation)
+   * Search functionality with pagination support
    */
   static async search(query: any): Promise<{ success: boolean; results?: any; error?: string }> {
     try {
       await this.ensureInitialized();
       const q = String(query.query || '').trim();
       const limit = query.limit || 20;
+      const offset = query.offset || 0;
       const started = Date.now();
 
       if (this.vecDb && this.llm && q) {
         try {
-          // Semantic search via sqlite-vec (vector-only)
+          // Semantic search via sqlite-vec with pagination
           const textEmbedding = await this.llm.generateEmbedding(q);
-          const vecResults = await this.vecDb.searchSimilar(textEmbedding, limit, q);
-          const items = vecResults.map(r => ({
+          const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, limit, offset, q);
+          const items = paginatedResults.results.map(r => ({
             id: r.id,
             name: r.name,
             path: r.path,
@@ -552,18 +553,28 @@ export class MainMediaAPI {
             createdAt: new Date(),
           }));
           const executionTime = Date.now() - started;
-          return { success: true, results: { items, total: items.length, query: q, executionTime, suggestions: [] } };
+          return { 
+            success: true, 
+            results: { 
+              items, 
+              total: paginatedResults.total, 
+              hasMore: paginatedResults.hasMore,
+              query: q, 
+              executionTime, 
+              suggestions: [] 
+            } 
+          };
         } catch (e) {
           console.warn('[SEARCH] Semantic search failed (vector-only):', e);
           // Vector-only: return empty results on failure
           const executionTime = Date.now() - started;
-          return { success: true, results: { items: [], total: 0, query: q, executionTime, suggestions: [] } };
+          return { success: true, results: { items: [], total: 0, hasMore: false, query: q, executionTime, suggestions: [] } };
         }
       }
 
       // Vector-only enforcement: if no vecDb/llm or no query, return empty
       const executionTime = Date.now() - started;
-      return { success: true, results: { items: [], total: 0, query: q, executionTime, suggestions: [] } };
+      return { success: true, results: { items: [], total: 0, hasMore: false, query: q, executionTime, suggestions: [] } };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }

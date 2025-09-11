@@ -36,6 +36,7 @@ export interface SearchResult {
   sourceId: string;
   type: string;
   size: number;
+  distance: number;
 }
 
 export class SqliteVecDatabase {
@@ -472,14 +473,24 @@ export class SqliteVecDatabase {
   }
 
   /**
-   * Enhanced vector similarity search using sqlite-vec
+   * Enhanced vector similarity search using sqlite-vec with pagination
    */
-  async searchSimilar(queryEmbedding: Float32Array, limit: number = 10, query?: string): Promise<SearchResult[]> {
+  async searchSimilar(queryEmbedding: Float32Array, limit: number = 10, offset: number = 0, query?: string): Promise<{results: SearchResult[], total: number, hasMore: boolean}> {
     console.log(`🔍 [SQLITE-VEC] Starting vector similarity search with ${queryEmbedding.length}D embedding`);
     if (query) console.log(`🔍 [SQLITE-VEC] Query: "${query}"`);
 
 
-    // Use sqlite-vec MATCH syntax like the official example
+    // Get total count first for pagination (use reasonable k for count)
+    const countStmt = this.db.prepare(`
+      SELECT COUNT(*) as total
+      FROM vec_embeddings v
+      JOIN media_items m ON v.item_id = m.id
+      WHERE m.embedding_status = 'completed'
+        AND v.embedding MATCH ?
+        AND k = 1000
+    `);
+
+    // Use sqlite-vec MATCH syntax with pagination
     const stmt = this.db.prepare(`
       SELECT 
         m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
@@ -490,6 +501,7 @@ export class SqliteVecDatabase {
         AND v.embedding MATCH ?
         AND k = ?
       ORDER BY distance ASC
+      LIMIT ? OFFSET ?
     `);
 
     // Serialize query embedding using struct.pack format like sqlite-vec example
@@ -497,80 +509,61 @@ export class SqliteVecDatabase {
     for (let i = 0; i < queryEmbedding.length; i++) {
       queryBuffer.writeFloatLE(queryEmbedding[i], i * 4);
     }
-    console.log(`🔍 [SQLITE-VEC-DEBUG] Query buffer length: ${queryBuffer.length} bytes`);
-    console.log(`🔍 [SQLITE-VEC-DEBUG] Query buffer first 20 bytes: [${Array.from(queryBuffer.slice(0, 20)).join(', ')}]`);
+    console.log(`🔍 [SQLITE-VEC-DEBUG] Query buffer length: ${queryBuffer.length} bytes, limit: ${limit}, offset: ${offset}`);
     
     let rows;
+    let totalCount = 0;
     try {
-      rows = stmt.all(queryBuffer, limit); // Use k parameter for limit
-      console.log(`🔍 [SQLITE-VEC] Found ${rows.length} raw results from vector search`);
+      // Get total count (use larger k for count query)
+      const countResult = countStmt.get(queryBuffer) as {total: number};
+      totalCount = countResult?.total || 0;
+      
+      // Get paginated results - k should be at least limit + offset but reasonable for performance
+      const kValue = Math.min(Math.max(limit + offset, 50), 1000);
+      rows = stmt.all(queryBuffer, kValue, limit, offset);
+      console.log(`🔍 [SQLITE-VEC] Found ${rows.length} results (${offset}-${offset + rows.length} of ${totalCount} total)`);
       
       // Debug: show raw distance values from sqlite-vec
       if (rows.length > 0) {
         console.log(`🔍 [SQLITE-VEC-DEBUG] Raw distances from sqlite-vec:`);
-        rows.slice(0, 5).forEach((row: any, i: number) => {
+        rows.slice(0, 3).forEach((row: any, i: number) => {
           console.log(`  ${i + 1}. ${row.name}: distance=${row.distance.toFixed(6)}`);
         });
       }
     } catch (error) {
       console.error(`🔍 [SQLITE-VEC-ERROR] Search failed:`, error);
-      return [];
+      return { results: [], total: 0, hasMore: false };
     }
 
-    // Convert distance to similarity (ENHANCED RANKING TEMPORARILY DISABLED)
+    // Convert distance to similarity and build results
     const results: SearchResult[] = [];
     
     for (const row of rows) {
       // Convert cosine distance to similarity (1 - distance)
       const baseSimilarity = 1 - (row as any).distance;
       
-      // TEMPORARILY DISABLED: Apply enhanced ranking
-      let enhancedScore = baseSimilarity; // Use base similarity only
-      // let boostFactors: string[] = []; // Temporarily disabled
-      
-      // DISABLED: Caption boost
-      // if (query && (row as any).caption) {
-      //   const captionBoost = this.calculateCaptionRelevanceBoost(query, (row as any).caption);
-      //   if (captionBoost > 0) {
-      //     enhancedScore = baseSimilarity + (captionBoost * 0.1);
-      //     boostFactors.push(`caption:+${(captionBoost * 0.1).toFixed(3)}`);
-      //   }
-      // }
-      
-      // DISABLED: Technical penalty
-      // if (query && this.isHumanRelatedQuery(query)) {
-      //   const technicalPenalty = this.calculateTechnicalContentPenalty((row as any).caption || '');
-      //   if (technicalPenalty > 0) {
-      //     enhancedScore = enhancedScore * (1 - (technicalPenalty * 0.3)); // Up to 60% reduction
-      //     boostFactors.push(`tech:*${(1 - (technicalPenalty * 0.3)).toFixed(3)}`);
-      //   }
-      // }
-      
       results.push({
         id: (row as any).id,
-        similarity: enhancedScore,
+        name: (row as any).name,
+        path: (row as any).path,
         caption: (row as any).caption || '',
-        path: (row as any).path || '',
-        name: (row as any).name || '',
-        sourceId: (row as any).source_id || '',
-        type: (row as any).type || 'image',
-        size: Number((row as any).size) || 0
+        sourceId: (row as any).source_id,
+        type: (row as any).type,
+        size: (row as any).size,
+        similarity: Math.max(0, Math.min(1, baseSimilarity)),
+        distance: (row as any).distance
       });
-      
-      console.log(`🔍 [SQLITE-VEC] ${(row as any).name}: Raw distance=${((row as any).distance).toFixed(6)}, Base similarity ${baseSimilarity.toFixed(4)} (enhanced ranking disabled)`);
     }
+
+    const hasMore = offset + results.length < totalCount;
     
-    // Sort by base similarity and limit results
-    const sortedResults = results
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
+    console.log(`🔍 [SQLITE-VEC] Returning ${results.length} results, hasMore: ${hasMore}`);
     
-    console.log(`🔍 [SQLITE-VEC] Top ${sortedResults.length} results (enhanced ranking):`);
-    sortedResults.forEach((result, index) => {
-      console.log(`  ${index + 1}. ${result.name} (${result.similarity.toFixed(4)}) - "${result.caption.substring(0, 80)}..."`);
-    });
-    
-    return sortedResults;
+    return {
+      results,
+      total: totalCount,
+      hasMore
+    };
   }
 
   /**
@@ -713,8 +706,8 @@ export class SqliteVecDatabase {
    * Search by text using vector similarity (compatibility method)
    */
   async searchByText(queryEmbedding: Float32Array, limit: number = 10): Promise<any[]> {
-    const results = await this.searchSimilar(queryEmbedding, limit);
-    return results.map(r => ({
+    const paginatedResults = await this.searchSimilar(queryEmbedding, limit, 0);
+    return paginatedResults.results.map((r: SearchResult) => ({
       item: {
         id: r.id,
         name: r.name,
