@@ -1,13 +1,12 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
 import { generateThumbnails, extractKeyframe, getCacheDir } from '../video-processing';
-import { FrameAnalysisService } from './frame-analysis-service';
-import { ConfigManager } from '../config';
+import { FluentFrameAnalysisService } from './fluent-frame-analysis-service';
 import path from 'path';
 
 export class VisualProcessor extends BaseVideoProcessor {
   public name = 'visual';
   public version = '1.0.0';
-  private frameAnalysisService: FrameAnalysisService;
+  private frameAnalysisService: FluentFrameAnalysisService;
 
   constructor(config: {
     generateThumbnails?: boolean;
@@ -18,8 +17,10 @@ export class VisualProcessor extends BaseVideoProcessor {
     similarityThreshold?: number;
     useIntelligentFiltering?: boolean;
   } = {}) {
+
     super();
-    this.frameAnalysisService = new FrameAnalysisService();
+
+    this.frameAnalysisService = new FluentFrameAnalysisService();
     this.setConfig({
       generateThumbnails: true,
       generateKeyframes: true,
@@ -45,6 +46,7 @@ export class VisualProcessor extends BaseVideoProcessor {
       // Generate thumbnails if enabled and scene cuts are available
       if (config.generateThumbnails && context.data.sceneCuts) {
         const thumbnailDir = path.join(cacheDir, 'thumbnails');
+        
         const thumbnails = await generateThumbnails(
           segment.videoPath,
           context.data.sceneCuts,
@@ -60,20 +62,20 @@ export class VisualProcessor extends BaseVideoProcessor {
         const keyframeDir = path.join(cacheDir, 'keyframes');
         
         if (config.useIntelligentFiltering) {
-          // Use unified intelligent frame selection algorithm
-          const visionModelDims = ConfigManager.getConfig().ai.visionModelDims;
-          const selectedFrames = await this.frameAnalysisService.selectOptimalFrames(
+          // Use optimized frame analysis with fluent-ffmpeg
+          const selectedFrames = await this.frameAnalysisService.analyzeVideoScenes(
             segment.videoPath,
             {
-              compressForVision: true,
-              visionModelDims
+              maxFrames: config.maxKeyframes,
+              sampleInterval: config.keyframeInterval,
+              sceneThreshold: config.similarityThreshold
             }
           );
           
           console.log(`Intelligent frame selection: ${selectedFrames.length} optimal frames`);
 
           // Return paths of selected frames for captioning
-          results.keyframes = selectedFrames.map(frame => frame.path);
+          results.keyframes = selectedFrames.map((frame: any) => frame.path || frame.imagePath);
           this.log('info', `Intelligent filtering: ${selectedFrames.length} keyframes`);
         } else {
           // Fallback to simple interval-based extraction

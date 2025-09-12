@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
+import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -170,6 +171,29 @@ async function initializeVideoAPI() {
   }
 }
 
+async function runAutoTune() {
+  try {
+    if (!win) return;
+    win.webContents.send('config:autoTune:started', { stage: 'ffmpeg_threads' });
+    console.log('[AUTO-TUNE] Starting FFmpeg threads auto-tune...');
+    const result = await autoTuneFFmpegThreads();
+    if (result) {
+      console.log(`[AUTO-TUNE] Selected threadsPerProcess=${result.selected}`);
+      win.webContents.send('config:autoTune:completed', {
+        stage: 'ffmpeg_threads',
+        selected: result.selected,
+        measurements: result.measurements
+      });
+    } else {
+      console.log('[AUTO-TUNE] Skipped (env/config already set or test video unavailable).');
+      win.webContents.send('config:autoTune:skipped', { stage: 'ffmpeg_threads' });
+    }
+  } catch (e) {
+    console.warn('[AUTO-TUNE] Failed to auto-tune FFmpeg threads:', e);
+    if (win) win.webContents.send('config:autoTune:failed', { stage: 'ffmpeg_threads', error: String(e) });
+  }
+}
+
 // MediaAPI IPC handlers
 ipcMain.handle('media:getSources', async () => {
   if (!mediaAPI) await initializeMediaAPI();
@@ -256,6 +280,12 @@ ipcMain.handle('media:disableDebugMode', async () => {
 ipcMain.handle('media:getStats', async () => {
   if (!mediaAPI) await initializeMediaAPI();
   return await MainMediaAPI.getStats();
+});
+
+// Manual trigger for auto-tuning from renderer
+ipcMain.handle('config:autoTune', async () => {
+  await runAutoTune();
+  return true;
 });
 
 ipcMain.handle('media:getRecentItems', async (_evt, params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number }) => {
@@ -392,4 +422,6 @@ app.whenReady().then(async () => {
   createWindow();
   await initializeMediaAPI();
   await initializeVideoAPI();
+  // Kick off background auto-tuning of FFmpeg per-process threads after initializations
+  runAutoTune();
 })

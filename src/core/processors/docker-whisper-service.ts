@@ -40,7 +40,7 @@ export class DockerWhisperService implements TranscriptionService {
       
       // Create form data using built-in FormData (Node.js 18+)
       const form = new FormData();
-      const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+      const blob = new Blob([audioBuffer.buffer], { type: 'audio/wav' });
       form.append('audio_file', blob, 'audio.wav');
 
       // Add optional parameters

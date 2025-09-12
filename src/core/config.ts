@@ -29,6 +29,8 @@ export interface AppConfig {
     pipeline?: {
       parallel?: boolean;
       maxWorkers?: number;
+      concurrencyLimit?: number;
+      threadsPerProcess?: number;
     };
     frameSelection?: {
       maxCandidateFrames: number;
@@ -36,6 +38,11 @@ export interface AppConfig {
       sampleInterval: number;
       sceneThreshold: number;
       similarityThreshold: number;
+    };
+    thumbnails?: {
+      width: number;
+      height: number;
+      quality: number;
     };
   };
   debug: {
@@ -82,7 +89,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   video: {
     pipeline: {
       parallel: true,
-      maxWorkers: Math.max(1, Math.min((os.cpus()?.length || 4) - 1, parseInt(process.env.VIDEO_MAX_WORKERS || '4', 10)))
+      maxWorkers: Math.max(1, Math.min((os.cpus()?.length || 4) - 1, parseInt(process.env.VIDEO_MAX_WORKERS || '4', 10))),
+      concurrencyLimit: 4, // Frame processing concurrency limit
+      threadsPerProcess: parseInt(process.env.VIDEO_FFMPEG_THREADS || '1', 10), // Single-threaded ffmpeg by default
     },
     frameSelection: {
       maxCandidateFrames: 150,   // Stage 1: FFmpeg analysis candidates (increased for longer videos)
@@ -90,6 +99,11 @@ export const DEFAULT_CONFIG: AppConfig = {
       sampleInterval: 30,        // Sample every N frames
       sceneThreshold: 0.15,      // Scene detection threshold
       similarityThreshold: 0.15, // Frame similarity threshold
+    },
+    thumbnails: {
+      width: 320,               // Default thumbnail width
+      height: 240,              // Default thumbnail height
+      quality: 2,               // JPEG quality (1-31, lower is better)
     },
   },
   debug: {

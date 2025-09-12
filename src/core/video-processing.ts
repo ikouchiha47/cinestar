@@ -3,6 +3,7 @@ import ffmpegPath from 'ffmpeg-static';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs/promises';
+import { ConfigManager } from './config.js';
 
 // Configure fluent-ffmpeg to use the static binary
 if (ffmpegPath) {
@@ -39,8 +40,10 @@ export async function detectScenes(videoFile: string, threshold = 0.4): Promise<
     proc.stderr.on('data', (data) => {
       const str = data.toString();
       const matches = str.match(/pts_time:([0-9.]+)/g) || [];
+
       for (const match of matches) {
         const time = parseFloat(match.split(':')[1]);
+
         if (!isNaN(time)) {
           cuts.push(time);
         }
@@ -74,11 +77,18 @@ export async function generateThumbnails(
     sceneCuts.map((time, i) =>
       new Promise<string>((resolve, reject) => {
         const outPath = path.join(outDir, `thumb_${i}.jpg`);
+        const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
         
         ffmpeg(videoFile)
+          .noAudio()
           .seekInput(time)
           .frames(1)
-          .outputOptions(['-q:v', '2']) // High quality JPEG
+          .outputOptions([
+            '-vcodec', 'mjpeg',
+            '-qscale:v', '2',
+            '-pix_fmt', 'yuvj420p',
+            '-threads', threads,
+          ])
           .output(outPath)
           .on('end', () => resolve(outPath))
           .on('error', reject)
@@ -100,10 +110,11 @@ export async function extractKeyframe(
     // Ensure output directory exists
     const dir = path.dirname(outputPath);
     fs.mkdir(dir, { recursive: true }).then(() => {
+      const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
       ffmpeg(videoFile)
         .seekInput(timestamp)
         .frames(1)
-        .outputOptions(['-q:v', '2'])
+        .outputOptions(['-q:v', '2', '-threads', threads])
         .output(outputPath)
         .on('end', () => resolve())
         .on('error', reject)

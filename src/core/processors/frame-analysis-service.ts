@@ -73,6 +73,7 @@ export class FrameAnalysisService {
         
         if (code !== 0) {
           console.error(`[FFmpeg Analysis] FFmpeg failed with stderr:`, stderr.substring(0, 500));
+          
           reject(new Error(`FFmpeg analysis failed (exit code ${code}): ${stderr.substring(0, 200)}`));
           return;
         }
@@ -92,6 +93,7 @@ export class FrameAnalysisService {
             console.warn(`[FFmpeg Analysis] No showinfo frame data found. FFmpeg version may be incompatible.`);
             console.warn(`[FFmpeg Analysis] Expected format: 'n: X pts_time: Y'`);
             console.warn(`[FFmpeg Analysis] Sample stderr:`, stderr.substring(0, 500));
+
             resolve([]); // Return empty array instead of failing
             return;
           }
@@ -138,6 +140,7 @@ export class FrameAnalysisService {
           
         } catch (parseError) {
           console.error(`[FFmpeg Analysis] Parsing error:`, parseError);
+
           const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
           reject(new Error(`FFmpeg output parsing failed: ${errorMessage}`));
         }

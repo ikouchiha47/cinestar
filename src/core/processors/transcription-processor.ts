@@ -30,7 +30,7 @@ export class HttpTranscriptionService implements TranscriptionService {
   async transcribe(audioPath: string, options: any = {}) {
     const audioBuffer = await fs.readFile(audioPath);
     const formData = new FormData();
-    formData.append('audio', new Blob([new Uint8Array(audioBuffer.buffer)]));
+    formData.append('audio', new Blob([new Uint8Array(audioBuffer.buffer as ArrayBuffer)]));
     
     if (options.language) {
       formData.append('language', options.language);

@@ -68,9 +68,9 @@ export class VideoDatabase {
   private db: Database.Database;
   private dbPath: string;
   private initialized = false;
-  private embeddingService: EmbeddingService;
+  // private embeddingService: EmbeddingService; // Commented out to fix compilation
 
-  constructor(embeddingService?: EmbeddingService) {
+  constructor(_embeddingService?: EmbeddingService) {
     // Choose database directory similar to Media Search
     const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
     const defaultDir = isDev ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller');
@@ -83,7 +83,7 @@ export class VideoDatabase {
     this.db = new Database(this.dbPath);
 
     // Initialize embedding service
-    this.embeddingService = embeddingService || new EmbeddingService();
+    // this.embeddingService = embeddingService; // Commented out to fix compilation || new EmbeddingService();
 
     // Enable WAL mode for better performance
     this.db.pragma('journal_mode = WAL');
