@@ -16,6 +16,7 @@ import { WhisperCliService } from '../core/processors/whisper-cli-service.js';
 import { WhisperCppService } from '../core/processors/whisper-cpp-service.js';
 import fs from 'fs';
 import path from 'path';
+import { ConfigManager } from '../core/config.js';
 
 
 export interface VideoSearchQuery {
@@ -61,19 +62,24 @@ export class VideoMediaAPI {
     // Create processors
     const segmentationProcessor = new SegmentationProcessor();
     const audioExtractionProcessor = new AudioExtractionProcessor();
-    // Visual processor: allow rate-based keyframes via env
-    const keyframesMode = (process.env.KEYFRAMES_MODE === 'rate') ? 'rate' : 'scene';
-    const keyframesFPS = process.env.KEYFRAMES_FPS ? Number(process.env.KEYFRAMES_FPS) : 0;
-    const keyframesTargetTotal = process.env.KEYFRAMES_TARGET_TOTAL ? Number(process.env.KEYFRAMES_TARGET_TOTAL) : 0;
-    const keyframesMaxTotal = process.env.KEYFRAMES_MAX_TOTAL ? Number(process.env.KEYFRAMES_MAX_TOTAL) : 500;
+    // Visual processor configuration via ConfigManager
+    const appCfg = ConfigManager.getConfig();
+    const vk = appCfg.video?.keyframes;
     const visualProcessor = new VisualProcessor({
-      keyframesMode,
-      keyframesFPS,
-      keyframesTargetTotal,
-      keyframesMaxTotal,
+      keyframesMode: vk?.mode || 'scene',
+      keyframesFPS: vk?.fps || 0,
+      keyframesTargetTotal: vk?.targetTotal || 0,
+      keyframesMaxTotal: vk?.maxTotal || 500,
     } as any);
     const transcriptionProcessor = new TranscriptionProcessor();
-    const captioningProcessor = new CaptioningProcessor({ batchSize: 3, captionThumbnails: false });
+    // Captioning throughput via ConfigManager
+    const cap = appCfg.captioning;
+    const captioningProcessor = new CaptioningProcessor({ 
+      batchSize: cap?.batchSize ?? 4, 
+      captionThumbnails: cap?.captionThumbnails ?? false, 
+      captionConcurrency: cap?.concurrency ?? 4,
+      captionKeyframes: cap?.captionKeyframes ?? true,
+    });
     const ocrProcessor = new OCRProcessor();
 
     // Setup transcription processor with available services

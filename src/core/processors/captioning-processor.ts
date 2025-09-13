@@ -114,13 +114,15 @@ export class CaptioningProcessor extends BaseVideoProcessor {
     captionKeyframes?: boolean;
     captionThumbnails?: boolean;
     batchSize?: number;
+    captionConcurrency?: number;
     services?: CaptioningService[];
   } = {}) {
     super();
     this.setConfig({
       captionKeyframes: true,
       captionThumbnails: true,
-      batchSize: 4, // Process images in batches
+      batchSize: 4, // Process images in batches (outer batching)
+      captionConcurrency: 4, // Per-batch parallelism
       ...config
     });
 
@@ -159,59 +161,63 @@ export class CaptioningProcessor extends BaseVideoProcessor {
     imagePaths: string[], 
     service: CaptioningService
   ): Promise<Array<{ path: string; caption: string; error?: string }>> {
-    const results = [];
-    
-    for (const imagePath of imagePaths) {
-      try {
-        // Optionally compress large images to reduce payload/timeout errors
-        let inputPath = imagePath;
-        try {
-          const st = await fs.stat(imagePath);
-          const sizeKB = Math.round((st.size || 0) / 1024);
-          let usedCompressed = false;
-          if (st.size > 1_500_000) {
-            const tmpDir = path.join(os.tmpdir(), 'driller-caption');
-            await fs.mkdir(tmpDir, { recursive: true });
-            const base = path.basename(imagePath).replace(/\.[^.]+$/, '');
-            const outPath = path.join(tmpDir, `${base}_c.jpg`);
-            try {
-              const config = ConfigManager.getConfig();
-              const [maxWidth, maxHeight] = config.ai.visionModelDims;
-              await sharp(await fs.readFile(imagePath))
-                .resize({ width: maxWidth, height: maxHeight, fit: 'inside', withoutEnlargement: true })
-                .jpeg({ quality: 80 })
-                .toFile(outPath);
-              const st2 = await fs.stat(outPath);
-              const sizeKB2 = Math.round((st2.size || 0) / 1024);
-              this.log('debug', `Compressing image for captioning: ${path.basename(imagePath)} ${sizeKB}KB -> ${sizeKB2}KB`);
-              inputPath = outPath;
-              usedCompressed = true;
-            } catch (e) {
-              this.log('warn', `Image compression failed, using original: ${path.basename(imagePath)}`);
-            }
-          }
-          if (!usedCompressed) {
-            this.log('debug', `Captioning image: ${path.basename(imagePath)} ~${sizeKB}KB`);
-          }
-        } catch { /* ignore compression errors */ }
+    const cfg = this.getConfig();
+    const concurrency = Math.max(1, Number(cfg.captionConcurrency) || 4);
+    this.log('debug', `Processing batch of ${imagePaths.length} with concurrency ${concurrency}`);
 
-        const result = await service.caption(inputPath);
-        results.push({
-          path: imagePath,
-          caption: result.caption
-        });
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        // Per-image failure logging with path and concise error
-        this.log('error', `Captioning failed for image: ${imagePath}`, msg);
-        results.push({
-          path: imagePath,
-          caption: '',
-          error: msg || 'Unknown error'
-        });
+    const results: Array<{ path: string; caption: string; error?: string }> = new Array(imagePaths.length);
+    let next = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = next++;
+        if (i >= imagePaths.length) break;
+        const imagePath = imagePaths[i];
+        try {
+          // Optionally compress large images to reduce payload/timeout errors
+          let inputPath = imagePath;
+          try {
+            const st = await fs.stat(imagePath);
+            const sizeKB = Math.round((st.size || 0) / 1024);
+            let usedCompressed = false;
+            if (st.size > 1_500_000) {
+              const tmpDir = path.join(os.tmpdir(), 'driller-caption');
+              await fs.mkdir(tmpDir, { recursive: true });
+              const base = path.basename(imagePath).replace(/\.[^.]+$/, '');
+              const outPath = path.join(tmpDir, `${base}_c.jpg`);
+              try {
+                const config = ConfigManager.getConfig();
+                const [maxWidth, maxHeight] = config.ai.visionModelDims;
+                await sharp(await fs.readFile(imagePath))
+                  .resize({ width: maxWidth, height: maxHeight, fit: 'inside', withoutEnlargement: true })
+                  .jpeg({ quality: 80 })
+                  .toFile(outPath);
+                const st2 = await fs.stat(outPath);
+                const sizeKB2 = Math.round((st2.size || 0) / 1024);
+                this.log('debug', `Compressing image for captioning: ${path.basename(imagePath)} ${sizeKB}KB -> ${sizeKB2}KB`);
+                inputPath = outPath;
+                usedCompressed = true;
+              } catch (e) {
+                this.log('warn', `Image compression failed, using original: ${path.basename(imagePath)}`);
+              }
+            }
+            if (!usedCompressed) {
+              this.log('debug', `Captioning image: ${path.basename(imagePath)} ~${sizeKB}KB`);
+            }
+          } catch { /* ignore compression errors */ }
+
+          const result = await service.caption(inputPath);
+          results[i] = { path: imagePath, caption: result.caption };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          this.log('error', `Captioning failed for image: ${imagePath}`, msg);
+          results[i] = { path: imagePath, caption: '', error: msg || 'Unknown error' };
+        }
       }
-    }
-    
+    };
+
+    const workers = Array.from({ length: concurrency }, () => worker());
+    await Promise.all(workers);
     return results;
   }
 
@@ -255,7 +261,7 @@ export class CaptioningProcessor extends BaseVideoProcessor {
       }
 
       this.log('info', `Captioning ${imagesToProcess.length} images`);
-      this.log('info', `Caption batch size: ${config.batchSize}`);
+      this.log('info', `Caption batch size: ${config.batchSize}, per-batch concurrency: ${config.captionConcurrency}`);
 
       // Process images in batches
       const allCaptions = [];

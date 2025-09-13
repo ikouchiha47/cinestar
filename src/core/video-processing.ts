@@ -31,9 +31,19 @@ export async function detectScenes(videoFile: string, threshold = 0.4): Promise<
       return;
     }
 
+    // Use configured threads and platform-specific hwaccel
+    const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
+    const hwaccelArgs = process.platform === 'darwin' ? ['-hwaccel', 'videotoolbox'] : [];
+
     const proc = spawn(ffmpegPath, [
+      '-hide_banner',
+      '-nostats',
+      ...hwaccelArgs,
+      '-threads', threads,
+      '-an',
       '-i', videoFile,
-      '-filter_complex', `select='gt(scene,${threshold})',metadata=print`,
+      // Scale down to reduce pixel work, then run scene detection and showinfo for pts_time
+      '-filter_complex', `scale='min(640,iw)':-2,select='gt(scene,${threshold})',showinfo`,
       '-f', 'null', '-'
     ]);
 

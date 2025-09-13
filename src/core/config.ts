@@ -44,6 +44,21 @@ export interface AppConfig {
       height: number;
       quality: number;
     };
+    keyframes?: {
+      mode: 'scene' | 'rate';
+      fps: number;           // when > 0, sample this many frames per second
+      targetTotal: number;   // when > 0 and fps === 0, evenly sample this many frames
+      maxTotal: number;      // hard cap
+    };
+  };
+  captioning?: {
+    batchSize: number;        // outer batch size
+    concurrency: number;      // per-batch concurrency
+    timeoutMs: number;        // request timeout; 0 disables
+    retries: number;          // retry attempts; 0 disables
+    retryDelayMs: number;     // base delay for backoff
+    captionKeyframes: boolean;
+    captionThumbnails: boolean;
   };
   debug: {
     enabled: boolean;
@@ -91,7 +106,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       parallel: true,
       maxWorkers: Math.max(1, Math.min((os.cpus()?.length || 4) - 1, parseInt(process.env.VIDEO_MAX_WORKERS || '4', 10))),
       concurrencyLimit: 4, // Frame processing concurrency limit
-      threadsPerProcess: parseInt(process.env.VIDEO_FFMPEG_THREADS || '1', 10), // Single-threaded ffmpeg by default
+      threadsPerProcess: parseInt(process.env.VIDEO_FFMPEG_THREADS || '2', 10), // Single-threaded ffmpeg by default
     },
     frameSelection: {
       maxCandidateFrames: 150,   // Stage 1: FFmpeg analysis candidates (increased for longer videos)
@@ -105,6 +120,21 @@ export const DEFAULT_CONFIG: AppConfig = {
       height: 240,              // Default thumbnail height
       quality: 2,               // JPEG quality (1-31, lower is better)
     },
+    keyframes: {
+      mode: 'scene',
+      fps: 0,
+      targetTotal: 0,
+      maxTotal: 500,
+    },
+  },
+  captioning: {
+    batchSize: 4,
+    concurrency: 4,
+    timeoutMs: 0,         // disabled by default
+    retries: 0,           // disabled by default
+    retryDelayMs: 1000,
+    captionKeyframes: true,
+    captionThumbnails: false,
   },
   debug: {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true
@@ -148,6 +178,10 @@ export class ConfigManager {
           ...((updates.video || {}).pipeline || {}),
         }
       },
+      captioning: ({
+        ...this.config.captioning,
+        ...((updates.captioning || {}) as Partial<AppConfig['captioning']>),
+      } as AppConfig['captioning']),
       // Ensure visionModelDims is always present
       ...(updates.ai?.visionModelDims ? { ai: { ...this.config.ai, visionModelDims: updates.ai.visionModelDims } } : {})
     };
