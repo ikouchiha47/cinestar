@@ -61,7 +61,17 @@ export class VideoMediaAPI {
     // Create processors
     const segmentationProcessor = new SegmentationProcessor();
     const audioExtractionProcessor = new AudioExtractionProcessor();
-    const visualProcessor = new VisualProcessor();
+    // Visual processor: allow rate-based keyframes via env
+    const keyframesMode = (process.env.KEYFRAMES_MODE === 'rate') ? 'rate' : 'scene';
+    const keyframesFPS = process.env.KEYFRAMES_FPS ? Number(process.env.KEYFRAMES_FPS) : 0;
+    const keyframesTargetTotal = process.env.KEYFRAMES_TARGET_TOTAL ? Number(process.env.KEYFRAMES_TARGET_TOTAL) : 0;
+    const keyframesMaxTotal = process.env.KEYFRAMES_MAX_TOTAL ? Number(process.env.KEYFRAMES_MAX_TOTAL) : 500;
+    const visualProcessor = new VisualProcessor({
+      keyframesMode,
+      keyframesFPS,
+      keyframesTargetTotal,
+      keyframesMaxTotal,
+    } as any);
     const transcriptionProcessor = new TranscriptionProcessor();
     const captioningProcessor = new CaptioningProcessor({ batchSize: 3, captionThumbnails: false });
     const ocrProcessor = new OCRProcessor();
@@ -164,21 +174,42 @@ export class VideoMediaAPI {
     // Add video as source to main SQLite database via MainMediaAPI (no JSON paths)
     try {
       const videoName = path.basename(videoPath, path.extname(videoPath));
-      const videoDir = path.dirname(videoPath);
+      let sourceId: string | undefined;
+
       const res = await MainMediaAPI.addSource({
         name: videoName,
         type: 'local',
-        path: videoDir,
+        path: videoPath,
         enabled: true,
         config: { videoFile: videoPath }
       } as any);
+
       if (res.success && res.id) {
+        sourceId = res.id;
         console.log(`[Video Source] Added video source to main database: ${videoName} (${res.id})`);
-        // Also insert this specific video file as an item so it appears in the home UI immediately
+      } else {
+        // If the source already exists for this path, find its id and continue
+        console.warn(`[Video Source] Failed to add source (may already exist):`, res.error);
         try {
-          const addItem = await MainMediaAPI.addItemForFile(res.id, videoPath, `Video file: ${videoName}`, { via: 'VideoMediaAPI' });
+          const sourcesResp = await MainMediaAPI.getSources();
+          if (sourcesResp.success && sourcesResp.sources?.length) {
+            const existing = sourcesResp.sources.find(s => s.path === videoPath);
+            if (existing) {
+              sourceId = existing.id;
+              console.log(`[Video Source] Using existing source for file ${videoPath}: ${existing.id}`);
+            }
+          }
+        } catch (e) {
+          console.warn('[Video Source] Could not fetch existing sources:', e);
+        }
+      }
+
+      // Insert this specific video file as an item so it appears in the home UI
+      if (sourceId) {
+        try {
+          const addItem = await MainMediaAPI.addItemForFile(sourceId, videoPath, `Video file: ${videoName}`, { via: 'VideoMediaAPI' });
           if (addItem.success) {
-            console.log(`[Video Source] Inserted video item into main DB: ${videoName}`);
+            console.log(`[Video Source] Inserted/updated video item in main DB: ${videoName}`);
           } else {
             console.warn(`[Video Source] Failed to insert video item into main DB: ${addItem.error}`);
           }
@@ -186,7 +217,7 @@ export class VideoMediaAPI {
           console.warn('[Video Source] Error inserting video item into main DB:', e);
         }
       } else {
-        console.warn(`[Video Source] Failed to add video source to main database (no id returned):`, res.error);
+        console.warn(`[Video Source] No sourceId resolved for ${videoPath}; video item will not appear in main UI.`);
       }
     } catch (error) {
       console.warn(`[Video Source] Failed to add video source to main database:`, error);

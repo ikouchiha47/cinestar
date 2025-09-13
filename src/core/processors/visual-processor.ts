@@ -6,7 +6,7 @@ import path from 'path';
 export class VisualProcessor extends BaseVideoProcessor {
   public name = 'visual';
   public version = '1.0.0';
-  private frameAnalysisService: FluentFrameAnalysisService;
+  // Intelligent frame analysis disabled by default; only used for dev test
 
   constructor(config: {
     generateThumbnails?: boolean;
@@ -20,15 +20,19 @@ export class VisualProcessor extends BaseVideoProcessor {
 
     super();
 
-    this.frameAnalysisService = new FluentFrameAnalysisService();
     this.setConfig({
       generateThumbnails: true,
       generateKeyframes: true,
       thumbnailQuality: 2,
       keyframeInterval: 1, // Extract keyframe every N seconds
-      maxKeyframes: 20, // Limit total keyframes per segment
+      maxKeyframes: 20, // Legacy cap (not applied in sceneCut mode); kept for fallback
       similarityThreshold: 0.15, // Filter similar frames (lower = more strict)
-      useIntelligentFiltering: true,
+      useIntelligentFiltering: false,
+      // New: rate-based sampling settings (optional)
+      keyframesMode: 'scene', // 'scene' | 'rate'
+      keyframesFPS: 0,        // when > 0, sample this many frames per second for the segment
+      keyframesTargetTotal: 0, // when > 0 and FPS is 0, evenly sample this many frames across the segment
+      keyframesMaxTotal: 500,  // hard cap to avoid runaway extraction
       ...config
     });
   }
@@ -60,37 +64,80 @@ export class VisualProcessor extends BaseVideoProcessor {
       // Generate keyframes if enabled
       if (config.generateKeyframes) {
         const keyframeDir = path.join(cacheDir, 'keyframes');
-        
-        if (config.useIntelligentFiltering) {
-          // Use optimized frame analysis with fluent-ffmpeg
-          const selectedFrames = await this.frameAnalysisService.analyzeVideoScenes(
-            segment.videoPath,
-            {
-              maxFrames: config.maxKeyframes,
-              sampleInterval: config.keyframeInterval,
-              sceneThreshold: config.similarityThreshold
-            }
-          );
-          
-          console.log(`Intelligent frame selection: ${selectedFrames.length} optimal frames`);
 
-          // Return paths of selected frames for captioning
-          results.keyframes = selectedFrames.map((frame: any) => frame.path || frame.imagePath);
-          this.log('info', `Intelligent filtering: ${selectedFrames.length} keyframes`);
+        // Decide strategy: rate-based vs scene cuts
+        const useRate = (config.keyframesMode === 'rate') || (Number(config.keyframesFPS) > 0 || Number(config.keyframesTargetTotal) > 0);
+
+        if (useRate) {
+          // Rate-based sampling across the whole segment duration
+          const start = Number(segment.startTime) || 0;
+          const end = Number(segment.endTime) || start;
+          const duration = Math.max(0, end - start);
+          const fps = Number(config.keyframesFPS) || 0;
+          const target = !fps && Number(config.keyframesTargetTotal) > 0 ? Number(config.keyframesTargetTotal) : 0;
+
+          let interval = 0;
+          if (fps > 0) {
+            interval = 1 / fps;
+          } else if (target > 0 && duration > 0) {
+            interval = duration / target;
+          } else {
+            // Fallback to legacy interval if misconfigured
+            interval = Math.max(1, Number(config.keyframeInterval) || 1);
+          }
+
+          const timestamps: number[] = [];
+          if (interval > 0) {
+            for (let t = start; t < end; t += interval) {
+              timestamps.push(t);
+              if (timestamps.length >= Number(config.keyframesMaxTotal) || timestamps.length > 1_000) break;
+            }
+          }
+
+          const keyframes: string[] = [];
+          for (let i = 0; i < timestamps.length; i++) {
+            const ts = timestamps[i];
+            const outPath = path.join(keyframeDir, `${segment.id}_${String(i).padStart(3,'0')}_${ts.toFixed(3)}.jpg`);
+            await extractKeyframe(segment.videoPath, ts, outPath);
+            keyframes.push(outPath);
+          }
+          results.keyframes = keyframes;
+          this.log('info', `Generated ${keyframes.length} keyframes (rate mode)`);
+
+        } else if (Array.isArray(context.data.sceneCuts) && context.data.sceneCuts.length > 0) {
+          const cuts: number[] = context.data.sceneCuts.slice().sort((a: number, b: number) => a - b);
+          const keyframePaths: string[] = [];
+          for (let i = 0; i < cuts.length; i++) {
+            const ts = cuts[i];
+            const outPath = path.join(keyframeDir, `${segment.id}_${String(i).padStart(3,'0')}_${ts.toFixed(3)}.jpg`);
+            await extractKeyframe(segment.videoPath, ts, outPath);
+            keyframePaths.push(outPath);
+          }
+          results.keyframes = keyframePaths;
+          this.log('info', `Generated ${keyframePaths.length} keyframes (scene cuts)`);
+
+          // Dev-only: test MJPEG in-memory extraction using the frame analysis service
+          if (process.env.TEST_INMEMORY_MJPEG === '1') {
+            try {
+              const svc = new FluentFrameAnalysisService();
+              const sample = cuts.slice(0, Math.min(12, cuts.length));
+              const testRes = await svc.extractFramesInMemoryMJPEG(segment.videoPath, sample, { concurrencyLimit: 2 });
+              this.log('info', `[DEV TEST] MJPEG in-memory extraction: ${testRes.length}/${sample.length} frames decoded`);
+            } catch (e) {
+              this.log('warn', '[DEV TEST] MJPEG in-memory extraction failed', e instanceof Error ? e.message : String(e));
+            }
+          }
         } else {
           // Fallback to simple interval-based extraction
           const keyframes: string[] = [];
-          // const duration = segment.endTime - segment.startTime;
-          const interval = config.keyframeInterval;
-          
+          const interval = Math.max(1, Number(config.keyframeInterval) || 1);
           for (let t = segment.startTime; t < segment.endTime; t += interval) {
-            const keyframePath = path.join(keyframeDir, `${segment.id}_${t.toFixed(2)}.jpg`);
-            await extractKeyframe(segment.videoPath, t, keyframePath);
-            keyframes.push(keyframePath);
+            const outPath = path.join(keyframeDir, `${segment.id}_${t.toFixed(2)}.jpg`);
+            await extractKeyframe(segment.videoPath, t, outPath);
+            keyframes.push(outPath);
           }
-          
-          results.keyframes = keyframes.slice(0, config.maxKeyframes);
-          this.log('info', `Generated ${results.keyframes.length} keyframes (simple mode)`);
+          results.keyframes = keyframes;
+          this.log('info', `Generated ${keyframes.length} keyframes (interval fallback)`);
         }
       }
 

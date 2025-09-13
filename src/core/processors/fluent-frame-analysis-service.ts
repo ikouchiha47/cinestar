@@ -37,6 +37,8 @@ export interface FluentFrameOptions {
   inMemoryProcessing?: boolean;
   concurrencyLimit?: number;
   hashPrecision?: 'low' | 'medium' | 'high';
+  outputCodec?: 'png' | 'mjpeg';
+  computeDHash?: boolean; // default true; set false to compute only pHash
 }
 
 // Fluent-ffmpeg based frame analysis service with optimizations
@@ -77,6 +79,8 @@ export class FluentFrameAnalysisService {
       command.on('stderr', (stderrLine: string) => {
         stderr += stderrLine + '\n';
       });
+
+      
 
       command.on('end', () => {
         try {
@@ -129,6 +133,123 @@ export class FluentFrameAnalysisService {
     });
   }
 
+  // Probe actual pts_time emitted by a select filter for the given timestamps
+  async probeSelectedTimestamps(
+    videoPath: string,
+    timestamps: number[]
+  ): Promise<number[]> {
+    const config = ConfigManager.getConfig();
+    const threads = String(config.video?.pipeline?.threadsPerProcess ?? 1);
+    const selectExpressions = timestamps.map(ts => `eq(t,${ts.toFixed(3)})`);
+    const selectFilter = `select='${selectExpressions.join('+')}'`;
+
+    return new Promise<number[]>((resolve, reject) => {
+      let stderr = '';
+      const command = ffmpeg(videoPath)
+        .noAudio()
+        .videoFilters([selectFilter, 'showinfo'])
+        .outputOptions(['-f', 'null', '-threads', threads])
+        .output('-');
+
+      command.on('stderr', (line: string) => { stderr += line + '\n'; });
+      command.on('end', () => {
+        try {
+          const lines = stderr.split('\n');
+          const showinfo = lines.filter(l => l.includes('showinfo') && l.includes('pts_time:'));
+          const pts: number[] = [];
+          for (const l of showinfo) {
+            const m = l.match(/pts_time:([\d.]+)/);
+            if (m) {
+              const t = parseFloat(m[1]);
+              if (!isNaN(t)) pts.push(t);
+            }
+          }
+          resolve(pts);
+        } catch (e) {
+          reject(e);
+        }
+      });
+      command.on('error', (err) => reject(new Error(`FFmpeg probe failed: ${err.message}`)));
+      command.run();
+    });
+  }
+
+  // Audit frames: extract in-memory, compute hashes + distances, capture actual pts_time
+  async auditFrames(
+    videoPath: string,
+    timestamps: number[],
+    options: { codec?: 'png' | 'mjpeg'; computeDHash?: boolean; outPath?: string; hashPrecision?: 'low'|'medium'|'high' }
+  ): Promise<{
+    requested: number[];
+    actual: number[];
+    frames: Array<{
+      index: number;
+      requestedTimestamp: number;
+      actualTimestamp: number | null;
+      pHash: string;
+      dHash: string;
+      pDistPrev: number | null;
+      dDistPrev: number | null;
+      byteLength: number;
+      width?: number;
+      height?: number;
+    }>;
+  }> {
+    const codec = options.codec === 'png' ? 'png' : 'mjpeg';
+    const computeDHash = options.computeDHash === true;
+
+    const frames = await this.extractFramesInMemory(videoPath, timestamps, {
+      outputCodec: codec,
+      inMemoryProcessing: true,
+      computeDHash,
+      hashPrecision: options.hashPrecision || 'medium'
+    });
+
+    const actual = await this.probeSelectedTimestamps(videoPath, timestamps);
+
+    const results: Array<{
+      index: number; requestedTimestamp: number; actualTimestamp: number | null; pHash: string; dHash: string; pDistPrev: number | null; dDistPrev: number | null; byteLength: number; width?: number; height?: number;
+    }> = [];
+
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      let width: number | undefined;
+      let height: number | undefined;
+      try {
+        const meta = await (await import('sharp')).default(f.buffer!).metadata();
+        width = meta.width;
+        height = meta.height;
+      } catch {}
+      const prev = i > 0 ? frames[i - 1] : null;
+      const pDistPrev = prev ? this.calculateHammingDistance(f.pHash, prev.pHash) : null;
+      const dDistPrev = prev ? (f.dHash && prev.dHash ? this.calculateHammingDistance(f.dHash, prev.dHash) : null) : null;
+      results.push({
+        index: i,
+        requestedTimestamp: timestamps[i] ?? i,
+        actualTimestamp: actual[i] ?? null,
+        pHash: f.pHash,
+        dHash: f.dHash,
+        pDistPrev,
+        dDistPrev,
+        byteLength: f.buffer ? f.buffer.length : 0,
+        width,
+        height,
+      });
+    }
+
+    const report = { requested: timestamps, actual, frames: results };
+    if (options.outPath) {
+      try {
+        const { default: fsp } = await import('fs/promises');
+        await fsp.mkdir(path.dirname(options.outPath), { recursive: true });
+        await fsp.writeFile(options.outPath, JSON.stringify(report, null, 2));
+      } catch (e) {
+        console.warn('Failed to write audit report:', e);
+      }
+    }
+    return report;
+  }
+
   // Batch frame extraction with fluent-ffmpeg
   async extractFramesBatch(
     videoPath: string,
@@ -137,8 +258,18 @@ export class FluentFrameAnalysisService {
   ): Promise<FrameHash[]> {
     if (timestamps.length === 0) return [];
 
+    // Prefer in-memory, but fall back to disk if anything looks off
     if (options.inMemoryProcessing !== false) {
-      return this.extractFramesInMemory(videoPath, timestamps, options);
+      try {
+        const results = await this.extractFramesInMemory(videoPath, timestamps, options);
+        // If we didn't get at least half the requested frames, fall back to disk for reliability
+        if (!Array.isArray(results) || results.length < Math.max(1, Math.floor(timestamps.length / 2))) {
+          return await this.extractFramesToDisk(videoPath, timestamps, options);
+        }
+        return results;
+      } catch (e) {
+        return await this.extractFramesToDisk(videoPath, timestamps, options);
+      }
     } else {
       return this.extractFramesToDisk(videoPath, timestamps, options);
     }
@@ -163,14 +294,18 @@ export class FluentFrameAnalysisService {
       let currentBuffer = Buffer.alloc(0);
       const outputStream = new PassThrough();
 
+      // Default to MJPEG unless explicitly set to PNG
+      const codec = options.outputCodec === 'png' ? 'png' : 'mjpeg';
+
       const command = ffmpeg(videoPath)
         .noAudio()
-        .seek(timestamps[0])
-        .videoFilters([selectFilter, 'showinfo'])
+        .seekInput(timestamps[0])
+        .videoFilters([selectFilter])
         .outputFormat('image2pipe')
         .outputOptions([
-          '-vcodec', 'mjpeg',
-          '-q:v', '2',
+          '-vcodec', codec,
+          '-frames:v', String(timestamps.length),
+          '-vsync', '0',
           '-threads', threads
         ]);
 
@@ -182,30 +317,41 @@ export class FluentFrameAnalysisService {
       // Stream to memory
       command.pipe(outputStream, { end: true });
 
-      // JPEG frame detection
+      // Frame boundary detection
       const JPEG_START = Buffer.from([0xFF, 0xD8]);
       const JPEG_END = Buffer.from([0xFF, 0xD9]);
+      const PNG_SIG = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+      const PNG_IEND = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
 
       outputStream.on('data', (chunk: Buffer) => {
         currentBuffer = Buffer.concat([currentBuffer, chunk]);
-        
-        // Extract complete JPEG frames
-        let startIdx = 0;
-        while (true) {
-          const jpegStart = currentBuffer.indexOf(JPEG_START, startIdx);
-          if (jpegStart === -1) break;
-          
-          const jpegEnd = currentBuffer.indexOf(JPEG_END, jpegStart + 2);
-          if (jpegEnd === -1) break;
-          
-          const frameBuffer = currentBuffer.slice(jpegStart, jpegEnd + 2);
-          frameBuffers.push(frameBuffer);
-          
-          startIdx = jpegEnd + 2;
-        }
-        
-        if (startIdx > 0) {
-          currentBuffer = currentBuffer.slice(startIdx);
+
+        if (codec === 'mjpeg') {
+          // Extract complete JPEG frames
+          let startIdx = 0;
+          while (true) {
+            const jpegStart = currentBuffer.indexOf(JPEG_START, startIdx);
+            if (jpegStart === -1) break;
+            const jpegEnd = currentBuffer.indexOf(JPEG_END, jpegStart + 2);
+            if (jpegEnd === -1) break;
+            const frameBuffer = currentBuffer.slice(jpegStart, jpegEnd + 2);
+            frameBuffers.push(frameBuffer);
+            startIdx = jpegEnd + 2;
+          }
+          if (startIdx > 0) currentBuffer = currentBuffer.slice(startIdx);
+        } else {
+          // Extract complete PNG frames
+          let idx = 0;
+          while (true) {
+            const start = currentBuffer.indexOf(PNG_SIG, idx);
+            if (start === -1) break;
+            const end = currentBuffer.indexOf(PNG_IEND, start + 8);
+            if (end === -1) break;
+            const frameBuffer = currentBuffer.slice(start, end + PNG_IEND.length);
+            frameBuffers.push(frameBuffer);
+            idx = end + PNG_IEND.length;
+          }
+          if (idx > 0) currentBuffer = currentBuffer.slice(idx);
         }
       });
 
@@ -231,6 +377,19 @@ export class FluentFrameAnalysisService {
     });
   }
 
+  // Explicit MJPEG in-memory extraction for testing purposes
+  async extractFramesInMemoryMJPEG(
+    videoPath: string,
+    timestamps: number[],
+    options: Omit<FluentFrameOptions, 'outputCodec'> = {}
+  ): Promise<FrameHash[]> {
+    return this.extractFramesInMemory(videoPath, timestamps, {
+      ...options,
+      outputCodec: 'mjpeg',
+      inMemoryProcessing: true,
+    });
+  }
+
   // Batch frame extraction to disk using fluent-ffmpeg
   private async extractFramesToDisk(
     videoPath: string,
@@ -253,11 +412,10 @@ export class FluentFrameAnalysisService {
           .videoFilters([selectFilter])
           .outputFormat('image2')
           .outputOptions([
-            '-vcodec', 'mjpeg',
-            '-q:v', '2',
+            '-vcodec', 'png',
             '-threads', threads
           ])
-          .output(`${tempDir}/frame_%03d.jpg`);
+          .output(`${tempDir}/frame_%03d.png`);
 
         // Add hardware acceleration if requested
         if (options.useHardwareAccel) {
@@ -275,7 +433,7 @@ export class FluentFrameAnalysisService {
       // Process extracted frames
       const frameFiles = await fs.readdir(tempDir);
       const framePaths = frameFiles
-        .filter(f => f.endsWith('.jpg'))
+        .filter(f => f.endsWith('.png'))
         .sort()
         .map(f => path.join(tempDir, f));
 
@@ -415,10 +573,11 @@ export class FluentFrameAnalysisService {
     const processFrame = async (buffer: Buffer, index: number): Promise<FrameHash> => {
       const timestamp = timestamps[index] || index;
       
-      const [pHash, dHash] = await Promise.all([
-        this.calculatePHashFromBuffer(buffer, options.hashPrecision),
-        this.calculateDHashFromBuffer(buffer, options.hashPrecision)
-      ]);
+      const pHash = await this.calculatePHashFromBuffer(buffer, options.hashPrecision);
+      const computeD = options.computeDHash === true;
+      const dHash = computeD
+        ? await this.calculateDHashFromBuffer(buffer, options.hashPrecision)
+        : ''.padStart(pHash.length, '0');
 
       return {
         timestamp,
@@ -475,10 +634,10 @@ export class FluentFrameAnalysisService {
       const timestamp = timestamps[index] || index;
       const buffer = await fs.readFile(framePath);
       
-      const [pHash, dHash] = await Promise.all([
-        this.calculatePHashFromBuffer(buffer, options.hashPrecision),
-        this.calculateDHashFromBuffer(buffer, options.hashPrecision)
-      ]);
+      const pHash = await this.calculatePHashFromBuffer(buffer, options.hashPrecision);
+      const dHash = options.computeDHash === false
+        ? ''.padStart(pHash.length, '0')
+        : await this.calculateDHashFromBuffer(buffer, options.hashPrecision);
 
       return {
         timestamp,
@@ -621,6 +780,26 @@ export class FluentFrameAnalysisService {
       }
     }
 
+    return filtered;
+  }
+
+  // pHash-only variant of similarity filtering
+  filterSimilarFramesPHash(
+    frameHashes: FrameHash[],
+    pHashThreshold: number = 5
+  ): FrameHash[] {
+    if (frameHashes.length <= 1) return frameHashes;
+
+    const filtered: FrameHash[] = [frameHashes[0]];
+    for (let i = 1; i < frameHashes.length; i++) {
+      const current = frameHashes[i];
+      const previous = filtered[filtered.length - 1];
+      const pHashDistance = this.calculateHammingDistance(current.pHash, previous.pHash);
+      if (pHashDistance > pHashThreshold) {
+        current.similarity = pHashDistance;
+        filtered.push(current);
+      }
+    }
     return filtered;
   }
 }
