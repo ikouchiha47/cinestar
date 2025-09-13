@@ -5,34 +5,25 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA_DIR="../data"
+DB_PATH="${1:-./data/video-rag.db}"
 
-# Create data directory if it doesn't exist
-mkdir -p "$DATA_DIR"
+echo "Running migrations on database: $DB_PATH"
 
-# Video database migrations
-echo "Setting up video database..."
-sqlite3 "$DATA_DIR/video-rag.db" < "$SCRIPT_DIR/001_create_video_tables.sql"
-echo "✅ Video database tables and triggers created"
+# Ensure data directory exists
+mkdir -p "$(dirname "$DB_PATH")"
 
-# Media database migrations  
-echo "Setting up media database..."
-sqlite3 "$DATA_DIR/vector.db" < "$SCRIPT_DIR/002_create_media_tables.sql"
-echo "✅ Media database tables and triggers created"
+# Run migrations in order
+for migration in migrations/001_*.sql migrations/002_*.sql migrations/003_*.sql migrations/004_*.sql; do
+    if [ -f "$migration" ]; then
+        echo "Running migration: $migration"
+        sqlite3 "$DB_PATH" < "$migration"
+        if [ $? -eq 0 ]; then
+            echo "✓ Migration completed: $migration"
+        else
+            echo "✗ Migration failed: $migration"
+            exit 1
+        fi
+    fi
+done
 
-# Vector extensions (optional - depends on sqlite-vec availability)
-echo "Setting up vector extensions..."
-sqlite3 "$DATA_DIR/vector.db" < "$SCRIPT_DIR/003_setup_vector_extensions.sql"
-echo "✅ Vector extensions and FTS tables created"
-
-echo ""
-echo "🎉 All database migrations completed successfully!"
-echo ""
-echo "Database files:"
-echo "  - Video: $DATA_DIR/video-rag.db"
-echo "  - Media: $DATA_DIR/vector.db"
-echo ""
-echo "Tables created:"
-echo "  Video: video_files, video_segments, video_processing_jobs, segments_fts"
-echo "  Media: media_sources, media_items, indexing_jobs, vec_embeddings, media_fts"
+echo "All migrations completed successfully!"

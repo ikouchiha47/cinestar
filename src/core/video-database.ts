@@ -17,6 +17,7 @@ export interface VideoSegment {
   transcription?: string;
   caption?: string;
   ocrText?: string;
+  reconstructedScene?: string;
   embedding?: Float32Array;
   metadata?: Record<string, any>;
   createdAt: Date;

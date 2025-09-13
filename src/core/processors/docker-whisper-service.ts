@@ -15,9 +15,11 @@ export class DockerWhisperService implements TranscriptionService {
   async isAvailable(): Promise<boolean> {
     try {
       const response = await fetch(this.healthCheckUrl, {
-        method: 'GET'
+        method: 'GET',
+        redirect: 'follow'
       });
-      return response.ok;
+      // Accept both 200 OK and 307 redirects as healthy
+      return response.ok || response.status === 307;
     } catch (error: any) {
       console.warn(`Docker Whisper service not available: ${error.message}`);
       return false;

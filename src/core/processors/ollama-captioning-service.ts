@@ -14,7 +14,29 @@ export class OllamaCaptioningService implements CaptioningService {
   }
 
   async caption(imagePath: string, options: any = {}) {
-    const imageBuffer = await fs.readFile(imagePath);
+    let imageBuffer = await fs.readFile(imagePath);
+    
+    // Validate and resize image to prevent MTMD encoding errors
+    try {
+      const sharp = (await import('sharp')).default;
+      const metadata = await sharp(imageBuffer).metadata();
+      
+      // Skip corrupted or invalid images
+      if (!metadata.width || !metadata.height) {
+        throw new Error('Invalid image metadata');
+      }
+      
+      // Resize large images to prevent Ollama buffer issues
+      if (metadata.width > 1024 || metadata.height > 1024) {
+        imageBuffer = await sharp(imageBuffer)
+          .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+      }
+    } catch (imageError) {
+      throw new Error(`Image processing failed: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`);
+    }
+    
     const base64Image = imageBuffer.toString('base64');
 
     const url = `${this.baseUrl}/api/generate`;

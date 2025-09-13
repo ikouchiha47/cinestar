@@ -94,12 +94,10 @@ export type PipelineStage =
   | 'segmentation'      // Scene detection, segment creation
   | 'audio-extraction'  // Audio extraction from video segments
   | 'visual'            // Thumbnail generation, keyframe extraction
-  | 'transcription'     // ASR processing
-  | 'captioning'        // Visual description generation
-  | 'ocr'               // Text extraction from frames
-  | 'embedding'         // Vector embedding generation
-  | 'storage'           // Database storage
-  | 'indexing';         // Search index creation
+  | 'transcription'     // Audio transcription
+  | 'captioning'        // Visual captioning
+  | 'ocr'               // OCR text extraction
+  | 'scene-reconstruction'; // LLM-based scene reconstruction
 
 // Pipeline configuration
 export interface PipelineConfig {
@@ -169,9 +167,7 @@ export class VideoPipeline extends EventEmitter {
       'transcription',     // Uses audioPath from audio-extraction
       'captioning', 
       'ocr',
-      'embedding',
-      'storage',
-      'indexing'
+      'scene-reconstruction' // Must run after transcription, captioning, and OCR
     ];
 
     const totalStages = stageOrder.length;
@@ -317,9 +313,7 @@ export class VideoPipeline extends EventEmitter {
         transcription: this.getProcessors('transcription').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         captioning: this.getProcessors('captioning').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         ocr: this.getProcessors('ocr').map(p => ({ name: p.name, enabled: p.isEnabled() })),
-        embedding: this.getProcessors('embedding').map(p => ({ name: p.name, enabled: p.isEnabled() })),
-        storage: this.getProcessors('storage').map(p => ({ name: p.name, enabled: p.isEnabled() })),
-        indexing: this.getProcessors('indexing').map(p => ({ name: p.name, enabled: p.isEnabled() }))
+        'scene-reconstruction': this.getProcessors('scene-reconstruction').map(p => ({ name: p.name, enabled: p.isEnabled() }))
       }
     };
   }

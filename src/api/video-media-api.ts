@@ -11,6 +11,7 @@ import { VisualProcessor } from '../core/processors/visual-processor.js';
 import { TranscriptionProcessor } from '../core/processors/transcription-processor.js';
 import { CaptioningProcessor } from '../core/processors/captioning-processor.js';
 import { OCRProcessor } from '../core/processors/ocr-processor.js';
+import { SceneReconstructionProcessor } from '../core/processors/scene-reconstruction-processor.js';
 import { DockerWhisperService } from '../core/processors/docker-whisper-service.js';
 import { WhisperCliService } from '../core/processors/whisper-cli-service.js';
 import { WhisperCppService } from '../core/processors/whisper-cpp-service.js';
@@ -81,6 +82,12 @@ export class VideoMediaAPI {
       captionKeyframes: cap?.captionKeyframes ?? true,
     });
     const ocrProcessor = new OCRProcessor();
+    const sceneReconstructionProcessor = new SceneReconstructionProcessor({
+      enabled: true,
+      model: 'tinyllama',
+      temperature: 0.7,
+      maxTokens: 80
+    });
 
     // Setup transcription processor with available services
     // Use Docker API as primary service (fastest with faster_whisper)
@@ -102,6 +109,7 @@ export class VideoMediaAPI {
     this.videoPipeline.addProcessor('transcription', transcriptionProcessor);
     this.videoPipeline.addProcessor('captioning', captioningProcessor);
     this.videoPipeline.addProcessor('ocr', ocrProcessor);
+    this.videoPipeline.addProcessor('scene-reconstruction', sceneReconstructionProcessor);
 
     // Setup event listeners
     this.videoPipeline.on('progress', async (data) => {
@@ -356,13 +364,21 @@ export class VideoMediaAPI {
       const toInsert: any[] = [];
 
       for (const segment of segments) {
-        // Generate embedding on the fly (best effort)
+        // Generate embedding using reconstructed scene or fallback to concatenation
         let embedding: Float32Array | undefined;
-        const content = [segment.transcription, segment.caption, segment.ocrText]
-          .filter(Boolean).join(' ');
+        let content = '';
+        
+        // Use reconstructed scene if available, otherwise fallback to concatenation
+        if (segment.reconstructedScene) {
+          content = segment.reconstructedScene;
+          console.log(`[Video Embedding] Using reconstructed scene for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
+        } else {
+          content = [segment.transcription, segment.caption, segment.ocrText]
+            .filter(Boolean).join(' ');
+          console.log(`[Video Embedding] Using concatenated content for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
+        }
 
         if (content && content.trim().length > 0) {
-          console.log(`[Video Embedding] Content for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
           try {
             embedding = await this.embeddingService.embedSingle(content);
             console.log(`[Video Embedding] Generated embedding of length ${embedding?.length} for segment ${segment.sceneIndex}`);

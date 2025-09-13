@@ -41,6 +41,10 @@ export interface FluentFrameOptions {
   computeDHash?: boolean; // default true; set false to compute only pHash
 }
 
+// NOTE: This service is NOT used in the main electron app pipeline.
+// It's only used in dev/test scenarios and benchmark scripts.
+// The main pipeline uses functions in src/core/video-processing.ts instead.
+//
 // Fluent-ffmpeg based frame analysis service with optimizations
 export class FluentFrameAnalysisService {
   constructor() {}
@@ -64,6 +68,7 @@ export class FluentFrameAnalysisService {
 
       const command = ffmpeg(videoPath)
         .noAudio()
+        .inputOptions(['-sn', '-dn'])
         .videoFilters([
           `select='not(mod(n,${sampleInterval}))+gt(scene,${sceneThreshold})'`,
           'showinfo'
@@ -147,6 +152,7 @@ export class FluentFrameAnalysisService {
       let stderr = '';
       const command = ffmpeg(videoPath)
         .noAudio()
+        .inputOptions(['-sn', '-dn'])
         .videoFilters([selectFilter, 'showinfo'])
         .outputOptions(['-f', 'null', '-threads', threads])
         .output('-');

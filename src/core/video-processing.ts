@@ -40,7 +40,7 @@ export async function detectScenes(videoFile: string, threshold = 0.4): Promise<
       '-nostats',
       ...hwaccelArgs,
       '-threads', threads,
-      '-an',
+      '-an', '-sn', '-dn',
       '-i', videoFile,
       // Scale down to reduce pixel work, then run scene detection and showinfo for pts_time
       '-filter_complex', `scale='min(640,iw)':-2,select='gt(scene,${threshold})',showinfo`,
@@ -89,9 +89,10 @@ export async function generateThumbnails(
         const outPath = path.join(outDir, `thumb_${i}.jpg`);
         const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
         
-        ffmpeg(videoFile)
+        const command = ffmpeg()
+          .input(videoFile)
+          .inputOptions(['-ss', time.toString(), '-sn', '-dn'])
           .noAudio()
-          .seekInput(time)
           .frames(1)
           .outputOptions([
             '-vcodec', 'mjpeg',
@@ -99,7 +100,14 @@ export async function generateThumbnails(
             '-pix_fmt', 'yuvj420p',
             '-threads', threads,
           ])
-          .output(outPath)
+          .output(outPath);
+
+        // Add hardware acceleration on macOS
+        if (process.platform === 'darwin') {
+          command.inputOptions(['-hwaccel', 'videotoolbox']);
+        }
+
+        command
           .on('end', () => resolve(outPath))
           .on('error', reject)
           .run();
@@ -121,11 +129,20 @@ export async function extractKeyframe(
     const dir = path.dirname(outputPath);
     fs.mkdir(dir, { recursive: true }).then(() => {
       const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
-      ffmpeg(videoFile)
-        .seekInput(timestamp)
+      const command = ffmpeg()
+        .input(videoFile)
+        .inputOptions(['-ss', timestamp.toString(), '-sn', '-dn'])
+        .noAudio()
         .frames(1)
-        .outputOptions(['-q:v', '2', '-threads', threads])
-        .output(outputPath)
+        .outputOptions(['-q:v', '2', '-pix_fmt', 'yuv420p', '-threads', threads])
+        .output(outputPath);
+
+      // Add hardware acceleration on macOS
+      if (process.platform === 'darwin') {
+        command.inputOptions(['-hwaccel', 'videotoolbox']);
+      }
+
+      command
         .on('end', () => resolve())
         .on('error', reject)
         .run();
@@ -162,7 +179,8 @@ export async function createVideoSegments(
   videoId: string,
   sceneCuts: number[],
   overlapSeconds = 2,
-  minSegmentLength = 3
+  minSegmentLength = 3,
+  maxSegmentLength = 120 // Cap segments at 2 minutes
 ): Promise<VideoSegment[]> {
   const duration = await getVideoDuration(videoFile);
   const segments: VideoSegment[] = [];
@@ -178,20 +196,25 @@ export async function createVideoSegments(
     if (i > 0) start = Math.max(0, start - overlapSeconds);
     if (i < allCuts.length - 2) end = Math.min(duration, end + overlapSeconds);
     
-    // Skip segments that are too short
-    if (end - start < minSegmentLength) {
-      console.warn(`Skipping short segment: ${start}s - ${end}s (duration: ${end - start}s)`);
-      continue;
+    // Split long segments into smaller chunks
+    while (start < end) {
+      const segmentEnd = Math.min(end, start + maxSegmentLength);
+      
+      // Skip segments that are too short
+      if (segmentEnd - start < minSegmentLength) {
+        break;
+      }
+      
+      const segment: VideoSegment = {
+        id: `${videoId}_seg_${segments.length}`,
+        videoId,
+        startTime: start,
+        endTime: segmentEnd
+      };
+      
+      segments.push(segment);
+      start = segmentEnd - overlapSeconds; // Overlap between chunks
     }
-    
-    const segment: VideoSegment = {
-      id: `${videoId}_seg_${i}`,
-      videoId,
-      startTime: start,
-      endTime: end
-    };
-    
-    segments.push(segment);
   }
   
   return segments;
