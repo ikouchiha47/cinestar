@@ -92,6 +92,84 @@ export class VideoDatabase {
     this.db.pragma('cache_size = 10000');
   }
 
+  async getRefinedKeyframesMissingCaption(limit = 50): Promise<Array<{ id: string; videoId: string; segmentId: string; imagePath: string; label: string }>> {
+    const stmt = this.db.prepare(`
+      SELECT id, video_id, segment_id, image_path, label
+      FROM video_keyframes
+      WHERE caption IS NULL OR TRIM(caption) = ''
+      ORDER BY created_at ASC
+      LIMIT ?
+    `);
+    const rows = stmt.all(limit) as any[];
+    return rows.map(r => ({ id: r.id, videoId: r.video_id, segmentId: r.segment_id, imagePath: r.image_path, label: r.label }));
+  }
+
+  async updateRefinedKeyframeCaption(id: string, caption: string): Promise<void> {
+    const stmt = this.db.prepare(`UPDATE video_keyframes SET caption = ? WHERE id = ?`);
+    stmt.run(caption, id);
+  }
+
+  async getRefinedKeyframesMissingEmbedding(limit = 64): Promise<Array<{ id: string; caption: string }>> {
+    const stmt = this.db.prepare(`
+      SELECT id, caption
+      FROM video_keyframes
+      WHERE caption IS NOT NULL AND TRIM(caption) <> '' AND embedding IS NULL
+      ORDER BY created_at ASC
+      LIMIT ?
+    `);
+    const rows = stmt.all(limit) as any[];
+    return rows.map(r => ({ id: r.id, caption: r.caption }));
+  }
+
+  async updateRefinedKeyframeEmbedding(id: string, embedding: Float32Array): Promise<void> {
+    const stmt = this.db.prepare(`UPDATE video_keyframes SET embedding = ? WHERE id = ?`);
+    stmt.run(Buffer.from(embedding.buffer), id);
+  }
+
+  // Refined keyframes operations
+  async addRefinedKeyframe(params: { videoId: string; segmentId: string; imagePath: string; label: string; caption?: string; embedding?: Float32Array | null; }): Promise<string> {
+    const id = `kfr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO video_keyframes (id, video_id, segment_id, image_path, label, caption, embedding)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      id,
+      params.videoId,
+      params.segmentId,
+      params.imagePath,
+      params.label,
+      params.caption ?? null,
+      params.embedding ? Buffer.from(params.embedding.buffer) : null
+    );
+    return id;
+  }
+
+  async addRefinedKeyframesBatch(rows: Array<{ videoId: string; segmentId: string; imagePath: string; label: string; caption?: string; embedding?: Float32Array | null; }>): Promise<string[]> {
+    const stmt = this.db.prepare(`
+      INSERT INTO video_keyframes (id, video_id, segment_id, image_path, label, caption, embedding)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const tx = this.db.transaction((items: any[]) => {
+      const ids: string[] = [];
+      for (const r of items) {
+        const id = `kfr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        ids.push(id);
+        stmt.run(
+          id,
+          r.videoId,
+          r.segmentId,
+          r.imagePath,
+          r.label,
+          r.caption ?? null,
+          r.embedding ? Buffer.from(r.embedding.buffer) : null
+        );
+      }
+      return ids;
+    });
+    return tx(rows);
+  }
+
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
@@ -216,6 +294,22 @@ export class VideoDatabase {
       BEGIN
         DELETE FROM segments_fts WHERE segment_id = OLD.id;
       END
+    `);
+
+    // Refined keyframe artifacts table (captures delayed/background frames per segment)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS video_keyframes (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        segment_id TEXT NOT NULL,
+        image_path TEXT NOT NULL,
+        label TEXT NOT NULL, -- delayed | background | other labels
+        caption TEXT,
+        embedding BLOB,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (video_id) REFERENCES video_files (id) ON DELETE CASCADE,
+        FOREIGN KEY (segment_id) REFERENCES video_segments (id) ON DELETE CASCADE
+      );
     `);
   }
 

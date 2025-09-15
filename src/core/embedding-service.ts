@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
-import { ConfigManager } from './config';
+import { ConfigManager } from './config.js';
+import { OllamaUrlResolver } from './utils/ollama-url-resolver.js';
 
 export interface EmbeddingRequest {
   input: string | string[];
@@ -56,17 +57,55 @@ export class EmbeddingService {
   ) {
     // Lock to explicit backend URL and provider (no inference)
     const cfg = ConfigManager.getConfig();
-    const envBase = process.env.EMBEDDINGS_BASE_URL;
     const envProvider = (process.env.EMBEDDINGS_PROVIDER || '').toLowerCase();
 
-    const finalBase = (baseUrl || envBase || 'http://localhost:11434/api').replace(/\/$/, '');
+    const finalBase = (baseUrl || OllamaUrlResolver.getOllamaUrl()).replace(/\/$/, '');
     const finalProvider: 'ollama' | 'openai' = envProvider === 'openai' ? 'openai' : 'ollama';
 
-    this.baseUrl = finalBase; // Do not alter
-    this.provider = finalProvider; // Do not infer
+    this.baseUrl = finalBase;
+    this.provider = finalProvider;
     this.apiKey = apiKey || process.env.EMBEDDINGS_API_KEY || '';
-    this.embeddingModel = embeddingModel || cfg.ai.embeddingModel || 'BAAI/bge-large-en-v1.5';
+    
+    // Choose sensible defaults per provider
+    if (finalProvider === 'ollama') {
+      this.embeddingModel = embeddingModel
+        || process.env.OLLAMA_EMBED_MODEL
+        || cfg.ai.embeddingModel
+        || 'qllama/bge-large-en-v1.5';
+    } else {
+      this.embeddingModel = embeddingModel || cfg.ai.embeddingModel || 'text-embedding-3-large';
+    }
+    
     this.rerankModel = rerankModel || 'BAAI/bge-reranker-large';
+  }
+
+  private debugEnabled(): boolean {
+    try {
+      const cfg = ConfigManager.getConfig();
+      if (cfg?.debug?.enabled) return true;
+    } catch {}
+    return process.env.DEBUG_EMBED === 'true';
+  }
+
+  private logDebug(...args: any[]) {
+    if (this.debugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.debug('[EmbeddingService]', ...args);
+    }
+  }
+
+  /**
+   * Build the correct embeddings endpoint based on provider and base URL
+   */
+  private getEmbeddingsUrl(): string {
+    // If baseUrl already includes a versioned path, assume caller provided full API root
+    // e.g., https://api.openai.com/v1
+    const hasV1 = /\/v1\/?$/.test(this.baseUrl);
+    if (this.provider === 'openai') {
+      return hasV1 ? `${this.baseUrl}/embeddings` : `${this.baseUrl}/v1/embeddings`;
+    }
+    // Ollama's embeddings endpoint
+    return `${this.baseUrl}/api/embed`;
   }
 
   /**
@@ -89,18 +128,23 @@ export class EmbeddingService {
       // OpenAI-compatible path (input can be string or string[])
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+      const url = this.getEmbeddingsUrl();
+      const payload = { input, model: this.embeddingModel } as EmbeddingRequest;
+      this.logDebug('embed request', { provider: this.provider, url, model: this.embeddingModel, items: Array.isArray(input) ? input.length : 1 });
 
-      const response = await fetch(`${this.baseUrl}/embeddings`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ input, model: this.embeddingModel } as EmbeddingRequest),
+        body: JSON.stringify(payload),
       });
 
+      const raw = await response.text();
+      this.logDebug('embed response', { status: response.status, statusText: response.statusText, body: raw.slice(0, 200) });
       if (!response.ok) {
-        throw new Error(`Embedding API error: ${response.status} ${response.statusText}`);
+        throw new Error(`Embedding API error: ${response.status} ${response.statusText}: ${raw.slice(0, 200)}`);
       }
 
-      const data = await response.json() as any;
+      const data = raw ? JSON.parse(raw) as any : {};
       if (Array.isArray(data?.data)) {
         return data.data.map((item: any) => new Float32Array(item.embedding));
       }
@@ -119,28 +163,44 @@ export class EmbeddingService {
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
 
     const body = this.provider === 'ollama'
-      ? { model: this.embeddingModel, prompt: text }
+      ? { model: this.embeddingModel, input: text }
       : { model: this.embeddingModel, input: text };
 
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
+    const url = this.getEmbeddingsUrl();
+    this.logDebug('embedSingle request', { provider: this.provider, url, model: this.embeddingModel, inputPreview: String(text).slice(0, 80) });
+
+    const response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
     });
 
+    const raw = await response.text();
+    this.logDebug('embedSingle response', { status: response.status, statusText: response.statusText, body: raw.slice(0, 200) });
     if (!response.ok) {
-      throw new Error(`Embedding API error: ${response.status} ${response.statusText}`);
+      throw new Error(`Embedding API error: ${response.status} ${response.statusText}: ${raw.slice(0, 200)}`);
     }
 
-    const data = await response.json() as any;
-    // Support both OpenAI-style and Ollama-style responses
+    const data = raw ? JSON.parse(raw) as any : {};
+    // Support OpenAI-style and Ollama-style responses
+    // OpenAI: { data: [{ embedding: number[] }] }
     if (Array.isArray(data?.data)) {
-      return new Float32Array(data.data[0].embedding);
+      const emb = data.data[0]?.embedding;
+      if (Array.isArray(emb)) return new Float32Array(emb);
     }
+    // Ollama single: { embedding: number[] }
     if (Array.isArray(data?.embedding)) {
       return new Float32Array(data.embedding);
     }
-    throw new Error('Unexpected embedding response format');
+    // Ollama batch style: { embeddings: number[][] }
+    if (Array.isArray(data?.embeddings) && Array.isArray(data.embeddings[0])) {
+      return new Float32Array(data.embeddings[0]);
+    }
+    // Ollama single response format: { embeddings: [number[]] }
+    if (Array.isArray(data?.embeddings) && data.embeddings.length === 1 && Array.isArray(data.embeddings[0])) {
+      return new Float32Array(data.embeddings[0]);
+    }
+    throw new Error(`Unexpected embedding response format: ${JSON.stringify(Object.keys(data))}`);
   }
 
   /**

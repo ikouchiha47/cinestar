@@ -161,6 +161,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [connectOpen, setConnectOpen] = useState(false);
   const [places, setPlaces] = useState<Place[]>([]);
   const [searchResults, setSearchResults] = useState<MediaT[]>([]);
+  const [videoSearchResults, setVideoSearchResults] = useState<MediaT[]>([]);
   const [library, setLibrary] = useState<MediaT[]>([]);
   const [searching, setSearching] = useState(false);
   const [expandedType, setExpandedType] = useState<'image' | 'video' | 'audio' | null>(null);
@@ -169,8 +170,10 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   // Load places from real sources, fall back to demo
   useEffect(() => {
     (async () => {
+      console.log('[DRILLER] Starting places load at:', new Date().toISOString());
       try {
         const res = await window.mediaAPI.getSources();
+        console.log('[DRILLER] getSources response:', res);
         if (res.success && Array.isArray(res.sources)) {
           const mapped: Place[] = res.sources.map((s) => ({
             id: s.id,
@@ -180,10 +183,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             pinned: false,
           }));
           setPlaces(mapped);
+          console.log('[DRILLER] Places loaded:', mapped.length, 'items at', new Date().toISOString());
         } else {
           setPlaces([]);
+          console.log('[DRILLER] No sources found, setting empty places at:', new Date().toISOString());
         }
-      } catch {
+      } catch (e) {
+        console.error('[DRILLER] Error loading places:', e, 'at:', new Date().toISOString());
         setPlaces([]);
       }
     })();
@@ -193,8 +199,10 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   // Initial library load for start page (newest first)
   useEffect(() => {
     (async () => {
+      console.log('[DRILLER] Starting library load at:', new Date().toISOString());
       try {
         const res = await window.mediaAPI.getItems();
+        console.log('[DRILLER] getItems response:', res);
         if (res?.success && Array.isArray(res.items)) {
           const items: any[] = res.items;
           const mapped: MediaT[] = items.map((it: any) => {
@@ -219,10 +227,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
           mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
           setLibrary(mapped);
+          console.log('[DRILLER] Library loaded:', mapped.length, 'items at', new Date().toISOString());
         } else {
           setLibrary([]);
+          console.log('[DRILLER] No items found, setting empty library at:', new Date().toISOString());
         }
       } catch (e) {
+        console.error('[DRILLER] Error loading library:', e, 'at:', new Date().toISOString());
         setLibrary([]);
       }
     })();
@@ -308,39 +319,70 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     const performSearch = async () => {
       const query = q.trim();
       if (!query || scope === 'folders') {
-        if (alive) setSearchResults([]);
+        if (alive) {
+          setSearchResults([]);
+          setVideoSearchResults([]);
+        }
         return;
       }
       try {
         setSearching(true);
-        const res = await window.mediaAPI.searchText(query, 60);
+        // Query both media items (sqlite-vec) and video segments (video DB)
+        const [mediaRes, videoRes] = await Promise.allSettled([
+          window.mediaAPI.searchText(query, 40),
+          window.videoAPI.searchVideos({ query, limit: 40, searchType: 'hybrid' }),
+        ]);
         if (!alive) return;
-        if (res.success && res.results && Array.isArray((res as any).results.items)) {
-          const items: any[] = (res as any).results.items;
-          const m: MediaT[] = items.map((it) => {
-            const mime = (it.mimeType || '').toLowerCase();
-            let kind: 'image' | 'video' | 'audio' = 'image';
-            if (mime.startsWith('video/')) kind = 'video';
-            else if (mime.startsWith('audio/')) kind = 'audio';
-            else if (typeof it.type === 'string') {
-              const t = it.type.toLowerCase();
-              if (t.includes('video')) kind = 'video';
-              else if (t.includes('audio')) kind = 'audio';
-              else kind = 'image';
-            } else if (typeof it.name === 'string') {
-              const n = it.name.toLowerCase();
-              if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-              else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-              else kind = 'image';
+
+        // Map media items
+        const mediaItems: MediaT[] = (() => {
+          if (mediaRes.status === 'fulfilled') {
+            const res: any = mediaRes.value;
+            if (res?.success && res.results && Array.isArray(res.results.items)) {
+              return res.results.items.map((it: any) => {
+                const mime = (it.mimeType || '').toLowerCase();
+                let kind: 'image' | 'video' | 'audio' = 'image';
+                if (mime.startsWith('video/')) kind = 'video';
+                else if (mime.startsWith('audio/')) kind = 'audio';
+                else if (typeof it.type === 'string') {
+                  const t = it.type.toLowerCase();
+                  if (t.includes('video')) kind = 'video';
+                  else if (t.includes('audio')) kind = 'audio';
+                } else if (typeof it.name === 'string') {
+                  const n = it.name.toLowerCase();
+                  if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+                  else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+                }
+                return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+              });
             }
-            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-          });
-          setSearchResults(m);
-        } else {
-          setSearchResults([]);
-        }
+          }
+          return [];
+        })();
+
+        // Map video segments (flatten to video files for now)
+        const videoItems: MediaT[] = (() => {
+          if (videoRes.status === 'fulfilled') {
+            const res: any = videoRes.value;
+            if (res?.success && Array.isArray(res.results)) {
+              return res.results.map((r: any) => ({
+                id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
+                placeId: '',
+                type: 'video',
+                name: String(r.video?.fileName || 'video'),
+                path: String(r.video?.filePath || ''),
+              } as MediaT));
+            }
+          }
+          return [];
+        })();
+
+        // Set separate results without merging
+        setSearchResults(mediaItems);
+        setVideoSearchResults(videoItems);
       } catch {
         setSearchResults([]);
+        setVideoSearchResults([]);
       } finally {
         if (alive) setSearching(false);
       }
@@ -442,37 +484,62 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     const query = q.trim();
                     if (!query || scope === 'folders') {
                       setSearchResults([]);
+                      setVideoSearchResults([]);
                       return;
                     }
                     try {
                       setSearching(true);
-                      const res = await window.mediaAPI.searchText(query, 60);
-                      if (res.success && res.results && Array.isArray((res as any).results.items)) {
-                        const items: any[] = (res as any).results.items;
-                        const m: MediaT[] = items.map((it) => {
-                          const mime = (it.mimeType || '').toLowerCase();
-                          let kind: 'image' | 'video' | 'audio' = 'image';
-                          if (mime.startsWith('video/')) kind = 'video';
-                          else if (mime.startsWith('audio/')) kind = 'audio';
-                          else if (typeof it.type === 'string') {
-                            const t = it.type.toLowerCase();
-                            if (t.includes('video')) kind = 'video';
-                            else if (t.includes('audio')) kind = 'audio';
-                            else kind = 'image';
-                          } else if (typeof it.name === 'string') {
-                            const n = it.name.toLowerCase();
-                            if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-                            else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-                            else kind = 'image';
+                      const [mediaRes, videoRes] = await Promise.allSettled([
+                        window.mediaAPI.searchText(query, 40),
+                        window.videoAPI.searchVideos({ query, limit: 40, searchType: 'hybrid' }),
+                      ]);
+                      const mediaItems: MediaT[] = (() => {
+                        if (mediaRes.status === 'fulfilled') {
+                          const res: any = mediaRes.value;
+                          if (res?.success && res.results && Array.isArray(res.results.items)) {
+                            return res.results.items.map((it: any) => {
+                              const mime = (it.mimeType || '').toLowerCase();
+                              let kind: 'image' | 'video' | 'audio' = 'image';
+                              if (mime.startsWith('video/')) kind = 'video';
+                              else if (mime.startsWith('audio/')) kind = 'audio';
+                              else if (typeof it.type === 'string') {
+                                const t = it.type.toLowerCase();
+                                if (t.includes('video')) kind = 'video';
+                                else if (t.includes('audio')) kind = 'audio';
+                                else kind = 'image';
+                              } else if (typeof it.name === 'string') {
+                                const n = it.name.toLowerCase();
+                                if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+                                else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+                                else kind = 'image';
+                              }
+                              return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                            });
                           }
-                          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-                        });
-                        setSearchResults(m);
-                      } else {
-                        setSearchResults([]);
-                      }
+                        }
+                        return [];
+                      })();
+                      const videoItems: MediaT[] = (() => {
+                        if (videoRes.status === 'fulfilled') {
+                          const res: any = videoRes.value;
+                          if (res?.success && Array.isArray(res.results)) {
+                            return res.results.map((r: any) => ({
+                              id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
+                              placeId: '',
+                              type: 'video',
+                              name: String(r.video?.fileName || 'video'),
+                              path: String(r.video?.filePath || ''),
+                            } as MediaT));
+                          }
+                        }
+                        return [];
+                      })();
+                      // Set separate results without merging
+                      setSearchResults(mediaItems);
+                      setVideoSearchResults(videoItems);
                     } catch {
                       setSearchResults([]);
+                      setVideoSearchResults([]);
                     } finally {
                       setSearching(false);
                     }
@@ -484,6 +551,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             />
             {searching && <span className="text-[11px] text-neutral-500">Searching…</span>}
           </div>
+
           {/* Tab Navigation */}
           <div className="mt-3 flex items-center justify-center gap-2 mb-4">
             <button
@@ -665,6 +733,15 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     maxVisible={6}
                     onShowMore={() => setExpandedType('audio')}
                   />
+                  {q.trim().length > 0 && videoSearchResults.length > 0 && (
+                    <MediaGroup
+                      title="Videos (segments)"
+                      icon={<Icon.Video />}
+                      items={videoSearchResults}
+                      places={places}
+                      maxVisible={6}
+                    />
+                  )}
                 </>
               ) : null}
             </div>
@@ -866,7 +943,7 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
       if (!type) return;
       setLoading(true);
       try {
-        const res = await window.mediaAPI.getRecentItems({ types: [type], sourceIds: placeId ? [placeId] : undefined, limit: PAGE, offset: 0 });
+        const res = await window.mediaAPI.getItems(placeId);
         if (!alive) return;
         if (res?.success && Array.isArray(res.items)) {
           const mapped: MediaT[] = res.items.map((it: any) => {
@@ -932,7 +1009,7 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
                   setLoading(true);
                   const nextLimit = Math.floor(PAGE * PREFETCH_MULT);
                   window.mediaAPI
-                    .getRecentItems({ types: type ? [type] : undefined, sourceIds: placeId ? [placeId] : undefined, limit: nextLimit, offset })
+                    .getItems(placeId)
                     .then((res: any) => {
                       if (res?.success && Array.isArray(res.items)) {
                         const mapped: MediaT[] = res.items.map((it: any) => ({

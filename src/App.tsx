@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import DrillerV2 from './components/v2/DrillerV2';
+import { useState, useEffect, useRef, Suspense, lazy } from 'react';
+const DrillerV2 = lazy(() => import('./components/v2/DrillerV2'));
 
 // Icon components (only what's used in this file)
 const Icon = {
@@ -17,7 +17,6 @@ const Icon = {
 };
 
 function App() {
-  const [initialized, setInitialized] = useState(false);
   const [indexDrawerOpen, setIndexDrawerOpen] = useState(false);
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
   const [indexLogs, setIndexLogs] = useState<string[]>([]);
@@ -32,18 +31,6 @@ function App() {
   // Apply Catppuccin theme (swappable via data-theme)
   useEffect(() => {
     try { document.documentElement.setAttribute('data-theme', 'catppuccin-mocha'); } catch {}
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        // wait for preload
-        let attempts = 0;
-        while (!window.mediaAPI && attempts < 50) { await new Promise(r => setTimeout(r, 100)); attempts++; }
-      } finally {
-        setInitialized(true);
-      }
-    })();
   }, []);
 
   // Poll indexing status and push log lines to a console-like buffer
@@ -154,17 +141,7 @@ function App() {
 
   // removed old browse/search handlers; DrillerV2 owns main UI now
 
-  if (!initialized) {
-    return (
-      <div className="min-h-screen bg-neutral-950 text-neutral-200 flex items-center justify-center">
-        <div className="text-center">
-          <Icon.Spinner className="w-8 h-8 animate-spin mx-auto mb-4" />
-          <h2 className="text-xl font-semibold mb-2">Initializing Driller...</h2>
-          <p className="text-neutral-400">Setting up your media search engine</p>
-        </div>
-      </div>
-    );
-  }
+  console.log('[APP] Rendering main UI at:', new Date().toISOString());
 
   return (
     <div className="min-h-screen">
@@ -183,11 +160,20 @@ function App() {
         </div>
       )}
 
-      {/* V2 Main UI */}
-      <DrillerV2
-        overallProgress={overallProgress}
-        onOpenIndexing={() => setIndexDrawerOpen(true)}
-      />
+      {/* V2 Main UI with Suspense (compact fallback to avoid covering the whole app) */}
+      <Suspense fallback={
+        <div className="px-4 py-6">
+          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-6 text-center text-neutral-400">
+            <Icon.Spinner className="w-6 h-6 animate-spin mx-auto mb-3" />
+            <div className="text-sm">Loading media library…</div>
+          </div>
+        </div>
+      }>
+        <DrillerV2
+          overallProgress={overallProgress}
+          onOpenIndexing={() => setIndexDrawerOpen(true)}
+        />
+      </Suspense>
 
       {/* Indexing Drawer */}
       {indexDrawerOpen && (

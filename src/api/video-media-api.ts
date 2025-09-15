@@ -9,9 +9,10 @@ import { SegmentationProcessor } from '../core/processors/segmentation-processor
 import { AudioExtractionProcessor } from '../core/processors/audio-extraction-processor.js';
 import { VisualProcessor } from '../core/processors/visual-processor.js';
 import { TranscriptionProcessor } from '../core/processors/transcription-processor.js';
-import { CaptioningProcessor } from '../core/processors/captioning-processor.js';
+import { BatchCaptioningProcessor } from '../core/processors/batch-captioning-processor.js';
 import { OCRProcessor } from '../core/processors/ocr-processor.js';
-import { SceneReconstructionProcessor } from '../core/processors/scene-reconstruction-processor.js';
+import { OptimizedSceneReconstructionProcessor } from '../core/processors/optimized-scene-reconstruction.js';
+// import { SceneReconstructionScheduler } from '../core/scene-reconstruction-scheduler.js';
 import { DockerWhisperService } from '../core/processors/docker-whisper-service.js';
 import { WhisperCliService } from '../core/processors/whisper-cli-service.js';
 import { WhisperCppService } from '../core/processors/whisper-cpp-service.js';
@@ -73,20 +74,20 @@ export class VideoMediaAPI {
       keyframesMaxTotal: vk?.maxTotal || 500,
     } as any);
     const transcriptionProcessor = new TranscriptionProcessor();
-    // Captioning throughput via ConfigManager
+    // Batch captioning for optimal GPU utilization
     const cap = appCfg.captioning;
-    const captioningProcessor = new CaptioningProcessor({ 
-      batchSize: cap?.batchSize ?? 4, 
-      captionThumbnails: cap?.captionThumbnails ?? false, 
+    const batchCaptioningProcessor = new BatchCaptioningProcessor({ 
+      batchSize: cap?.batchSize ?? 8, // Larger batches for video-level processing
       captionConcurrency: cap?.concurrency ?? 4,
-      captionKeyframes: cap?.captionKeyframes ?? true,
     });
     const ocrProcessor = new OCRProcessor();
-    const sceneReconstructionProcessor = new SceneReconstructionProcessor({
+    const sceneReconstructionProcessor = new OptimizedSceneReconstructionProcessor({
       enabled: true,
       model: 'tinyllama',
       temperature: 0.7,
-      maxTokens: 80
+      maxTokens: 25,
+      useRnnStyle: true,
+      contextWindow: 3
     });
 
     // Setup transcription processor with available services
@@ -107,7 +108,7 @@ export class VideoMediaAPI {
     this.videoPipeline.addProcessor('audio-extraction', audioExtractionProcessor);
     this.videoPipeline.addProcessor('visual', visualProcessor);
     this.videoPipeline.addProcessor('transcription', transcriptionProcessor);
-    this.videoPipeline.addProcessor('captioning', captioningProcessor);
+    this.videoPipeline.addProcessor('batch-captioning', batchCaptioningProcessor);
     this.videoPipeline.addProcessor('ocr', ocrProcessor);
     this.videoPipeline.addProcessor('scene-reconstruction', sceneReconstructionProcessor);
 
@@ -157,12 +158,6 @@ export class VideoMediaAPI {
 
     try {
       await this.videoDb.initialize();
-      
-      // Test embedding service connection
-      const isConnected = await this.embeddingService.testConnection();
-      if (!isConnected) {
-        console.warn('Embedding service not available - vector search will be disabled');
-      }
 
       this.initialized = true;
       console.log('VideoMediaAPI initialized successfully');

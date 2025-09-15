@@ -49,7 +49,7 @@ export class OptimizedFrameAnalysisService {
     options: OptimizedFrameOptions = {}
   ): Promise<FrameAnalysis[]> {
     const {
-      sceneThreshold = 0.15,
+      sceneThreshold = 0.15, // eslint-disable-line @typescript-eslint/no-unused-vars
       maxFrames = 50
     } = options;
 
@@ -120,9 +120,9 @@ export class OptimizedFrameAnalysisService {
     options: OptimizedFrameOptions = {}
   ): Promise<FrameHash[]> {
     const {
-      useHardwareAccel = false,
+      useHardwareAccel = false, // eslint-disable-line @typescript-eslint/no-unused-vars
       inMemoryProcessing = true,
-      hashPrecision = 'medium'
+      hashPrecision = 'medium' // eslint-disable-line @typescript-eslint/no-unused-vars
     } = options;
 
     if (timestamps.length === 0) return [];

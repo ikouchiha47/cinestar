@@ -73,6 +73,13 @@ export async function detectScenes(videoFile: string, threshold = 0.4): Promise<
 }
 
 /**
+ * Detect scene changes optimized for keyframe extraction (higher threshold)
+ */
+export async function detectScenesForKeyframes(videoFile: string, threshold = 0.6): Promise<number[]> {
+  return detectScenes(videoFile, threshold);
+}
+
+/**
  * Generate thumbnails for video scenes
  */
 export async function generateThumbnails(
@@ -134,7 +141,7 @@ export async function extractKeyframe(
         .inputOptions(['-ss', timestamp.toString(), '-sn', '-dn'])
         .noAudio()
         .frames(1)
-        .outputOptions(['-q:v', '2', '-pix_fmt', 'yuv420p', '-threads', threads])
+        .outputOptions(['-pix_fmt', 'rgb24', '-threads', threads])
         .output(outputPath);
 
       // Add hardware acceleration on macOS
@@ -209,8 +216,9 @@ export async function createVideoSegments(
         id: `${videoId}_seg_${segments.length}`,
         videoId,
         startTime: start,
-        endTime: segmentEnd
-      };
+        endTime: segmentEnd,
+        videoPath: videoFile
+      } as any;
       
       segments.push(segment);
       start = segmentEnd - overlapSeconds; // Overlap between chunks

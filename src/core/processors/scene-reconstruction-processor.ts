@@ -52,7 +52,7 @@ export class SceneReconstructionProcessor extends BaseVideoProcessor {
 
       // Get the main visual description (first caption or combined)
       const visualDescription = captions.length > 0 
-        ? captions[0] 
+        ? (typeof captions[0] === 'string' ? captions[0] : captions[0]?.caption || 'no caption text')
         : 'no visual description available';
 
       // Get previous scene context if available

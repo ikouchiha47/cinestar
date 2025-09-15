@@ -95,7 +95,8 @@ export type PipelineStage =
   | 'audio-extraction'  // Audio extraction from video segments
   | 'visual'            // Thumbnail generation, keyframe extraction
   | 'transcription'     // Audio transcription
-  | 'captioning'        // Visual captioning
+  | 'captioning'        // Visual captioning (per-segment)
+  | 'batch-captioning'  // Video-level batch captioning
   | 'ocr'               // OCR text extraction
   | 'scene-reconstruction'; // LLM-based scene reconstruction
 
@@ -159,16 +160,108 @@ export class VideoPipeline extends EventEmitter {
     this.emit('segment:start', { segmentId: segment.id });
     const overallStart = Date.now();
 
-    // Define processing order - SEQUENTIAL to ensure proper data flow
+    // First run segmentation to get proper segments
+    const segmentationProcessors = this.getProcessors('segmentation').filter(p => p.isEnabled());
+    if (segmentationProcessors.length > 0) {
+      this.emit('stage:start', { stage: 'segmentation', segmentId: segment.id, processorCount: segmentationProcessors.length });
+      
+      for (const processor of segmentationProcessors) {
+        const result = await this.runProcessor(processor, context);
+        if (result.success && result.data) {
+          Object.assign(context.data, result.data);
+        }
+      }
+      
+      this.emit('stage:complete', { stage: 'segmentation', segmentId: segment.id });
+    }
+
+    // If segmentation created new segments, process each one individually
+    const segments = context.data.segments as VideoSegment[] || [segment];
+    
+    // Define processing order for each segment - SEQUENTIAL to ensure proper data flow
     const stageOrder: PipelineStage[] = [
-      'segmentation',
       'audio-extraction',  // Must complete before transcription
       'visual',
       'transcription',     // Uses audioPath from audio-extraction
-      'captioning', 
-      'ocr',
-      'scene-reconstruction' // Must run after transcription, captioning, and OCR
+      'ocr'
     ];
+
+    // Process each segment through the remaining stages
+    for (const seg of segments) {
+      await this.processSegmentStages(seg, stageOrder, context);
+    }
+
+    // After all segments are processed, run video-level processors
+    await this.processVideoLevelStages(context);
+
+    this.emit('segment:complete', { 
+      segmentId: segment.id, 
+      duration: Date.now() - overallStart 
+    });
+
+    return context;
+  }
+
+  // Process video-level stages that run after all segments complete
+  private async processVideoLevelStages(context: ProcessingContext): Promise<void> {
+    // Video-level stages that process all segments together
+    const videoLevelStages: PipelineStage[] = [
+      'batch-captioning',     // Process all keyframes in optimal batches
+      'scene-reconstruction'  // Reconstruct scenes using all segment data
+    ];
+
+    for (const stage of videoLevelStages) {
+      const processors = this.getProcessors(stage).filter(p => p.isEnabled());
+      
+      if (processors.length === 0) {
+        this.emit('stage:skip', { stage, videoPath: context.segment.videoPath });
+        continue;
+      }
+
+      const stageStart = Date.now();
+      this.emit('stage:start', { stage, videoPath: context.segment.videoPath, processorCount: processors.length });
+
+      try {
+        // Run all processors for this stage
+        for (const processor of processors) {
+          const result = await this.runProcessor(processor, context);
+          
+          if (result.success && result.data) {
+            // Merge processor results into global context
+            Object.assign(context.data, result.data);
+          }
+        }
+
+        this.emit('stage:complete', { 
+          stage, 
+          videoPath: context.segment.videoPath,
+          duration: Date.now() - stageStart 
+        });
+
+      } catch (error: any) {
+        this.emit('stage:error', { 
+          stage, 
+          videoPath: context.segment.videoPath,
+          error: error.message,
+          duration: Date.now() - stageStart 
+        });
+        throw error;
+      }
+    }
+  }
+
+  // Process a single segment through specified stages
+  private async processSegmentStages(segment: VideoSegment, stageOrder: PipelineStage[], globalContext: ProcessingContext): Promise<void> {
+    // Create individual context for this segment
+    const segmentContext: ProcessingContext = {
+      segment: { 
+        ...segment,
+        // Ensure videoPath is inherited from global context if not present
+        videoPath: segment.videoPath || globalContext.segment.videoPath
+      },
+      data: {},
+      config: this.config
+    };
 
     const totalStages = stageOrder.length;
     let completedStages = 0;
@@ -190,22 +283,22 @@ export class VideoPipeline extends EventEmitter {
       try {
         // Run all processors for this stage SEQUENTIALLY to ensure data consistency
         for (const processor of processors) {
-          const result = await this.runProcessor(processor, context);
+          const result = await this.runProcessor(processor, segmentContext);
           
           if (result.success && result.data) {
-            // Merge processor results into context
-            Object.assign(context.data, result.data);
+            // Merge processor results into segment context
+            Object.assign(segmentContext.data, result.data);
             
             // CRITICAL: Update segment with paths for downstream processors
             if (result.data.audioPath) {
-              context.segment.audioPath = result.data.audioPath;
+              segmentContext.segment.audioPath = result.data.audioPath;
               console.log(`[Pipeline] Audio path set for ${segment.id}: ${result.data.audioPath}`);
             }
             if (result.data.thumbnailPath) {
-              context.segment.thumbnailPath = result.data.thumbnailPath;
+              segmentContext.segment.thumbnailPath = result.data.thumbnailPath;
             }
             if (result.data.keyframePath) {
-              context.segment.keyframePath = result.data.keyframePath;
+              segmentContext.segment.keyframePath = result.data.keyframePath;
             }
           }
         }
@@ -231,12 +324,11 @@ export class VideoPipeline extends EventEmitter {
       }
     }
 
-    this.emit('segment:complete', { 
-      segmentId: segment.id, 
-      duration: Date.now() - overallStart 
-    });
-
-    return context;
+    // Merge segment results back into global context
+    if (!globalContext.data.processedSegments) {
+      globalContext.data.processedSegments = [];
+    }
+    globalContext.data.processedSegments.push(segmentContext);
   }
 
   // Run a single processor with retry logic
@@ -311,7 +403,7 @@ export class VideoPipeline extends EventEmitter {
         'audio-extraction': this.getProcessors('audio-extraction').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         visual: this.getProcessors('visual').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         transcription: this.getProcessors('transcription').map(p => ({ name: p.name, enabled: p.isEnabled() })),
-        captioning: this.getProcessors('captioning').map(p => ({ name: p.name, enabled: p.isEnabled() })),
+        'batch-captioning': this.getProcessors('batch-captioning').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         ocr: this.getProcessors('ocr').map(p => ({ name: p.name, enabled: p.isEnabled() })),
         'scene-reconstruction': this.getProcessors('scene-reconstruction').map(p => ({ name: p.name, enabled: p.isEnabled() }))
       }

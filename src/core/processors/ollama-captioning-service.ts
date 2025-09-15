@@ -1,5 +1,6 @@
 import { CaptioningService } from './captioning-processor';
-import { ConfigManager } from '../config';
+import { ConfigManager } from '../config.js';
+import { OllamaUrlResolver } from '../utils/ollama-url-resolver.js';
 import fs from 'fs/promises';
 
 export class OllamaCaptioningService implements CaptioningService {
@@ -7,7 +8,7 @@ export class OllamaCaptioningService implements CaptioningService {
   private baseUrl: string;
   private model: string;
 
-  constructor(baseUrl = 'http://localhost:11434') {
+  constructor(baseUrl = OllamaUrlResolver.getOllamaUrl()) {
     this.baseUrl = baseUrl;
     const config = ConfigManager.getConfig();
     this.model = config.ai.visionModel;
@@ -26,13 +27,18 @@ export class OllamaCaptioningService implements CaptioningService {
         throw new Error('Invalid image metadata');
       }
       
-      // Resize large images to prevent Ollama buffer issues
-      if (metadata.width > 1024 || metadata.height > 1024) {
+      // Use configurable vision model dimensions
+      const config = ConfigManager.getConfig();
+      const [maxWidth, maxHeight] = config.ai.visionModelDims;
+      
+      // Only resize if image is larger than vision model dimensions
+      if (metadata.width > maxWidth || metadata.height > maxHeight) {
         imageBuffer = await sharp(imageBuffer)
-          .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+          .resize(maxWidth, maxHeight, { fit: 'inside', withoutEnlargement: true })
           .jpeg({ quality: 85 })
           .toBuffer();
       }
+        
     } catch (imageError) {
       throw new Error(`Image processing failed: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`);
     }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, BrowserView } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -16,6 +16,8 @@ const __dirname = path.dirname(__filename)
 ;(globalThis as any).__dirname = __dirname
 
 // Unified data directory used by both Main and Renderer
+// Reduce background throttling to avoid delayed paints in development
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
 const IS_DEV = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true'
 const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller')
 const DATA_DIR = process.env.MAIN_DB_DIR || DEFAULT_DATA_DIR
@@ -46,29 +48,141 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 
 let win: BrowserWindow | null
 
-function createWindow() {
+async function waitForUrl(url: string, timeoutMs = 15000, intervalMs = 250): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(url, { method: 'HEAD' } as any);
+      if ((res as any)?.ok) return true;
+    } catch (_) {
+      // ignore until next interval
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+async function createWindow() {
+  console.log('[MAIN-PROCESS] Creating BrowserWindow at:', new Date().toISOString());
   win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    backgroundColor: '#0b0b0b',
+    show: true,
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
+      backgroundThrottling: false,
     },
   })
 
-  // Test active push message to Renderer-process.
-  win.webContents.on('did-finish-load', () => {
-    win?.webContents.send('main-process-message', (new Date).toLocaleString())
-  })
+  // Helper to compute content bounds for views
+  const getContentBounds = () => {
+    const [width, height] = win!.getContentSize();
+    return { x: 0, y: 0, width, height } as const;
+  };
+
+  // Create a splash BrowserView and attach it immediately
+  let splashView: BrowserView | null = null;
+  try {
+    const splashPath = path.join(process.env.VITE_PUBLIC, 'splash.html');
+    splashView = new BrowserView({ webPreferences: { backgroundThrottling: false } });
+    win.setBrowserView(splashView);
+    splashView.setBounds(getContentBounds());
+    splashView.setAutoResize({ width: true, height: true });
+    await splashView.webContents.loadFile(splashPath);
+    console.log('[MAIN-PROCESS] Splash loaded at:', new Date().toISOString());
+  } catch (e) {
+    console.warn('[MAIN-PROCESS] Failed to load splash:', e);
+  }
+
+  // Keep current views fitted on resize
+  win.on('resize', () => {
+    const bounds = getContentBounds();
+    try { win?.getBrowserViews()?.forEach(v => v.setBounds(bounds)); } catch {}
+  });
+
+  // Prepare the main app BrowserView; swap when page fully loads to avoid black gap
+  const appView = new BrowserView({ webPreferences: { preload: path.join(__dirname, 'preload.mjs'), backgroundThrottling: false } });
+
+  // Helper to remove splash safely
+  const removeSplash = () => {
+    if (!splashView) return;
+    try {
+      console.log('[MAIN-PROCESS] Removing splash at:', new Date().toISOString());
+      try { win?.removeBrowserView(splashView); } catch {}
+    } catch (e) {
+      console.warn('[MAIN-PROCESS] Failed removing splash:', e);
+    } finally {
+      splashView = null;
+    }
+  };
+
+  let splashFallbackTimer: NodeJS.Timeout | null = null;
 
   if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL)
+    console.log('[MAIN-PROCESS] Waiting for dev server at:', VITE_DEV_SERVER_URL, 'time:', new Date().toISOString());
+    const ok = await waitForUrl(VITE_DEV_SERVER_URL);
+    if (ok) {
+      console.log('[MAIN-PROCESS] Dev server reachable. Loading main URL at:', new Date().toISOString());
+      await appView.webContents.loadURL(VITE_DEV_SERVER_URL);
+      console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
+      try {
+        // Add app view under splash
+        win?.addBrowserView(appView);
+        appView.setBounds(getContentBounds());
+        appView.setAutoResize({ width: true, height: true });
+        // Ensure splash stays on top until renderer signals readiness
+        if (splashView && typeof (win as any).setTopBrowserView === 'function') {
+          (win as any).setTopBrowserView(splashView);
+        }
+        // Fallback: if renderer doesn't signal within 5s, remove splash
+        if (splashFallbackTimer) clearTimeout(splashFallbackTimer);
+        splashFallbackTimer = setTimeout(removeSplash, 5000);
+      } catch (e) {
+        console.warn('[MAIN-PROCESS] Failed to add app view:', e);
+      }
+    } else {
+      console.warn('[MAIN-PROCESS] Dev server not reachable within timeout. Keeping splash visible.', new Date().toISOString());
+    }
   } else {
-    // win.loadFile('dist/index.html')
-    win.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    console.log('[MAIN-PROCESS] Loading production index.html at:', new Date().toISOString());
+    await appView.webContents.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
+    try {
+      win?.addBrowserView(appView);
+      appView.setBounds(getContentBounds());
+      appView.setAutoResize({ width: true, height: true });
+      if (splashView && typeof (win as any).setTopBrowserView === 'function') {
+        (win as any).setTopBrowserView(splashView);
+      }
+      if (splashFallbackTimer) clearTimeout(splashFallbackTimer);
+      splashFallbackTimer = setTimeout(removeSplash, 5000);
+    } catch (e) {
+      console.warn('[MAIN-PROCESS] Failed to add app view (prod):', e);
+    }
   }
+
+  // When the renderer signals it's mounted, remove the splash and bring app to front
+  ipcMain.on('renderer:app-mounted', () => {
+    try {
+      if (splashView) {
+        console.log('[MAIN-PROCESS] Renderer reported app-mounted; removing splash at:', new Date().toISOString());
+        removeSplash();
+      }
+      // Ensure appView is visible and sized
+      try {
+        win?.addBrowserView(appView);
+        appView.setBounds(getContentBounds());
+        appView.setAutoResize({ width: true, height: true });
+      } catch {}
+      if (splashFallbackTimer) { clearTimeout(splashFallbackTimer); splashFallbackTimer = null; }
+    } catch (e) {
+      console.warn('[MAIN-PROCESS] Failed to finalize splash removal:', e);
+    }
+  });
 }
 
 // Quit when all windows are closed, except on macOS. There, it's common
@@ -419,9 +533,12 @@ ipcMain.handle('dialog:selectVideoFile', async () => {
 });
 
 app.whenReady().then(async () => {
-  createWindow();
-  await initializeMediaAPI();
-  await initializeVideoAPI();
-  // Kick off background auto-tuning of FFmpeg per-process threads after initializations
-  runAutoTune();
+  await createWindow();
+  // Defer heavy initialization so the UI can appear immediately
+  setTimeout(() => {
+    initializeMediaAPI().catch((e) => console.warn('[MAIN-PROCESS] MediaAPI init failed:', e));
+    initializeVideoAPI().catch((e) => console.warn('[MAIN-PROCESS] VideoAPI init failed:', e));
+    // Kick off background auto-tuning of FFmpeg per-process threads after initializations
+    runAutoTune();
+  }, 0);
 })

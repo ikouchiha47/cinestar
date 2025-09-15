@@ -18,6 +18,9 @@ export interface AppConfig {
   };
   ai: {
     provider: string;
+    baseUrl: string;
+    useLoadBalancer: boolean;
+    loadBalancerUrl: string;
     embeddingModel: string;
     embeddingDimensions: number;
     visionModel: string;
@@ -45,10 +48,12 @@ export interface AppConfig {
       quality: number;
     };
     keyframes?: {
-      mode: 'scene' | 'rate';
+      mode: 'scene' | 'rate' | 'progressive';
       fps: number;           // when > 0, sample this many frames per second
       targetTotal: number;   // when > 0 and fps === 0, evenly sample this many frames
-      maxTotal: number;      // hard cap
+      maxTotal: number;      // hard limit on total frames extracted
+      maxPerSegment?: number; // maximum keyframes per segment to prevent excessive generation
+      sceneThreshold?: number; // scene detection threshold for keyframe extraction
     };
   };
   captioning?: {
@@ -94,6 +99,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ai: {
     provider: 'ollama',
+    baseUrl: 'http://localhost:11434',
+    useLoadBalancer: false,
+    loadBalancerUrl: 'http://localhost:9001',
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',
@@ -121,10 +129,13 @@ export const DEFAULT_CONFIG: AppConfig = {
       quality: 2,               // JPEG quality (1-31, lower is better)
     },
     keyframes: {
-      mode: 'scene',
+      mode: 'progressive',       // 'scene' | 'rate' | 'progressive'
       fps: 0,
       targetTotal: 0,
       maxTotal: 500,
+      maxPerSegment: 5,          // Maximum keyframes per segment to prevent excessive generation
+      sceneThreshold: 0.6,       // Higher threshold for keyframe scene detection (vs 0.4 for segmentation)
+      // progressive extraction settings are handled in visual-processor/progressive-keyframe-extractor
     },
   },
   captioning: {
