@@ -7,8 +7,8 @@ x-ollama: &ollama
   environment: &env
     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-5m}
-    OLLAMA_MAX_LOADED_MODELS: 1
-    OLLAMA_NUM_PARALLEL: 4
+    OLLAMA_MAX_LOADED_MODELS: 3
+    OLLAMA_NUM_PARALLEL: 5
     OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-0}
     OLLAMA_DEBUG: ${OLLAMA_DEBUG:-1}
     OLLAMA_HOST: 0.0.0.0
@@ -16,9 +16,9 @@ x-ollama: &ollama
   deploy:
     resources:
       limits:
-        memory: 8G
-      reservations:
         memory: 6G
+      reservations:
+        memory: 4G
   entrypoint: >
     /bin/bash -c "
       ollama serve &
@@ -39,18 +39,18 @@ services:
       retries: 5
       start_period: 30s
 
-  # ollama-2:
-  #   <<: *ollama
-  #   container_name: driller-ollama-2
-  #   environment:
-  #     <<: *env
-  #     CUDA_VISIBLE_DEVICES: 1
-  #   healthcheck:
-  #     test: ["CMD", "ollama", "list"]
-  #     interval: 15s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
+  ollama-2:
+    <<: *ollama
+    container_name: driller-ollama-2
+    environment:
+      <<: *env
+      CUDA_VISIBLE_DEVICES: 1
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # ollama-3:
   #   <<: *ollama
@@ -64,7 +64,7 @@ services:
   #     timeout: 10s
   #     retries: 5
   #     start_period: 30s
-
+  # 
   # ollama-4:
   #   <<: *ollama
   #   container_name: driller-ollama-4
@@ -88,6 +88,12 @@ services:
     depends_on:
       ollama-1:
         condition: service_healthy
+      ollama-2:
+        condition: service_healthy
+      # ollama-3:
+      #   condition: service_healthy
+      # ollama-4:
+      #   condition: service_healthy
     restart: unless-stopped
 
   whisper:

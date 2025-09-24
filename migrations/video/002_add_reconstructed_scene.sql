@@ -1,5 +1,13 @@
--- Fix FTS table to include reconstructed_scene column
--- Handle case where reconstructed_scene column already exists
+-- Add reconstructed scene column to video_segments table
+-- This stores the LLM-generated coherent scene descriptions
+
+ALTER TABLE video_segments 
+ADD COLUMN reconstructed_scene TEXT;
+
+-- Create index for faster searching on reconstructed scenes
+CREATE INDEX IF NOT EXISTS idx_video_segments_reconstructed_scene 
+ON video_segments(reconstructed_scene) 
+WHERE reconstructed_scene IS NOT NULL;
 
 -- Drop existing FTS table and triggers to recreate with reconstructed_scene support
 DROP TRIGGER IF EXISTS segments_fts_insert;
@@ -7,15 +15,13 @@ DROP TRIGGER IF EXISTS segments_fts_update;
 DROP TRIGGER IF EXISTS segments_fts_delete;
 DROP TABLE IF EXISTS segments_fts;
 
--- Recreate FTS table with reconstructed_scene column
+-- Recreate FTS table with reconstructed_scene column (without content dependency)
 CREATE VIRTUAL TABLE segments_fts USING fts5(
   segment_id,
   transcription,
   caption,
   ocr_text,
-  reconstructed_scene,
-  content='video_segments',
-  content_rowid='rowid'
+  reconstructed_scene
 );
 
 -- Recreate triggers to include reconstructed_scene
@@ -43,6 +49,3 @@ END;
 -- Rebuild FTS index from existing data
 INSERT INTO segments_fts(segment_id, transcription, caption, ocr_text, reconstructed_scene)
 SELECT id, transcription, caption, ocr_text, reconstructed_scene FROM video_segments;
-
--- Update schema version
-PRAGMA user_version = 5;

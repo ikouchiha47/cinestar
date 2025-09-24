@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { EmbeddingService, RRFFusion } from './embedding-service';
+import { DatabaseMigrator } from './database-migrator';
 
 export interface VideoSegment {
   id: string;
@@ -70,6 +71,9 @@ export class VideoDatabase {
   private dbPath: string;
   private initialized = false;
   // private embeddingService: EmbeddingService; // Commented out to fix compilation
+  // Global init cache to avoid re-running migrations across multiple instances
+  private static globalInitPromises: Map<string, Promise<void>> = new Map();
+  private static globallyInitialized: Set<string> = new Set();
 
   constructor(_embeddingService?: EmbeddingService) {
     // Choose database directory similar to Media Search
@@ -173,155 +177,55 @@ export class VideoDatabase {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    try {
-      // Load sqlite-vec extension
-      // Note: You'll need to have sqlite-vec compiled and available
-      // For now, we'll create the tables without vector extension
-      // and add vector support later when sqlite-vec is available
-      
-      // Create tables
-      this.createTables();
-      
-      // Create indexes
-      this.createIndexes();
-      
+    // If this DB path has already been initialized globally, just mark this instance and return
+    if (VideoDatabase.globallyInitialized.has(this.dbPath)) {
       this.initialized = true;
-      console.log('VideoDatabase initialized at:', this.dbPath);
-    } catch (error) {
-      console.error('Failed to initialize VideoDatabase:', error);
-      throw error;
+      return;
+    }
+
+    // If another instance is already initializing this DB path, await it
+    const existing = VideoDatabase.globalInitPromises.get(this.dbPath);
+    if (existing) {
+      await existing;
+      this.initialized = true;
+      return;
+    }
+
+    // Create a shared initialization promise so concurrent callers don't duplicate work
+    const initPromise = (async () => {
+      try {
+        // Use migration system for schema management with video-specific migrations
+        const videoMigrationsDir = path.join(process.cwd(), 'migrations', 'video');
+        const migrator = new DatabaseMigrator(this.dbPath, videoMigrationsDir);
+
+        console.log('VideoDatabase: Running video-specific migrations...');
+        const result = await migrator.migrate();
+
+        if (!result.success) {
+          throw new Error(`Video database migration failed: ${result.error}`);
+        }
+
+        if (result.migrationsRun.length > 0) {
+          console.log(`VideoDatabase: Applied ${result.migrationsRun.length} migrations`);
+        }
+
+        VideoDatabase.globallyInitialized.add(this.dbPath);
+        console.log('VideoDatabase initialized at:', this.dbPath);
+      } catch (error) {
+        console.error('Failed to initialize VideoDatabase:', error);
+        throw error;
+      }
+    })();
+
+    VideoDatabase.globalInitPromises.set(this.dbPath, initPromise);
+    try {
+      await initPromise;
+      this.initialized = true;
+    } finally {
+      VideoDatabase.globalInitPromises.delete(this.dbPath);
     }
   }
 
-  private createTables(): void {
-    // Video files table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS video_files (
-        id TEXT PRIMARY KEY,
-        file_path TEXT UNIQUE NOT NULL,
-        file_name TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        duration REAL NOT NULL,
-        width INTEGER,
-        height INTEGER,
-        frame_rate REAL,
-        bitrate INTEGER,
-        codec TEXT,
-        total_segments INTEGER DEFAULT 0,
-        processing_status TEXT DEFAULT 'pending',
-        processing_error TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Video segments table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS video_segments (
-        id TEXT PRIMARY KEY,
-        video_id TEXT NOT NULL,
-        video_path TEXT NOT NULL,
-        start_time REAL NOT NULL,
-        end_time REAL NOT NULL,
-        duration REAL NOT NULL,
-        scene_index INTEGER NOT NULL,
-        thumbnail_path TEXT,
-        keyframe_path TEXT,
-        audio_path TEXT,
-        transcription TEXT,
-        caption TEXT,
-        ocr_text TEXT,
-        embedding BLOB,
-        metadata TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (video_id) REFERENCES video_files (id) ON DELETE CASCADE
-      )
-    `);
-
-    // Video processing jobs table
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS video_processing_jobs (
-        id TEXT PRIMARY KEY,
-        video_path TEXT NOT NULL,
-        file_name TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        progress INTEGER DEFAULT 0,
-        error TEXT,
-        start_time DATETIME,
-        end_time DATETIME,
-        segment_count INTEGER DEFAULT 0,
-        total_segments INTEGER,
-        current_stage TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Full-text search table for segments
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
-        segment_id,
-        transcription,
-        caption,
-        ocr_text,
-        content='video_segments',
-        content_rowid='rowid'
-      )
-    `);
-
-    // Triggers to keep FTS in sync
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS segments_fts_insert AFTER INSERT ON video_segments
-      BEGIN
-        INSERT INTO segments_fts(segment_id, transcription, caption, ocr_text)
-        VALUES (NEW.id, NEW.transcription, NEW.caption, NEW.ocr_text);
-      END
-    `);
-
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS segments_fts_update AFTER UPDATE ON video_segments
-      BEGIN
-        UPDATE segments_fts SET
-          transcription = NEW.transcription,
-          caption = NEW.caption,
-          ocr_text = NEW.ocr_text
-        WHERE segment_id = NEW.id;
-      END
-    `);
-
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS segments_fts_delete AFTER DELETE ON video_segments
-      BEGIN
-        DELETE FROM segments_fts WHERE segment_id = OLD.id;
-      END
-    `);
-
-    // Refined keyframe artifacts table (captures delayed/background frames per segment)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS video_keyframes (
-        id TEXT PRIMARY KEY,
-        video_id TEXT NOT NULL,
-        segment_id TEXT NOT NULL,
-        image_path TEXT NOT NULL,
-        label TEXT NOT NULL, -- delayed | background | other labels
-        caption TEXT,
-        embedding BLOB,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (video_id) REFERENCES video_files (id) ON DELETE CASCADE,
-        FOREIGN KEY (segment_id) REFERENCES video_segments (id) ON DELETE CASCADE
-      );
-    `);
-  }
-
-  private createIndexes(): void {
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_segments_video_id ON video_segments(video_id);
-      CREATE INDEX IF NOT EXISTS idx_segments_time ON video_segments(start_time, end_time);
-      CREATE INDEX IF NOT EXISTS idx_segments_scene ON video_segments(scene_index);
-      CREATE INDEX IF NOT EXISTS idx_files_path ON video_files(file_path);
-      CREATE INDEX IF NOT EXISTS idx_files_status ON video_files(processing_status);
-    `);
-  }
 
   // Video file operations
   async addVideoFile(video: Omit<VideoFile, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
@@ -482,7 +386,7 @@ export class VideoDatabase {
   }
 
   // Search operations
-  async textSearch(query: string, limit = 10): Promise<SearchResult[]> {
+  async textSearch(query: string, limit = 10, offset = 0): Promise<SearchResult[]> {
     const stmt = this.db.prepare(`
       SELECT 
         s.*,
@@ -493,10 +397,10 @@ export class VideoDatabase {
       JOIN video_files v ON v.id = s.video_id
       WHERE segments_fts MATCH ?
       ORDER BY fts.rank
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `);
 
-    const rows = stmt.all(query, limit) as any[];
+    const rows = stmt.all(query, limit, offset) as any[];
     return rows.map(row => ({
       segment: this.mapSegmentRow(row),
       video: this.mapVideoFileRow(row),
@@ -506,7 +410,7 @@ export class VideoDatabase {
     }));
   }
 
-  async vectorSearch(embedding: Float32Array, limit = 10): Promise<SearchResult[]> {
+  async vectorSearch(embedding: Float32Array, limit = 10, offset = 0): Promise<SearchResult[]> {
     try {
       // Get all segments with embeddings
       const stmt = this.db.prepare(`
@@ -538,22 +442,22 @@ export class VideoDatabase {
       // Sort by similarity and return top results
       return similarities
         .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
+        .slice(offset, offset + limit);
     } catch (error) {
       console.error('Vector search failed:', error);
       return [];
     }
   }
 
-  async hybridSearch(query: string, embedding?: Float32Array, limit = 10): Promise<SearchResult[]> {
+  async hybridSearch(query: string, embedding?: Float32Array, limit = 10, offset = 0): Promise<SearchResult[]> {
     try {
       // Get text search results
-      const textResults = await this.textSearch(query, limit * 2);
+      const textResults = await this.textSearch(query, limit * 2, 0);
       
       // Get vector search results if embedding provided
       let vectorResults: SearchResult[] = [];
       if (embedding) {
-        vectorResults = await this.vectorSearch(embedding, limit * 2);
+        vectorResults = await this.vectorSearch(embedding, limit * 2, 0);
       }
 
       // If no vector results, return text results
@@ -574,7 +478,7 @@ export class VideoDatabase {
       });
 
       return fusedResults
-        .slice(0, limit)
+        .slice(offset, offset + limit)
         .map(fused => {
           const result = segmentMap.get(fused.item)!;
           return {

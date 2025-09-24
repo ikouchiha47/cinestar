@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),
+  unifiedSearch: (query: { query: string; limit?: number; offset?: number }) => ipcRenderer.invoke('search:unified', query),
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
 })
 

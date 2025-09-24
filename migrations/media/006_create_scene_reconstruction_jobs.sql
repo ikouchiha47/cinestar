@@ -41,9 +41,9 @@ CREATE TABLE IF NOT EXISTS scene_reconstruction_jobs (
   
   -- Fair scheduling metadata
   video_length_seconds REAL,
-  segment_index INTEGER,
+  segment_index INTEGER
   
-  FOREIGN KEY (video_id) REFERENCES video_files(id)
+  -- Note: video_id references video_files(id) in the video database
 );
 
 -- Queue management tables

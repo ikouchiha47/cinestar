@@ -24,6 +24,7 @@ import { ConfigManager } from '../core/config.js';
 export interface VideoSearchQuery {
   query: string;
   limit?: number;
+  offset?: number;
   searchType?: 'text' | 'vector' | 'hybrid';
   videoPath?: string;
   timeRange?: {
@@ -134,6 +135,9 @@ export class VideoMediaAPI {
     });
 
     this.videoPipeline.on('completed', async (data) => {
+      console.log(`[PIPELINE-COMPLETED] Video processing completed for ${data.videoPath}`);
+      console.log(`[PIPELINE-COMPLETED] Segments in data: ${data.segments?.length || 0}`);
+      
       const job = await this.videoDb.getJob(data.videoPath);
       if (job) {
         await this.videoDb.updateJob(job.id, {
@@ -143,12 +147,31 @@ export class VideoMediaAPI {
           segmentCount: data.segments?.length || 0
         });
         
-        // Store segments in database
-        if (data.segments) {
-          await this.storeVideoSegments(data.videoPath, data.segments);
+        // Merge processed content back into segments before storage
+        let enrichedSegments = data.segments || [];
+        
+        // Extract processed content from pipeline data structure
+        const processedSegments = data.processedSegments || [];
+        const reconstructedScenes = data.reconstructedScenes || {};
+        
+        if (processedSegments.length > 0 || Object.keys(reconstructedScenes).length > 0) {
+          console.log(`[PIPELINE-COMPLETED] Merging processed content from ${processedSegments.length} processed segments and ${Object.keys(reconstructedScenes).length} reconstructed scenes`);
+          enrichedSegments = this.mergeProcessedContent(data.segments || [], processedSegments, { reconstructedScenes });
+        } else {
+          console.log(`[PIPELINE-COMPLETED] No processed content to merge - using original segments`);
         }
         
-        console.log(`Video processing completed: ${data.videoPath}`);
+        // Store segments in database
+        if (enrichedSegments && enrichedSegments.length > 0) {
+          console.log(`[PIPELINE-COMPLETED] Calling storeVideoSegments with ${enrichedSegments.length} enriched segments`);
+          await this.storeVideoSegments(data.videoPath, enrichedSegments);
+        } else {
+          console.warn(`[PIPELINE-COMPLETED] No segments to store for ${data.videoPath}`);
+        }
+        
+        console.log(`[PIPELINE-COMPLETED] Video processing completed: ${data.videoPath}`);
+      } else {
+        console.warn(`[PIPELINE-COMPLETED] No job found for ${data.videoPath}`);
       }
     });
   }
@@ -324,6 +347,19 @@ export class VideoMediaAPI {
           totalSegments: Array.isArray(segments) ? segments.length : 0,
           processingStatus: 'completed',
         });
+
+        // Persist segments immediately (the pipeline does not emit a 'completed' event,
+        // and the partial writer listens to 'progress' for segmentation which is not emitted).
+        if (Array.isArray(segments) && segments.length > 0) {
+          // Merge processed content (transcription, captions, OCR, keyframes, reconstructed scenes)
+          const processedSegments = context?.data?.processedSegments || [];
+          const enrichedSegments = this.mergeProcessedContent(segments, processedSegments, context?.data || {});
+
+          console.log(`[PIPELINE-COMPLETED] Calling storeVideoSegments with ${enrichedSegments.length} segments`);
+          await this.storeVideoSegments(videoPath, enrichedSegments);
+        } else {
+          console.warn(`[PIPELINE-COMPLETED] No segments to store for ${videoPath}`);
+        }
       });
 
       return videoId;
@@ -346,19 +382,72 @@ export class VideoMediaAPI {
   }
 
   /**
+   * Merge processed content from pipeline back into segment objects
+   */
+  private mergeProcessedContent(originalSegments: any[], processedSegments: any[], pipelineData: any): any[] {
+    console.log(`[MERGE-CONTENT] Merging content from ${processedSegments.length} processed segments into ${originalSegments.length} original segments`);
+    
+    // Create a map of processed segment data by segment ID
+    const processedMap = new Map<string, any>();
+    for (const processedSegment of processedSegments) {
+      if (processedSegment.segment?.id) {
+        processedMap.set(processedSegment.segment.id, processedSegment);
+      }
+    }
+    
+    // Extract reconstructed scenes from pipeline data if available
+    const reconstructedScenes = pipelineData.reconstructedScenes || {};
+    
+    // Merge processed content into original segments
+    const enrichedSegments = originalSegments.map(segment => {
+      const processed = processedMap.get(segment.id);
+      const enriched = { ...segment };
+      
+      if (processed?.data) {
+        // Merge transcription, captions, OCR, keyframes
+        if (processed.data.transcription) enriched.transcription = processed.data.transcription;
+        if (processed.data.captions) enriched.caption = Array.isArray(processed.data.captions) ? processed.data.captions.join(' ') : processed.data.captions;
+        if (processed.data.ocrText) enriched.ocrText = processed.data.ocrText;
+        if (processed.data.keyframes) enriched.keyframePath = Array.isArray(processed.data.keyframes) ? processed.data.keyframes[0] : processed.data.keyframes;
+      }
+      
+      // Add reconstructed scene if available
+      if (reconstructedScenes[segment.id]) {
+        enriched.reconstructedScene = reconstructedScenes[segment.id];
+      }
+      
+      console.log(`[MERGE-CONTENT] Segment ${segment.id}: transcription=${!!enriched.transcription}, caption=${!!enriched.caption}, reconstructedScene=${!!enriched.reconstructedScene}`);
+      return enriched;
+    });
+    
+    return enrichedSegments;
+  }
+
+  /**
    * Store video segments in database with embeddings
    */
   private async storeVideoSegments(videoPath: string, segments: any[]): Promise<void> {
+    console.log(`[STORE-SEGMENTS] Starting storeVideoSegments for ${videoPath} with ${segments?.length || 0} segments`);
+    
+    if (!segments || segments.length === 0) {
+      console.warn(`[STORE-SEGMENTS] No segments provided for ${videoPath}, skipping storage`);
+      return;
+    }
+
     try {
       // Fetch existing segments (if any) for idempotency and enrichment
       const file = await this.videoDb.getVideoFileByPath(videoPath);
+      console.log(`[STORE-SEGMENTS] Found video file: ${file?.id || 'NOT_FOUND'} for path ${videoPath}`);
+      
       const existing = file ? await this.videoDb.getVideoSegments(file.id) : [];
+      console.log(`[STORE-SEGMENTS] Found ${existing.length} existing segments for video ${file?.id}`);
+      
       const existingByScene = new Map<number, any>();
       for (const seg of existing) existingByScene.set(seg.sceneIndex, seg);
 
       const toInsert: any[] = [];
 
-      for (const segment of segments) {
+      for (const [i, segment] of segments.entries()) {
         // Generate embedding using reconstructed scene or fallback to concatenation
         let embedding: Float32Array | undefined;
         let content = '';
@@ -382,13 +471,27 @@ export class VideoMediaAPI {
           }
         }
 
-        const existingSeg = existingByScene.get(segment.sceneIndex);
+        // Ensure required fields
+        const rawStart = (segment as any).startTime;
+        const rawEnd = (segment as any).endTime;
+        const segStart = Number.isFinite(Number(rawStart)) ? Number(rawStart) : 0;
+        const segEnd = Number.isFinite(Number(rawEnd)) ? Number(rawEnd) : segStart;
+        let segDuration = Number.isFinite(Number((segment as any).duration))
+          ? Number((segment as any).duration)
+          : (segEnd - segStart);
+        if (!Number.isFinite(segDuration) || segDuration <= 0) {
+          // Ensure a tiny positive duration to satisfy NOT NULL and avoid zero-length segments
+          segDuration = Math.max(0.001, segEnd - segStart);
+        }
+        const segSceneIndex = typeof (segment as any).sceneIndex === 'number' ? (segment as any).sceneIndex : i;
+
+        const existingSeg = existingByScene.get(segSceneIndex);
         if (existingSeg) {
           // Update existing partial row with new data
           const patch: any = {
-            startTime: segment.startTime ?? existingSeg.startTime,
-            endTime: segment.endTime ?? existingSeg.endTime,
-            duration: segment.duration ?? existingSeg.duration,
+            startTime: segStart ?? existingSeg.startTime,
+            endTime: segEnd ?? existingSeg.endTime,
+            duration: (segDuration ?? existingSeg.duration),
             thumbnailPath: segment.thumbnailPath ?? existingSeg.thumbnailPath,
             keyframePath: segment.keyframePath ?? existingSeg.keyframePath,
             transcription: segment.transcription ?? existingSeg.transcription,
@@ -405,10 +508,10 @@ export class VideoMediaAPI {
         } else {
           toInsert.push({
             videoPath,
-            startTime: segment.startTime,
-            endTime: segment.endTime,
-            duration: segment.duration,
-            sceneIndex: segment.sceneIndex,
+            startTime: segStart,
+            endTime: segEnd,
+            duration: segDuration,
+            sceneIndex: segSceneIndex,
             thumbnailPath: segment.thumbnailPath,
             keyframePath: segment.keyframePath,
             transcription: segment.transcription,
@@ -420,12 +523,18 @@ export class VideoMediaAPI {
         }
       }
 
+      console.log(`[STORE-SEGMENTS] Prepared ${toInsert.length} segments for insertion`);
+      
       if (toInsert.length > 0) {
-        await this.videoDb.addVideoSegmentsBatch(toInsert);
-        console.log(`Stored ${toInsert.length} new video segments for ${videoPath}`);
+        console.log(`[STORE-SEGMENTS] Calling addVideoSegmentsBatch with ${toInsert.length} segments`);
+        const insertedIds = await this.videoDb.addVideoSegmentsBatch(toInsert);
+        console.log(`[STORE-SEGMENTS] Successfully stored ${insertedIds.length} new video segments for ${videoPath}`);
+        console.log(`[STORE-SEGMENTS] Inserted segment IDs: ${insertedIds.slice(0, 3).join(', ')}${insertedIds.length > 3 ? '...' : ''}`);
+      } else {
+        console.log(`[STORE-SEGMENTS] No new segments to insert for ${videoPath} (all segments already exist)`);
       }
     } catch (error) {
-      console.error('Failed to store video segments:', error);
+      console.error(`[STORE-SEGMENTS] Failed to store video segments for ${videoPath}:`, error);
       throw error;
     }
   }
@@ -439,20 +548,20 @@ export class VideoMediaAPI {
     }
 
     try {
-      const { query: searchQuery, limit = 10, searchType = 'hybrid' } = query;
+      const { query: searchQuery, limit = 10, offset = 0, searchType = 'hybrid' } = query;
 
       switch (searchType) {
         case 'text':
-          return await this.videoDb.textSearch(searchQuery, limit);
+          return await this.videoDb.textSearch(searchQuery, limit, offset);
 
         case 'vector':
           const embedding = await this.embeddingService.embedSingle(searchQuery);
-          return await this.videoDb.vectorSearch(embedding, limit);
+          return await this.videoDb.vectorSearch(embedding, limit, offset);
 
         case 'hybrid':
         default:
           const queryEmbedding = await this.embeddingService.embedSingle(searchQuery);
-          return await this.videoDb.hybridSearch(searchQuery, queryEmbedding, limit);
+          return await this.videoDb.hybridSearch(searchQuery, queryEmbedding, limit, offset);
       }
     } catch (error) {
       console.error('Video search failed:', error);

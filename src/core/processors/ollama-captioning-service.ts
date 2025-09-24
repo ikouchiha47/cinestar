@@ -20,81 +20,77 @@ export class OllamaCaptioningService implements CaptioningService {
     // Validate and resize image to prevent MTMD encoding errors
     try {
       const sharp = (await import('sharp')).default;
-      const metadata = await sharp(imageBuffer).metadata();
-      
+      // Always sanitize and standardize: convert to sRGB JPEG to strip
+      // problematic PNG ancillary chunks (e.g. cICP) and alpha channel.
+      // This prevents Ollama "unable to encode mtmd image chunk" errors.
+      let img = sharp(imageBuffer).rotate().toColorspace('srgb');
+
+      const metadata = await img.metadata();
+
       // Skip corrupted or invalid images
       if (!metadata.width || !metadata.height) {
         throw new Error('Invalid image metadata');
       }
-      
+
       // Use configurable vision model dimensions
       const config = ConfigManager.getConfig();
       const [maxWidth, maxHeight] = config.ai.visionModelDims;
-      
-      // Only resize if image is larger than vision model dimensions
+
+      // Resize if larger than vision model constraints
       if (metadata.width > maxWidth || metadata.height > maxHeight) {
-        imageBuffer = await sharp(imageBuffer)
-          .resize(maxWidth, maxHeight, { fit: 'inside', withoutEnlargement: true })
-          .jpeg({ quality: 85 })
-          .toBuffer();
+        img = img.resize(maxWidth, maxHeight, { fit: 'inside', withoutEnlargement: true });
       }
-        
+
+      // JPEG has no alpha: flatten against black to avoid artifacts
+      img = img.flatten({ background: { r: 0, g: 0, b: 0 } })
+             .jpeg({ quality: 85, progressive: false, mozjpeg: true });
+
+      imageBuffer = await img.toBuffer();
+      
     } catch (imageError) {
       throw new Error(`Image processing failed: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`);
     }
     
-    const base64Image = imageBuffer.toString('base64');
-
     const url = `${this.baseUrl}/api/generate`;
     const capCfg = ConfigManager.getConfig().captioning;
     const timeoutMs = Math.max(0, Number(capCfg?.timeoutMs ?? 0));
-    const retries = Math.max(0, Number(capCfg?.retries ?? 0));
-    const retryDelayMs = Math.max(0, Number(capCfg?.retryDelayMs ?? 1000));
 
+    // Build payload with plain base64 (no data URI), JPEG only
+    const base64 = imageBuffer.toString('base64');
     const payload = {
       model: this.model,
       prompt: options.prompt || 'Describe this image in detail.',
-      images: [base64Image],
+      images: [base64],
       stream: false
-    };
+    } as any;
 
-    let lastErr: any = null;
-    const attempts = Math.max(1, retries + 1);
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const controller = timeoutMs > 0 ? new AbortController() : undefined;
-      const timer = timeoutMs > 0 ? setTimeout(() => controller!.abort(), timeoutMs) : undefined;
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller?.signal
-        });
-        if (timer) clearTimeout(timer);
+    const controller = timeoutMs > 0 ? new AbortController() : undefined;
+    const timer = timeoutMs > 0 ? setTimeout(() => controller!.abort(), timeoutMs) : undefined;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller?.signal
+      });
+      if (timer) clearTimeout(timer);
 
-        if (!response.ok) {
-          let body = '';
-          try { body = await response.text(); } catch {}
-          throw new Error(`Ollama captioning error: ${response.status} - ${response.statusText}${body ? ` - ${body.substring(0,200)}` : ''}`);
-        }
-
-        const result = await response.json();
-        return {
-          caption: result.response || '',
-          confidence: 1.0,
-          metadata: { model: this.model, tokens: result.eval_count }
-        };
-      } catch (err) {
-        if (timer) clearTimeout(timer);
-        lastErr = err;
-        if (attempt < attempts - 1) {
-          await new Promise(res => setTimeout(res, retryDelayMs * (attempt + 1)));
-          continue;
-        }
-        break;
+      if (!response.ok) {
+        let body = '';
+        try { body = await response.text(); } catch {}
+        throw new Error(`Ollama captioning error: ${response.status} - ${response.statusText}${body ? ` - ${body.substring(0,200)}` : ''}`);
       }
+
+      const result = await response.json();
+      return {
+        caption: result.response || '',
+        confidence: 1.0,
+        metadata: { model: this.model, tokens: result.eval_count }
+      };
+    } catch (err) {
+      if (timer) clearTimeout(timer);
+      throw err;
     }
-    throw lastErr || new Error('Ollama captioning failed');
   }
 
   async isAvailable(): Promise<boolean> {

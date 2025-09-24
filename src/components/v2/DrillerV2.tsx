@@ -162,6 +162,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [places, setPlaces] = useState<Place[]>([]);
   const [searchResults, setSearchResults] = useState<MediaT[]>([]);
   const [videoSearchResults, setVideoSearchResults] = useState<MediaT[]>([]);
+  const [videoHasMore, setVideoHasMore] = useState<boolean>(false);
+  const [videoOffset, setVideoOffset] = useState<number>(0);
   const [library, setLibrary] = useState<MediaT[]>([]);
   const [searching, setSearching] = useState(false);
   const [expandedType, setExpandedType] = useState<'image' | 'video' | 'audio' | null>(null);
@@ -327,59 +329,45 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       }
       try {
         setSearching(true);
-        // Query both media items (sqlite-vec) and video segments (video DB)
-        const [mediaRes, videoRes] = await Promise.allSettled([
-          window.mediaAPI.searchText(query, 40),
-          window.videoAPI.searchVideos({ query, limit: 40, searchType: 'hybrid' }),
-        ]);
+        // Unified search across media (images via vec) and videos (segments FTS)
+        const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: 0 });
         if (!alive) return;
 
-        // Map media items
-        const mediaItems: MediaT[] = (() => {
-          if (mediaRes.status === 'fulfilled') {
-            const res: any = mediaRes.value;
-            if (res?.success && res.results && Array.isArray(res.results.items)) {
-              return res.results.items.map((it: any) => {
-                const mime = (it.mimeType || '').toLowerCase();
-                let kind: 'image' | 'video' | 'audio' = 'image';
-                if (mime.startsWith('video/')) kind = 'video';
-                else if (mime.startsWith('audio/')) kind = 'audio';
-                else if (typeof it.type === 'string') {
-                  const t = it.type.toLowerCase();
-                  if (t.includes('video')) kind = 'video';
-                  else if (t.includes('audio')) kind = 'audio';
-                } else if (typeof it.name === 'string') {
-                  const n = it.name.toLowerCase();
-                  if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-                  else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-                }
-                return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-              });
-            }
+        // Map images (media/vector)
+        const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
+        const mediaItems: MediaT[] = images.map((it: any) => {
+          const mime = (it.mimeType || '').toLowerCase();
+          let kind: 'image' | 'video' | 'audio' = 'image';
+          if (mime.startsWith('video/')) kind = 'video';
+          else if (mime.startsWith('audio/')) kind = 'audio';
+          else if (typeof it.type === 'string') {
+            const t = it.type.toLowerCase();
+            if (t.includes('video')) kind = 'video';
+            else if (t.includes('audio')) kind = 'audio';
+          } else if (typeof it.name === 'string') {
+            const n = it.name.toLowerCase();
+            if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+            else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
           }
-          return [];
-        })();
+          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+        });
 
-        // Map video segments (flatten to video files for now)
-        const videoItems: MediaT[] = (() => {
-          if (videoRes.status === 'fulfilled') {
-            const res: any = videoRes.value;
-            if (res?.success && Array.isArray(res.results)) {
-              return res.results.map((r: any) => ({
-                id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
-                placeId: '',
-                type: 'video',
-                name: String(r.video?.fileName || 'video'),
-                path: String(r.video?.filePath || ''),
-              } as MediaT));
-            }
-          }
-          return [];
-        })();
+        // Map videos (video DB segments -> flattened video files)
+        const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
+        const videoItems: MediaT[] = videos.map((r: any) => ({
+          id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
+          placeId: '',
+          type: 'video',
+          name: String(r.video?.fileName || 'video'),
+          path: String(r.video?.filePath || ''),
+          thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+        } as MediaT));
 
-        // Set separate results without merging
+        // Set results
         setSearchResults(mediaItems);
         setVideoSearchResults(videoItems);
+        setVideoHasMore(!!res?.results?.hasMore?.videos);
+        setVideoOffset(videoItems.length);
       } catch {
         setSearchResults([]);
         setVideoSearchResults([]);
@@ -402,6 +390,32 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       }
     };
   }, [q, scope]);
+
+  // Load more video segment results using pagination from unifiedSearch
+  const loadMoreVideos = async () => {
+    const query = q.trim();
+    if (!query || !videoHasMore) return;
+    try {
+      setSearching(true);
+      const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: videoOffset });
+      const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
+      const more: MediaT[] = videos.map((r: any) => ({
+        id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
+        placeId: '',
+        type: 'video',
+        name: String(r.video?.fileName || 'video'),
+        path: String(r.video?.filePath || ''),
+        thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+      } as MediaT));
+      setVideoSearchResults((prev) => [...prev, ...more]);
+      setVideoOffset((prev) => prev + more.length);
+      setVideoHasMore(!!res?.results?.hasMore?.videos);
+    } catch {
+      // ignore
+    } finally {
+      setSearching(false);
+    }
+  };
 
   const scopedMedia = useMemo(() => {
     const base = q.trim() ? searchResults : library;
@@ -489,54 +503,40 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     }
                     try {
                       setSearching(true);
-                      const [mediaRes, videoRes] = await Promise.allSettled([
-                        window.mediaAPI.searchText(query, 40),
-                        window.videoAPI.searchVideos({ query, limit: 40, searchType: 'hybrid' }),
-                      ]);
-                      const mediaItems: MediaT[] = (() => {
-                        if (mediaRes.status === 'fulfilled') {
-                          const res: any = mediaRes.value;
-                          if (res?.success && res.results && Array.isArray(res.results.items)) {
-                            return res.results.items.map((it: any) => {
-                              const mime = (it.mimeType || '').toLowerCase();
-                              let kind: 'image' | 'video' | 'audio' = 'image';
-                              if (mime.startsWith('video/')) kind = 'video';
-                              else if (mime.startsWith('audio/')) kind = 'audio';
-                              else if (typeof it.type === 'string') {
-                                const t = it.type.toLowerCase();
-                                if (t.includes('video')) kind = 'video';
-                                else if (t.includes('audio')) kind = 'audio';
-                                else kind = 'image';
-                              } else if (typeof it.name === 'string') {
-                                const n = it.name.toLowerCase();
-                                if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-                                else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-                                else kind = 'image';
-                              }
-                              return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-                            });
-                          }
+                      const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: 0 });
+                      const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
+                      const mediaItems: MediaT[] = images.map((it: any) => {
+                        const mime = (it.mimeType || '').toLowerCase();
+                        let kind: 'image' | 'video' | 'audio' = 'image';
+                        if (mime.startsWith('video/')) kind = 'video';
+                        else if (mime.startsWith('audio/')) kind = 'audio';
+                        else if (typeof it.type === 'string') {
+                          const t = it.type.toLowerCase();
+                          if (t.includes('video')) kind = 'video';
+                          else if (t.includes('audio')) kind = 'audio';
+                          else kind = 'image';
+                        } else if (typeof it.name === 'string') {
+                          const n = it.name.toLowerCase();
+                          if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+                          else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+                          else kind = 'image';
                         }
-                        return [];
-                      })();
-                      const videoItems: MediaT[] = (() => {
-                        if (videoRes.status === 'fulfilled') {
-                          const res: any = videoRes.value;
-                          if (res?.success && Array.isArray(res.results)) {
-                            return res.results.map((r: any) => ({
-                              id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
-                              placeId: '',
-                              type: 'video',
-                              name: String(r.video?.fileName || 'video'),
-                              path: String(r.video?.filePath || ''),
-                            } as MediaT));
-                          }
-                        }
-                        return [];
-                      })();
-                      // Set separate results without merging
+                        return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                      });
+                      const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
+                      const videoItems: MediaT[] = videos.map((r: any) => ({
+                        id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
+                        placeId: '',
+                        type: 'video',
+                        name: String(r.video?.fileName || 'video'),
+                        path: String(r.video?.filePath || ''),
+                        thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+                      } as MediaT));
+                      // Set results
                       setSearchResults(mediaItems);
                       setVideoSearchResults(videoItems);
+                      setVideoHasMore(!!res?.results?.hasMore?.videos);
+                      setVideoOffset(videoItems.length);
                     } catch {
                       setSearchResults([]);
                       setVideoSearchResults([]);
@@ -740,6 +740,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       items={videoSearchResults}
                       places={places}
                       maxVisible={6}
+                      onShowMore={() => loadMoreVideos()}
                     />
                   )}
                 </>
@@ -888,26 +889,29 @@ function MediaGroup({
 
 function MediaCard({ item, placeLabel }: { item: MediaT; placeLabel: string }) {
   const [thumbUrl, setThumbUrl] = useState<string | null>(item.thumb || null);
-  const [loading, setLoading] = useState<boolean>(item.type === 'image');
+  const [loading, setLoading] = useState<boolean>(item.type === 'image' || !!item.thumb);
 
   useEffect(() => {
     let cancelled = false;
-    if (item.type !== 'image') return;
+    const wantImageThumb = item.type === 'image';
+    const wantVideoThumb = item.type === 'video' && typeof item.thumb === 'string' && item.thumb.length > 0;
+    if (!wantImageThumb && !wantVideoThumb) return;
     (async () => {
       try {
         setLoading(true);
-        const res = await window.mediaAPI.getImageThumbnail(item.path);
+        const srcPath = wantImageThumb ? item.path : (item.thumb as string);
+        const res = await window.mediaAPI.getImageThumbnail(srcPath);
         if (!cancelled && res.success && res.dataUrl) setThumbUrl(res.dataUrl);
       } catch {}
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [item.path, item.type]);
+  }, [item.path, item.type, item.thumb]);
 
   return (
     <div className="rounded-xl overflow-hidden border border-neutral-900 hover:border-neutral-700 bg-neutral-900/40">
       <div className="aspect-square bg-neutral-900/50 flex items-center justify-center">
-        {item.type === 'image' ? (
+        {item.type === 'image' || (item.type === 'video' && thumbUrl) ? (
           thumbUrl ? (
             <img src={thumbUrl} alt={item.name} className="w-full h-full object-cover" />
           ) : (

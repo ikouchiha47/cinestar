@@ -40,6 +40,7 @@ interface Window {
     getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
     isOllamaAvailable: () => Promise<any>;
     getImageThumbnail: (imagePath: string) => Promise<{ success: boolean; dataUrl?: string; error?: string }>;
+    unifiedSearch: (query: { query: string; limit?: number; offset?: number }) => Promise<{ success: boolean; results?: { images: any[]; videos: any[]; totals: { images: number; videos: number }; hasMore: { images: boolean; videos: boolean } } }>;
     selectDirectory: () => Promise<any>;
   }
 }

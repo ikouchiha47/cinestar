@@ -1,4 +1,5 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
+import * as fs from 'fs';
 import { CaptioningService, MoondreamService } from './captioning-processor';
 import { OllamaCaptioningService } from './ollama-captioning-service';
 import path from 'path';
@@ -101,7 +102,7 @@ export class BatchCaptioningProcessor extends BaseVideoProcessor {
         const segmentData = segmentContext.data;
         
         // Collect keyframes from segment data or segment keyframePath
-        const keyframes: string[] = [];
+        let keyframes: string[] = [];
         
         if (segmentData.keyframes && Array.isArray(segmentData.keyframes)) {
           keyframes.push(...segmentData.keyframes);
@@ -109,9 +110,19 @@ export class BatchCaptioningProcessor extends BaseVideoProcessor {
           keyframes.push(segment.keyframePath);
         }
         
+        // Filter out any non-existent files to avoid ENOENT during captioning
         if (keyframes.length > 0) {
-          allKeyframes.push(...keyframes);
-          segmentKeyframeMap.set(segment.id, keyframes);
+          const valid = keyframes.filter(p => {
+            try { fs.accessSync(p, fs.constants.R_OK); return true; }
+            catch { this.log('warn', `Missing keyframe on disk, skipping: ${p}`); return false; }
+          });
+
+          if (valid.length > 0) {
+            allKeyframes.push(...valid);
+            segmentKeyframeMap.set(segment.id, valid);
+          } else {
+            this.log('warn', `All keyframes missing for segment ${segment.id}, skipping segment`);
+          }
         }
       }
 

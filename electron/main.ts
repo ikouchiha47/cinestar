@@ -262,15 +262,37 @@ ipcMain.handle('app:getDataDir', async () => {
 // Initialize MediaAPI in main process
 let mediaAPI: typeof MainMediaAPI | null = null;
 let videoAPI: VideoMediaAPI | null = null;
+let mediaInitAttempted = false;
+let mediaInitFailed = false;
+let mediaInitErrorMessage = '';
 
 async function initializeMediaAPI() {
+  // Avoid tight retry loops if we've already attempted and failed
+  if (mediaInitAttempted && mediaInitFailed) {
+    return;
+  }
+  mediaInitAttempted = true;
   try {
     await MainMediaAPI.initialize(DATA_DIR);
     mediaAPI = MainMediaAPI;
+    mediaInitFailed = false;
+    mediaInitErrorMessage = '';
     console.log('MainMediaAPI initialized in main process');
-  } catch (error) {
+  } catch (error: any) {
+    mediaAPI = null;
+    mediaInitFailed = true;
+    mediaInitErrorMessage = error instanceof Error ? error.message : String(error);
     console.error('Failed to initialize MainMediaAPI:', error);
   }
+}
+
+// Guard helper to prevent repeated initialization loops and provide clean failures
+async function guardMedia<T>(fn: () => Promise<T>): Promise<T> {
+  if (!mediaAPI) await initializeMediaAPI();
+  if (!mediaAPI) {
+    return { success: false, error: `MainMediaAPI unavailable: ${mediaInitErrorMessage || 'initialization failed'}` } as any;
+  }
+  return await fn();
 }
 
 async function initializeVideoAPI() {
@@ -310,90 +332,74 @@ async function runAutoTune() {
 
 // MediaAPI IPC handlers
 ipcMain.handle('media:getSources', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getSources();
+  return await guardMedia(() => MainMediaAPI.getSources());
 });
 
 ipcMain.handle('media:addSource', async (_, name: string, type: string, path: string, config?: any) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.addSource({
+  return await guardMedia(() => MainMediaAPI.addSource({
     name,
     type: type as 'local' | 'remote',
     path,
     enabled: true,
     config,
     createdAt: new Date()
-  });
+  }));
 });
 
 ipcMain.handle('media:removeSource', async (_, sourceId: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.removeSource(sourceId);
+  return await guardMedia(() => MainMediaAPI.removeSource(sourceId));
 });
 
 ipcMain.handle('media:startIndexing', async (_, sourceId: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.startIndexing(sourceId);
+  return await guardMedia(() => MainMediaAPI.startIndexing(sourceId));
 });
 
 ipcMain.handle('media:forceReindex', async (_, sourceId: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.forceReindex(sourceId);
+  return await guardMedia(() => MainMediaAPI.forceReindex(sourceId));
 });
 
 ipcMain.handle('media:cleanupDuplicates', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.cleanupDuplicateSources();
+  return await guardMedia(() => MainMediaAPI.cleanupDuplicateSources());
 });
 
 ipcMain.handle('media:stopIndexing', async (_, jobId: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.stopIndexing(jobId);
+  return await guardMedia(() => MainMediaAPI.stopIndexing(jobId));
 });
 
 ipcMain.handle('media:getIndexingStatus', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getIndexingStatus();
+  return await guardMedia(() => MainMediaAPI.getIndexingStatus());
 });
 
 ipcMain.handle('media:search', async (_, query) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.search(query);
+  return await guardMedia(() => MainMediaAPI.search(query));
 });
 
 ipcMain.handle('media:searchText', async (_, text: string, limit?: number) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.searchText(text, limit);
+  return await guardMedia(() => MainMediaAPI.searchText(text, limit));
 });
 
 ipcMain.handle('media:getSuggestions', async (_, query: string, limit?: number) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getSuggestions(query, limit);
+  return await guardMedia(() => MainMediaAPI.getSuggestions(query, limit));
 });
 
 ipcMain.handle('media:updateConcurrency', async (_, limit: number) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.updateConcurrencySettings(limit);
+  return await guardMedia(() => MainMediaAPI.updateConcurrencySettings(limit));
 });
 
 ipcMain.handle('media:getConfiguration', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getConfiguration();
+  return await guardMedia(() => MainMediaAPI.getConfiguration());
 });
 
 ipcMain.handle('media:enableDebugMode', async (_, saveImages: boolean, saveLLaVAOutputs: boolean, outputDir?: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.enableDebugMode(saveImages, saveLLaVAOutputs, outputDir);
+  return await guardMedia(() => MainMediaAPI.enableDebugMode(saveImages, saveLLaVAOutputs, outputDir));
 });
 
 ipcMain.handle('media:disableDebugMode', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.disableDebugMode();
+  return await guardMedia(() => MainMediaAPI.disableDebugMode());
 });
 
 ipcMain.handle('media:getStats', async () => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getStats();
+  return await guardMedia(() => MainMediaAPI.getStats());
 });
 
 // Manual trigger for auto-tuning from renderer
@@ -403,13 +409,11 @@ ipcMain.handle('config:autoTune', async () => {
 });
 
 ipcMain.handle('media:getRecentItems', async (_evt, params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number }) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getRecentItems(params);
+  return await guardMedia(() => MainMediaAPI.getRecentItems(params));
 });
 
 ipcMain.handle('media:getItems', async (_evt, sourceId?: string) => {
-  if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getItems(sourceId);
+  return await guardMedia(() => MainMediaAPI.getItems(sourceId));
 });
 
 // App-level progress (taskbar/dock). Pass value in [0,1]; pass -1 to clear.
@@ -430,16 +434,75 @@ ipcMain.handle('app:setProgress', async (_evt, value: number) => {
 
 ipcMain.handle('media:isOllamaAvailable', async () => {
   console.log('[ELECTRON-MAIN] media:isOllamaAvailable called');
-  if (!mediaAPI) await initializeMediaAPI();
-  console.log('[ELECTRON-MAIN] Calling MainMediaAPI.isOllamaAvailable()');
-  const result = await MainMediaAPI.isOllamaAvailable();
-  console.log('[ELECTRON-MAIN] MainMediaAPI.isOllamaAvailable() result:', result);
-  return result;
+  return await guardMedia(async () => {
+    console.log('[ELECTRON-MAIN] Calling MainMediaAPI.isOllamaAvailable()');
+    const result = await MainMediaAPI.isOllamaAvailable();
+    console.log('[ELECTRON-MAIN] MainMediaAPI.isOllamaAvailable() result:', result);
+    return result;
+  });
 });
 
 ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
+  return await guardMedia(() => MainMediaAPI.getImageThumbnail(imagePath));
+});
+
+// Unified search IPC handler
+ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: number; offset?: number }) => {
+  // Ensure both APIs are initialized (guarded)
   if (!mediaAPI) await initializeMediaAPI();
-  return await MainMediaAPI.getImageThumbnail(imagePath);
+  if (!videoAPI) await initializeVideoAPI();
+
+  // Default response shape
+  const grouped = {
+    images: [] as any[],
+    videos: [] as any[],
+    totals: { images: 0, videos: 0 },
+    hasMore: { images: false, videos: false }
+  };
+
+  const q = query?.query ?? '';
+  const limit = query?.limit ?? 20;
+  const offset = query?.offset ?? 0;
+  const videoFetchLimit = Math.max(1, limit) + 1; // fetch one extra to determine hasMore
+
+  // Media/vector: use existing MainMediaAPI.search (returns items + total + hasMore)
+  let mediaOk = false;
+  try {
+    if (mediaAPI) {
+      const mediaSearch = await MainMediaAPI.search({ query: q, limit, offset });
+      if (mediaSearch?.success && mediaSearch?.results) {
+        grouped.images = mediaSearch.results.items || [];
+        grouped.totals.images = mediaSearch.results.total || 0;
+        grouped.hasMore.images = !!mediaSearch.results.hasMore;
+        mediaOk = true;
+      }
+    }
+  } catch (e) {
+    console.warn('[UNIFIED-SEARCH] Media search failed:', e);
+  }
+
+  // Video/text: call VideoMediaAPI.searchVideos (text search over segments_fts)
+  let videoOk = false;
+  try {
+    if (videoAPI) {
+      const raw = await videoAPI.searchVideos({ query: q, limit: videoFetchLimit, offset, searchType: 'text' });
+      if (Array.isArray(raw)) {
+        const hasMore = raw.length > limit;
+        const trimmed = hasMore ? raw.slice(0, limit) : raw;
+        grouped.videos = trimmed;
+        grouped.totals.videos = offset + trimmed.length; // approximate when total unknown
+        grouped.hasMore.videos = hasMore;
+        videoOk = true;
+      }
+    }
+  } catch (e) {
+    console.warn('[UNIFIED-SEARCH] Video search failed:', e);
+  }
+
+  return {
+    success: mediaOk || videoOk,
+    results: grouped
+  };
 });
 
 // Video processing IPC handlers

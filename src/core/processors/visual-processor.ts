@@ -4,6 +4,7 @@ import { FluentFrameAnalysisService } from './fluent-frame-analysis-service';
 import { ProgressiveKeyframeExtractor } from './progressive-keyframe-extractor';
 import { enqueueRefinementJob } from '../keyframe-refinement-job-queue';
 import path from 'path';
+import { promises as fs } from 'fs';
 
 export class VisualProcessor extends BaseVideoProcessor {
   public name = 'visual';
@@ -80,6 +81,16 @@ export class VisualProcessor extends BaseVideoProcessor {
         if (useProgressive) {
           // Progressive multi-pass extraction
           this.log('info', 'Using progressive multi-pass keyframe extraction');
+          // Clean stale keyframes for this segment to avoid index/name mismatch
+          try {
+            const existing = await fs.readdir(keyframeDir);
+            const prefix = `${segment.id}_`;
+            await Promise.all(
+              existing
+                .filter(f => f.startsWith(prefix) && f.endsWith('.png'))
+                .map(f => fs.unlink(path.join(keyframeDir, f)).catch(() => {}))
+            );
+          } catch {}
           
           const progressiveResults = await this.progressiveExtractor.extractProgressively(
             segment.videoPath,
@@ -90,9 +101,14 @@ export class VisualProcessor extends BaseVideoProcessor {
           );
 
           // Return immediate keyframes for pipeline continuation
-          const immediateKeyframes = progressiveResults.immediate
-            .filter(candidate => candidate.extracted && candidate.imagePath)
-            .map(candidate => candidate.imagePath!);
+          // Only return paths that actually exist (belt-and-suspenders)
+          const immediateKeyframes = [] as string[];
+          for (const c of progressiveResults.immediate) {
+            if (c.extracted && c.imagePath) {
+              try { await fs.access(c.imagePath); immediateKeyframes.push(c.imagePath); }
+              catch { this.log('warn', `Keyframe missing on disk, skipping: ${c.imagePath}`); }
+            }
+          }
 
           results.keyframes = immediateKeyframes;
           results.progressiveKeyframes = {

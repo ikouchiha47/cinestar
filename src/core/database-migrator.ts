@@ -223,12 +223,14 @@ export async function initializeDatabases(dataDir: string): Promise<{
 
   // Initialize video database
   const videoDbPath = path.join(dataDir, 'video-rag.db');
-  const videoMigrator = new DatabaseMigrator(videoDbPath);
+  const videoMigrationsDir = path.join(process.cwd(), 'migrations', 'video');
+  const videoMigrator = new DatabaseMigrator(videoDbPath, videoMigrationsDir);
   const videoResult = await videoMigrator.migrate();
 
   // Initialize media database  
   const mediaDbPath = path.join(dataDir, 'vector.db');
-  const mediaMigrator = new DatabaseMigrator(mediaDbPath);
+  const mediaMigrationsDir = path.join(process.cwd(), 'migrations', 'media');
+  const mediaMigrator = new DatabaseMigrator(mediaDbPath, mediaMigrationsDir);
   const mediaResult = await mediaMigrator.migrate();
 
   return {

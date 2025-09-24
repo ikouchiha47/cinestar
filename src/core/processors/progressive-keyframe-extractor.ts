@@ -700,14 +700,39 @@ export class ProgressiveKeyframeExtractor {
     
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i];
-      const outputPath = path.join(
-        outputDir,
-        `${segmentId}_${passId}_${String(i).padStart(3, '0')}_${candidate.timestamp.toFixed(3)}.png`
-      );
       
       try {
-        await this.extractSingleFrame(videoPath, candidate.timestamp, outputPath);
-        candidate.imagePath = outputPath;
+        // Extract to a temporary file first
+        const tempPath = path.join(
+          outputDir,
+          `${segmentId}_${passId}_tmp_${Date.now()}_${Math.random().toString(36).slice(2)}.png`
+        );
+
+        await this.extractSingleFrame(videoPath, candidate.timestamp, tempPath);
+
+        // Determine next sequential index based on files currently present
+        const files = await fs.readdir(outputDir);
+        const prefix = `${segmentId}_${passId}_`;
+        let maxIndex = 0;
+        for (const f of files) {
+          if (f.startsWith(prefix)) {
+            const parts = f.substring(prefix.length).split('_');
+            const maybeIndex = parts[0];
+            const n = Number(maybeIndex);
+            if (Number.isFinite(n)) {
+              maxIndex = Math.max(maxIndex, n);
+            }
+          }
+        }
+        const nextIndex = maxIndex + 1;
+        const finalPath = path.join(
+          outputDir,
+          `${segmentId}_${passId}_${String(nextIndex).padStart(3, '0')}_${candidate.timestamp.toFixed(3)}.png`
+        );
+
+        await fs.rename(tempPath, finalPath);
+
+        candidate.imagePath = finalPath;
         candidate.extracted = true;
       } catch (error) {
         console.warn(`Failed to extract frame at ${candidate.timestamp}:`, error);

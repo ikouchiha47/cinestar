@@ -36,7 +36,8 @@ export class MainMediaAPI {
     
     // Run database migrations for fresh installs
     console.log('[MainMediaAPI] Checking database migrations...');
-    const migrator = new DatabaseMigrator(filePath);
+    const mediaMigrationsDir = path.join(process.cwd(), 'migrations', 'media');
+    const migrator = new DatabaseMigrator(filePath, mediaMigrationsDir);
     const migrationResult = await migrator.migrate();
     
     if (!migrationResult.success) {
@@ -537,9 +538,9 @@ export class MainMediaAPI {
       const offset = query.offset || 0;
       const started = Date.now();
 
+      // Try semantic search first if available
       if (this.vecDb && this.llm && q) {
         try {
-          // Semantic search via sqlite-vec with pagination
           const textEmbedding = await this.llm.generateEmbedding(q);
           const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, limit, offset, q);
           const items = paginatedResults.results.map(r => ({
@@ -565,16 +566,62 @@ export class MainMediaAPI {
             } 
           };
         } catch (e) {
-          console.warn('[SEARCH] Semantic search failed (vector-only):', e);
-          // Vector-only: return empty results on failure
-          const executionTime = Date.now() - started;
-          return { success: true, results: { items: [], total: 0, hasMore: false, query: q, executionTime, suggestions: [] } };
+          console.warn('[SEARCH] Semantic search failed, falling back to basic search:', e);
+          // do not return; fall through to fallback below
         }
       }
 
-      // Vector-only enforcement: if no vecDb/llm or no query, return empty
-      const executionTime = Date.now() - started;
-      return { success: true, results: { items: [], total: 0, hasMore: false, query: q, executionTime, suggestions: [] } };
+      // Fallback: return items from main DB with simple text filtering and pagination
+      try {
+        const allItems = await this.db.getMediaItems();
+        let filteredItems = allItems as any[];
+
+        if (q) {
+          const queryLower = q.toLowerCase();
+          filteredItems = allItems.filter((item: any) =>
+            (item.name || '').toLowerCase().includes(queryLower) ||
+            (item.description || '').toLowerCase().includes(queryLower) ||
+            (item.path || '').toLowerCase().includes(queryLower)
+          );
+        }
+
+        // Sort by createdAt desc if present
+        filteredItems.sort((a: any, b: any) => {
+          const aDate = new Date(a.createdAt || 0);
+          const bDate = new Date(b.createdAt || 0);
+          return bDate.getTime() - aDate.getTime();
+        });
+
+        const total = filteredItems.length;
+        const items = filteredItems.slice(offset, offset + limit).map((it: any) => ({
+          id: it.id,
+          name: it.name,
+          path: it.path,
+          size: it.size,
+          type: it.type || 'image',
+          mimeType: getMimeType(it.path),
+          sourceId: it.sourceId,
+          createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
+        }));
+        const hasMore = (offset + limit) < total;
+
+        const executionTime = Date.now() - started;
+        return {
+          success: true,
+          results: {
+            items,
+            total,
+            hasMore,
+            query: q,
+            executionTime,
+            suggestions: []
+          }
+        };
+      } catch (fallbackError) {
+        console.error('[SEARCH] Fallback search failed:', fallbackError);
+        const executionTime = Date.now() - started;
+        return { success: false, error: fallbackError instanceof Error ? fallbackError.message : 'Unknown error', results: { items: [], total: 0, hasMore: false, query: q, executionTime, suggestions: [] } };
+      }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
