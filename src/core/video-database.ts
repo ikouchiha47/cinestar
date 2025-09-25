@@ -46,7 +46,7 @@ export interface VideoProcessingJob {
   id: string;
   videoPath: string;
   fileName: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'scheduled';
   progress: number;
   error?: string;
   startTime?: Date;
@@ -54,6 +54,12 @@ export interface VideoProcessingJob {
   segmentCount?: number;
   totalSegments?: number;
   currentStage?: string;
+  // Progressive refinement fields
+  refinementPass?: number;
+  threshold?: number;
+  parentJobId?: string;
+  triggerCondition?: 'immediate' | 'delayed' | 'conditional';
+  scheduledAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

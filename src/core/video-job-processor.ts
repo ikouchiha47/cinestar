@@ -1,8 +1,11 @@
-import { VideoDatabase, VideoProcessingJob } from './video-database.js';
-import { EmbeddingService } from './embedding-service.js';
-import { VideoPipeline } from './video-pipeline.js';
+import { VideoDatabase, VideoProcessingJob } from './video-database';
+import { VideoPipeline } from './video-pipeline';
+import { EmbeddingService } from './embedding-service';
+import { SqliteVecDatabase } from './sqlite-vec-database';
+import { ConfigManager } from './config';
+import { RefinementJobScheduler } from './refinement-job-scheduler';
+import { IncrementalSegmentProcessor } from './incremental-segment-processor';
 import { ConcurrencyLimiter } from './concurrency-limiter.js';
-import { SqliteVecDatabase } from './sqlite-vec-database.js';
 
 /**
  * Background job processor for video processing tasks
@@ -14,6 +17,9 @@ export class VideoJobProcessor {
   private videoPipeline: VideoPipeline;
   private concurrencyLimiter: ConcurrencyLimiter;
   private vectorDb: SqliteVecDatabase;
+  private refinementScheduler: RefinementJobScheduler;
+  private incrementalProcessor: IncrementalSegmentProcessor;
+  private isRunning = false;
   private isProcessing = false;
   private processingInterval: NodeJS.Timeout | null = null;
 
@@ -23,6 +29,10 @@ export class VideoJobProcessor {
     this.concurrencyLimiter = new ConcurrencyLimiter(2);
     this.videoPipeline = sharedPipeline || new VideoPipeline();
     this.vectorDb = new SqliteVecDatabase('./data/vector.db');
+    
+    // Initialize progressive refinement components
+    this.refinementScheduler = new RefinementJobScheduler(this.videoDb);
+    this.incrementalProcessor = new IncrementalSegmentProcessor(this.videoDb, this.embeddingService);
     
     // Only setup pipeline if we created our own (not shared)
     if (!sharedPipeline) {
@@ -34,21 +44,29 @@ export class VideoJobProcessor {
    * Start the background job processor
    */
   async start(): Promise<void> {
-    console.log(`[VIDEO-JOB-PROCESSOR] Starting background job processor`);
-    
-    if (this.processingInterval) {
-      console.log(`[VIDEO-JOB-PROCESSOR] Already running`);
+    if (this.isRunning) {
+      console.log('[VIDEO-JOB-PROCESSOR] Already running');
       return;
     }
 
-    // Process jobs every 5 seconds
+    console.log('[VIDEO-JOB-PROCESSOR] Starting video job processor...');
+    
+    // Initialize databases
+    await this.videoDb.initialize();
+    
+    this.isRunning = true;
+    
+    // Start refinement scheduler
+    await this.refinementScheduler.start();
+    
+    // Start processing loop
     this.processingInterval = setInterval(async () => {
       if (!this.isProcessing) {
         await this.processNextJob();
       }
-    }, 5000);
-
-    console.log(`[VIDEO-JOB-PROCESSOR] Background processor started`);
+    }, 5000); // Check every 5 seconds
+    
+    console.log('[VIDEO-JOB-PROCESSOR] Video job processor started with progressive refinement');
   }
 
   /**
@@ -61,8 +79,12 @@ export class VideoJobProcessor {
       clearInterval(this.processingInterval);
       this.processingInterval = null;
     }
-
-    console.log(`[VIDEO-JOB-PROCESSOR] Background processor stopped`);
+    
+    // Stop refinement scheduler
+    this.refinementScheduler.stop();
+    
+    this.isRunning = false;
+    console.log(`[VIDEO-JOB-PROCESSOR] Background job processor stopped`);
   }
 
   /**
@@ -98,52 +120,40 @@ export class VideoJobProcessor {
   }
 
   /**
-   * Process a single video job
+   * Process a single video job (supports progressive refinement)
    */
   private async processVideoJob(job: VideoProcessingJob): Promise<void> {
     try {
-      console.log(`[VIDEO-JOB-PROCESSOR] Starting video processing for ${job.videoPath}`);
-
-      // Get video duration and create initial segment for pipeline processing
-      const { getVideoDuration } = await import('../core/video-processing');
-      const duration = await getVideoDuration(job.videoPath);
+      const refinementPass = job.refinementPass || 1;
+      const threshold = job.threshold || 0.8;
       
-      const initialSegment = {
-        id: `seg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        videoId: job.id,
-        videoPath: job.videoPath,
-        startTime: 0,
-        endTime: duration,
-      } as any;
+      console.log(`[VIDEO-JOB-PROCESSOR] Starting video processing for ${job.videoPath} (Pass ${refinementPass}, threshold=${threshold})`);
 
-      // Submit to video pipeline
-      console.log(`[VIDEO-JOB-PROCESSOR] Submitting initial segment to pipeline:`, {
-        id: initialSegment.id,
-        startTime: initialSegment.startTime,
-        endTime: initialSegment.endTime,
-        duration: duration
-      });
-      
-      const result = await this.videoPipeline.processSegment(initialSegment);
-      
-      console.log(`[VIDEO-JOB-PROCESSOR] Video pipeline completed for ${job.videoPath}`);
-      console.log(`[VIDEO-JOB-PROCESSOR] Result keys: ${Object.keys(result || {})}`);
-      console.log(`[VIDEO-JOB-PROCESSOR] Result.data keys: ${Object.keys(result.data || {})}`);
-      console.log(`[VIDEO-JOB-PROCESSOR] Result.segment:`, !!result.segment);
-      console.log(`[VIDEO-JOB-PROCESSOR] Full result structure:`, JSON.stringify(result, null, 2));
-
-      // Process the results
-      await this.processVideoResults(job, result);
+      if (refinementPass === 1) {
+        // Pass 1: Initial processing with full pipeline
+        await this.processInitialPass(job, threshold);
+        
+        // Schedule refinement passes
+        try {
+          const scheduledJobs = await this.refinementScheduler.scheduleRefinementPasses(job.id, job.videoPath);
+          console.log(`[VIDEO-JOB-PROCESSOR] Scheduled ${scheduledJobs.length} refinement passes`);
+        } catch (error) {
+          console.error(`[VIDEO-JOB-PROCESSOR] Failed to schedule refinement passes:`, error);
+          // Continue - initial processing was successful
+        }
+      } else {
+        // Pass 2+: Incremental refinement processing
+        await this.processRefinementPass(job, threshold, refinementPass);
+      }
 
       // Update job as completed
       await this.videoDb.updateJob(job.id, {
         status: 'completed',
         progress: 100,
-        endTime: new Date(),
-        segmentCount: result.data?.segments?.length || 0
+        endTime: new Date()
       });
 
-      console.log(`[VIDEO-JOB-PROCESSOR] Job ${job.id} completed successfully`);
+      console.log(`[VIDEO-JOB-PROCESSOR] Job ${job.id} (Pass ${refinementPass}) completed successfully`);
 
     } catch (error) {
       console.error(`[VIDEO-JOB-PROCESSOR-ERROR] Job ${job.id} failed:`, error);
@@ -155,6 +165,82 @@ export class VideoJobProcessor {
         endTime: new Date(),
         error: error instanceof Error ? error.message : String(error)
       });
+    }
+  }
+
+  /**
+   * Process initial pass (Pass 1) with full pipeline
+   */
+  private async processInitialPass(job: VideoProcessingJob, threshold: number): Promise<void> {
+    console.log(`[VIDEO-JOB-PROCESSOR] Processing initial pass with threshold ${threshold}`);
+
+    // Get video duration and create initial segment for pipeline processing
+    const { getVideoDuration } = await import('../core/video-processing');
+    const duration = await getVideoDuration(job.videoPath);
+    
+    const initialSegment = {
+      id: `seg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      videoId: job.id,
+      videoPath: job.videoPath,
+      startTime: 0,
+      endTime: duration,
+      duration: duration,
+      sceneIndex: 0
+    };
+
+    // Process through video pipeline
+    const result = await this.videoPipeline.processSegment(initialSegment);
+    
+    console.log(`[VIDEO-JOB-PROCESSOR] Video pipeline completed for ${job.videoPath}`);
+    console.log(`[VIDEO-JOB-PROCESSOR] Result keys: ${Object.keys(result || {})}`);
+    console.log(`[VIDEO-JOB-PROCESSOR] Result.data keys: ${Object.keys(result.data || {})}`);
+    console.log(`[VIDEO-JOB-PROCESSOR] Result.segment:`, !!result.segment);
+
+    // Process the results
+    await this.processVideoResults(job, result);
+  }
+
+  /**
+   * Process refinement pass (Pass 2+) with incremental processing
+   */
+  private async processRefinementPass(job: VideoProcessingJob, threshold: number, refinementPass: number): Promise<void> {
+    console.log(`[VIDEO-JOB-PROCESSOR] Processing refinement pass ${refinementPass} with threshold ${threshold}`);
+
+    const startTime = Date.now();
+    
+    try {
+      // Use incremental processor for refinement
+      const result = await this.incrementalProcessor.processNewSegments(
+        job.videoPath,
+        threshold,
+        refinementPass,
+        job.parentJobId || job.id
+      );
+
+      // Record metrics
+      const videoFile = await this.videoDb.getVideoFileByPath(job.videoPath);
+      if (videoFile) {
+        await this.refinementScheduler.recordRefinementMetrics({
+          videoId: videoFile.id,
+          jobId: job.id,
+          refinementPass,
+          segmentsBefore: 0, // Would need to query existing segments
+          segmentsAfter: result.newSegmentsCreated,
+          newSegmentsCreated: result.newSegmentsCreated,
+          processingTimeMs: result.totalProcessingTime,
+          embeddingTimeMs: result.embeddingTime,
+          totalContentChars: result.contentCharacters,
+          searchQualityScore: 0.0 // Would calculate based on search metrics
+        });
+      }
+
+      console.log(`[VIDEO-JOB-PROCESSOR] ✅ Refinement pass ${refinementPass} completed:`);
+      console.log(`[VIDEO-JOB-PROCESSOR]   - New segments: ${result.newSegmentsCreated}`);
+      console.log(`[VIDEO-JOB-PROCESSOR]   - Processing time: ${result.totalProcessingTime}ms`);
+
+    } catch (error) {
+      console.error(`[VIDEO-JOB-PROCESSOR] Refinement pass ${refinementPass} failed:`, error);
+      throw error;
     }
   }
 
