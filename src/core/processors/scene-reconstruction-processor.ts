@@ -21,7 +21,7 @@ export class SceneReconstructionProcessor extends BaseVideoProcessor {
     super();
     
     this.baseUrl = config.baseUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-    this.model = config.model || 'tinyllama';
+    this.model = config.model || 'tinyllama:latest';
     
     this.setConfig({
       enabled: true,

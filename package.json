@@ -9,7 +9,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "postinstall": "npx electron-rebuild -f -w better-sqlite3",
-    "clean:db": "rm -f data/*.db data/*.db-shm data/*.db-wal"
+    "clean:db": "rm -f data/*.db data/*.db-shm data/*.db-wal",
+    "restart": "npm run clean:db; npm run dev"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

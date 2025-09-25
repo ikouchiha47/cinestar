@@ -52,7 +52,7 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
     super();
     
     this.baseUrl = config.baseUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-    this.model = config.model || 'tinyllama';
+    this.model = config.model || 'tinyllama:latest';
     
     this.setConfig({
       enabled: true,
@@ -101,6 +101,19 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
         const segmentCaptions = batchCaptions[segment.id] || [];
         const caption = segmentCaptions.length > 0 ? segmentCaptions[0].caption : '';
         const ocrText = segmentData.ocrText || '';
+        
+        console.log(`[SCENE-RECON-DATA-DEBUG] Segment ${segment.id} input data:`);
+        console.log(`[SCENE-RECON-DATA-DEBUG] - Audio (transcription): "${transcription}" (${transcription.length} chars)`);
+        console.log(`[SCENE-RECON-DATA-DEBUG] - Spatial (captions): ${segmentCaptions.length} captions available`);
+        if (segmentCaptions.length > 0) {
+          segmentCaptions.forEach((cap: any, i: number) => {
+            console.log(`[SCENE-RECON-DATA-DEBUG]   Caption ${i+1}: "${cap.caption}" (${cap.caption?.length || 0} chars)`);
+          });
+        }
+        console.log(`[SCENE-RECON-DATA-DEBUG] - Selected caption: "${caption}" (${caption.length} chars)`);
+        console.log(`[SCENE-RECON-DATA-DEBUG] - OCR text: "${ocrText}" (${ocrText.length} chars)`);
+        console.log(`[SCENE-RECON-DATA-DEBUG] - Segment data keys:`, Object.keys(segmentData));
+        console.log(`[SCENE-RECON-DATA-DEBUG] - Batch captions keys:`, Object.keys(batchCaptions));
 
         // Cache current segment
         const currentContext: SegmentContext = {
@@ -128,7 +141,14 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
 
         // Build temporal context and reconstruct scene
         try {
+          console.log(`[SCENE-RECON-TEMPORAL-DEBUG] Building temporal context for ${segment.id}`);
           const temporalContext = this.buildTemporalContext(currentContext, config);
+          console.log(`[SCENE-RECON-TEMPORAL-DEBUG] Temporal context: ${temporalContext.length} previous scenes`);
+          temporalContext.forEach((context, i) => {
+            console.log(`[SCENE-RECON-TEMPORAL-DEBUG]   Previous ${i+1}: "${context.substring(0, 100)}..."`);
+          });
+          
+          console.log(`[SCENE-RECON-GENERATION-DEBUG] Generating scene description for ${segment.id}`);
           const reconstructedScene = await this.generateOptimizedSceneDescription(currentContext, temporalContext, config);
           
           if (reconstructedScene) {
@@ -230,9 +250,29 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
       ? `Previous: ${temporalContext.join(' → ')}`
       : 'Start';
 
-    const prompt = `Scene (${segment.startTime}s-${segment.endTime}s): ${contextText} | ${segment.transcription} | ${segment.caption} | ${segment.ocrText}`;
+    const prompt = `Describe this single video scene in details:
+
+Time: ${segment.startTime}s-${segment.endTime}s
+Audio: ${segment.transcription}
+Visual: ${segment.caption}
+${segment.ocrText ? `Text: ${segment.ocrText}` : ''}
+
+Write a paragraph describing in details what happens in this scene:`;
+    
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] Full prompt construction:`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - Context text: "${contextText}"`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - Transcription: "${segment.transcription}"`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - Caption: "${segment.caption}"`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - OCR text: "${segment.ocrText}"`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - Final prompt: "${prompt}"`);
+    console.log(`[SCENE-RECON-PROMPT-DEBUG] - Prompt length: ${prompt.length} characters`);
 
     try {
+      console.log(`[SCENE-RECONSTRUCTION-DEBUG] Making API call to: ${this.baseUrl}/api/generate`);
+      console.log(`[SCENE-RECONSTRUCTION-DEBUG] Model: ${this.model}`);
+      console.log(`[SCENE-RECONSTRUCTION-DEBUG] Prompt: ${prompt}`);
+      console.log(`[SCENE-RECONSTRUCTION-DEBUG] Config:`, { temperature: config.temperature, maxTokens: config.maxTokens });
+      
       const response = await fetch(`${this.baseUrl}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -246,13 +286,27 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
           }
         })
       });
+      
+      console.log(`[SCENE-RECONSTRUCTION-DEBUG] Response status: ${response.status}`);
 
       if (!response.ok) {
         throw new Error(`Ollama API error: ${response.status}`);
       }
 
       const data = await response.json() as OllamaResponse;
+      
+      console.log(`[SCENE-RECON-RESPONSE-DEBUG] Raw API response:`, {
+        response: data.response,
+        done: data.done,
+        model: data.model,
+        created_at: data.created_at,
+        responseLength: data.response?.length || 0
+      });
+      
       const reconstructedScene = data.response?.trim() || [segment.transcription, segment.caption, segment.ocrText].filter(Boolean).join(' ');
+      
+      console.log(`[SCENE-RECON-RESPONSE-DEBUG] Final reconstructed scene: "${reconstructedScene}"`);
+      console.log(`[SCENE-RECON-RESPONSE-DEBUG] Scene length: ${reconstructedScene.length} characters`);
       
       // Log full scene reconstruction response
       this.log('info', `🎬 Scene Reconstruction [${segment.id}] (${segment.startTime}s-${segment.endTime}s)`);
@@ -262,6 +316,9 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
       
       return reconstructedScene;
     } catch (error) {
+      console.error(`[SCENE-RECONSTRUCTION-ERROR] Failed to generate scene description:`, error);
+      console.error(`[SCENE-RECONSTRUCTION-ERROR] URL: ${this.baseUrl}/api/generate`);
+      console.error(`[SCENE-RECONSTRUCTION-ERROR] Model: ${this.model}`);
       this.log('error', 'Failed to generate optimized scene description', error);
       return [segment.transcription, segment.caption, segment.ocrText].filter(Boolean).join(' ');
     }

@@ -682,8 +682,8 @@ export class VideoDatabase {
       INSERT INTO video_segments (
         id, video_id, video_path, start_time, end_time, duration, scene_index,
         thumbnail_path, keyframe_path, transcription, caption, ocr_text,
-        embedding, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        embedding, metadata, reconstructed_scene
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const transaction = this.db.transaction((segments: any[]) => {
@@ -697,13 +697,34 @@ export class VideoDatabase {
         const videoRow = videoStmt.get(segment.videoPath) as any;
         const videoId = videoRow?.id || 'unknown';
 
-        stmt.run(
+        // Log the parameters being passed to the database
+        const params = [
           id, videoId, segment.videoPath, segment.startTime, segment.endTime,
           segment.duration, segment.sceneIndex, segment.thumbnailPath,
           segment.keyframePath, segment.transcription, segment.caption,
           segment.ocrText, segment.embedding ? Buffer.from(segment.embedding.buffer) : null,
-          segment.metadata ? JSON.stringify(segment.metadata) : null
-        );
+          segment.metadata ? JSON.stringify(segment.metadata) : null,
+          segment.reconstructedScene || null
+        ];
+        
+        console.log(`[DB-INSERT-DEBUG] Inserting segment with ${params.length} parameters:`, {
+          id,
+          videoId,
+          videoPath: segment.videoPath,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          duration: segment.duration,
+          sceneIndex: segment.sceneIndex,
+          thumbnailPath: segment.thumbnailPath,
+          keyframePath: segment.keyframePath,
+          transcription: segment.transcription ? `"${segment.transcription.substring(0, 30)}..."` : null,
+          caption: segment.caption ? `"${segment.caption.substring(0, 30)}..."` : null,
+          ocrText: segment.ocrText ? `"${segment.ocrText.substring(0, 30)}..."` : null,
+          hasEmbedding: !!segment.embedding,
+          hasMetadata: !!segment.metadata
+        });
+        
+        stmt.run(...params);
       }
       return ids;
     });

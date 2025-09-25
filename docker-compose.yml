@@ -3,7 +3,7 @@ version: '3.8'
 x-ollama: &ollama
   image: ollama/ollama:${OLLAMA_DOCKER_TAG:-latest}
   volumes:
-    - ${OLLAMA_MODELS:-/Users/alexday/.ollama}:/root/.ollama
+    - ${OLLAMA_MODELS:-~/.ollama}:/root/.ollama
   environment: &env
     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-5m}

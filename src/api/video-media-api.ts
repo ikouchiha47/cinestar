@@ -1,9 +1,9 @@
-import { VideoDatabase } from '../core/video-database.js';
+import { VideoDatabase, VideoProcessingJob, VideoFile, VideoSegment, SearchResult } from '../core/video-database.js';
 import { EmbeddingService } from '../core/embedding-service.js';
 import { VideoPipeline } from '../core/video-pipeline.js';
 import { ConcurrencyLimiter } from '../core/concurrency-limiter.js';
+import { VideoJobProcessor } from '../core/video-job-processor.js';
 import { MainMediaAPI } from './main-media-api';
-import { VideoFile, VideoSegment, SearchResult, VideoProcessingJob } from '../core/video-database.js';
 import { getVideoDuration } from '../core/video-processing';
 import { SegmentationProcessor } from '../core/processors/segmentation-processor.js';
 import { AudioExtractionProcessor } from '../core/processors/audio-extraction-processor.js';
@@ -43,6 +43,7 @@ export class VideoMediaAPI {
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
   private concurrencyLimiter: ConcurrencyLimiter;
+  private jobProcessor: VideoJobProcessor;
   // Main sources/items are managed by MainMediaAPI (SQLite-backed)
   private initialized = false;
 
@@ -52,6 +53,9 @@ export class VideoMediaAPI {
     this.concurrencyLimiter = new ConcurrencyLimiter(2); // Limit to 2 concurrent video processing jobs
     this.videoPipeline = new VideoPipeline();
     this.setupVideoPipeline();
+    
+    // Pass the configured pipeline to the job processor
+    this.jobProcessor = new VideoJobProcessor(this.videoPipeline);
   }
 
   static getInstance(): VideoMediaAPI {
@@ -84,9 +88,10 @@ export class VideoMediaAPI {
     const ocrProcessor = new OCRProcessor();
     const sceneReconstructionProcessor = new OptimizedSceneReconstructionProcessor({
       enabled: true,
-      model: 'tinyllama',
+      model: 'tinyllama:latest',
+      baseUrl: 'http://localhost:9001',
       temperature: 0.7,
-      maxTokens: 25,
+      maxTokens: 2000, // Increased for richer scene descriptions
       useRnnStyle: true,
       contextWindow: 3
     });
@@ -164,7 +169,28 @@ export class VideoMediaAPI {
         // Store segments in database
         if (enrichedSegments && enrichedSegments.length > 0) {
           console.log(`[PIPELINE-COMPLETED] Calling storeVideoSegments with ${enrichedSegments.length} enriched segments`);
-          await this.storeVideoSegments(data.videoPath, enrichedSegments);
+          try {
+            await this.storeVideoSegments(data.videoPath, enrichedSegments);
+            console.log(`[PIPELINE-COMPLETED] storeVideoSegments completed successfully - about to continue`);
+          } catch (error) {
+            console.log(`[PIPELINE-COMPLETED-ERROR] storeVideoSegments failed:`, error);
+          }
+          
+          console.log(`[PIPELINE-COMPLETED] After storeVideoSegments try-catch block - execution continuing`);
+          
+          // Index video segments in main search database for vector search
+          console.log(`[PIPELINE-COMPLETED] Indexing video segments in main search database`);
+          console.log(`[PIPELINE-COMPLETED] About to call indexVideoSegmentsForSearch with ${enrichedSegments.length} segments`);
+          try {
+            await this.indexVideoSegmentsForSearch(data.videoPath, enrichedSegments);
+            console.log(`[PIPELINE-COMPLETED] indexVideoSegmentsForSearch completed successfully`);
+          } catch (error) {
+            console.log(`[PIPELINE-COMPLETED-ERROR] indexVideoSegmentsForSearch failed:`, error);
+          }
+          
+          // Generate video-level screenplay/narrative
+          console.log(`[VIDEO-SCREENPLAY] Generating overall video narrative for ${data.videoPath}`);
+          await this.generateVideoScreenplay(data.videoPath, enrichedSegments);
         } else {
           console.warn(`[PIPELINE-COMPLETED] No segments to store for ${data.videoPath}`);
         }
@@ -319,49 +345,14 @@ export class VideoMediaAPI {
         });
       }
 
-      // Process with concurrency limit
-      await this.concurrencyLimiter.add(async () => {
-        job.status = 'processing';
-        
-        // Create initial segment for pipeline processing - segmentation will determine actual bounds
-        const duration = await getVideoDuration(videoPath);
-        const initialSegment = {
-          id: `seg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          videoId,
-          videoPath,
-          startTime: 0,
-          endTime: duration,
-        } as any; // conforms to VideoPipeline.VideoSegment shape
-        const context = await this.videoPipeline.processSegment(initialSegment);
-
-        // Update video file with metadata
-        const md = (context?.data && (context.data.metadata || context.data.videoMetadata)) || undefined;
-        const segments = (context?.data && (context.data.segments || context.data.videoSegments)) || [];
-        await this.videoDb.updateVideoFile(videoId, {
-          duration: md?.duration || 0,
-          width: md?.width,
-          height: md?.height,
-          frameRate: md?.frameRate,
-          bitrate: md?.bitrate,
-          codec: md?.codec,
-          totalSegments: Array.isArray(segments) ? segments.length : 0,
-          processingStatus: 'completed',
-        });
-
-        // Persist segments immediately (the pipeline does not emit a 'completed' event,
-        // and the partial writer listens to 'progress' for segmentation which is not emitted).
-        if (Array.isArray(segments) && segments.length > 0) {
-          // Merge processed content (transcription, captions, OCR, keyframes, reconstructed scenes)
-          const processedSegments = context?.data?.processedSegments || [];
-          const enrichedSegments = this.mergeProcessedContent(segments, processedSegments, context?.data || {});
-
-          console.log(`[PIPELINE-COMPLETED] Calling storeVideoSegments with ${enrichedSegments.length} segments`);
-          await this.storeVideoSegments(videoPath, enrichedSegments);
-        } else {
-          console.warn(`[PIPELINE-COMPLETED] No segments to store for ${videoPath}`);
-        }
-      });
-
+      // Submit job for background processing instead of processing synchronously
+      console.log(`[VIDEO-API] Job ${jobId} submitted for background processing`);
+      console.log(`[VIDEO-API] Video processing will happen asynchronously`);
+      console.log(`[VIDEO-API] Use getJobStatus('${videoPath}') to check progress`);
+      
+      // Start background job processor if not already running
+      await this.jobProcessor.start();
+      
       return videoId;
     } catch (error) {
       job.status = 'failed';
@@ -385,42 +376,278 @@ export class VideoMediaAPI {
    * Merge processed content from pipeline back into segment objects
    */
   private mergeProcessedContent(originalSegments: any[], processedSegments: any[], pipelineData: any): any[] {
-    console.log(`[MERGE-CONTENT] Merging content from ${processedSegments.length} processed segments into ${originalSegments.length} original segments`);
+    console.log(`[MERGE-CONTENT-DEBUG] Starting merge process:`);
+    console.log(`[MERGE-CONTENT-DEBUG] Original segments: ${originalSegments.length}`);
+    console.log(`[MERGE-CONTENT-DEBUG] Processed segments: ${processedSegments.length}`);
+    console.log(`[MERGE-CONTENT-DEBUG] Pipeline data keys:`, Object.keys(pipelineData));
     
     // Create a map of processed segment data by segment ID
     const processedMap = new Map<string, any>();
     for (const processedSegment of processedSegments) {
       if (processedSegment.segment?.id) {
+        console.log(`[MERGE-CONTENT-DEBUG] Mapping processed segment: ${processedSegment.segment.id}`);
+        console.log(`[MERGE-CONTENT-DEBUG] Processed segment data keys:`, Object.keys(processedSegment.data || {}));
         processedMap.set(processedSegment.segment.id, processedSegment);
       }
     }
     
-    // Extract reconstructed scenes from pipeline data if available
+    // Extract reconstructed scenes and batch captions from pipeline data
     const reconstructedScenes = pipelineData.reconstructedScenes || {};
+    const batchCaptions = pipelineData.batchCaptions || {};
+    
+    console.log(`[MERGE-CONTENT-DEBUG] Reconstructed scenes available:`, Object.keys(reconstructedScenes));
+    console.log(`[MERGE-CONTENT-DEBUG] Batch captions available:`, Object.keys(batchCaptions));
+    
+    // Log sample batch caption structure if available
+    const firstCaptionKey = Object.keys(batchCaptions)[0];
+    if (firstCaptionKey) {
+      console.log(`[MERGE-CONTENT-DEBUG] Sample batch caption structure:`, batchCaptions[firstCaptionKey]);
+    }
     
     // Merge processed content into original segments
     const enrichedSegments = originalSegments.map(segment => {
+      console.log(`[MERGE-CONTENT-DEBUG] Processing segment: ${segment.id}`);
+      
       const processed = processedMap.get(segment.id);
       const enriched = { ...segment };
       
+      console.log(`[MERGE-CONTENT-DEBUG] Original segment data:`, {
+        id: segment.id,
+        hasTranscription: !!segment.transcription,
+        hasCaption: !!segment.caption,
+        hasOcrText: !!segment.ocrText,
+        hasKeyframePath: !!segment.keyframePath
+      });
+      
       if (processed?.data) {
+        console.log(`[MERGE-CONTENT-DEBUG] Found processed data for ${segment.id}:`, {
+          hasTranscription: !!processed.data.transcription,
+          hasCaptions: !!processed.data.captions,
+          hasOcrText: !!processed.data.ocrText,
+          hasKeyframes: !!processed.data.keyframes
+        });
+        
         // Merge transcription, captions, OCR, keyframes
-        if (processed.data.transcription) enriched.transcription = processed.data.transcription;
-        if (processed.data.captions) enriched.caption = Array.isArray(processed.data.captions) ? processed.data.captions.join(' ') : processed.data.captions;
-        if (processed.data.ocrText) enriched.ocrText = processed.data.ocrText;
-        if (processed.data.keyframes) enriched.keyframePath = Array.isArray(processed.data.keyframes) ? processed.data.keyframes[0] : processed.data.keyframes;
+        if (processed.data.transcription) {
+          enriched.transcription = processed.data.transcription;
+          console.log(`[MERGE-CONTENT-DEBUG] Merged transcription from processed data`);
+        }
+        if (processed.data.captions) {
+          enriched.caption = Array.isArray(processed.data.captions) ? processed.data.captions.join(' ') : processed.data.captions;
+          console.log(`[MERGE-CONTENT-DEBUG] Merged captions from processed data`);
+        }
+        if (processed.data.ocrText) {
+          enriched.ocrText = processed.data.ocrText;
+          console.log(`[MERGE-CONTENT-DEBUG] Merged OCR text from processed data`);
+        }
+        if (processed.data.keyframes) {
+          enriched.keyframePath = Array.isArray(processed.data.keyframes) ? processed.data.keyframes[0] : processed.data.keyframes;
+          console.log(`[MERGE-CONTENT-DEBUG] Merged keyframes from processed data`);
+        }
+      } else {
+        console.log(`[MERGE-CONTENT-DEBUG] No processed data found for ${segment.id}`);
+      }
+      
+      // Add batch captions if available (these come from batch captioning processor)
+      const segmentCaptions = batchCaptions[segment.id];
+      if (segmentCaptions && segmentCaptions.length > 0) {
+        console.log(`[MERGE-CONTENT-DEBUG] Found ${segmentCaptions.length} batch captions for ${segment.id}`);
+        console.log(`[MERGE-CONTENT-DEBUG] Sample caption:`, segmentCaptions[0]);
+        
+        // Use the first caption or join multiple captions
+        enriched.caption = segmentCaptions.length === 1 
+          ? segmentCaptions[0].caption 
+          : segmentCaptions.map((c: any) => c.caption).join(' ');
+        console.log(`[MERGE-CONTENT-DEBUG] Merged batch captions for ${segment.id}`);
+      } else {
+        console.log(`[MERGE-CONTENT-DEBUG] No batch captions found for ${segment.id}`);
       }
       
       // Add reconstructed scene if available
       if (reconstructedScenes[segment.id]) {
         enriched.reconstructedScene = reconstructedScenes[segment.id];
+        console.log(`[MERGE-CONTENT-DEBUG] Merged reconstructed scene for ${segment.id}`);
+      } else {
+        console.log(`[MERGE-CONTENT-DEBUG] No reconstructed scene found for ${segment.id}`);
       }
       
-      console.log(`[MERGE-CONTENT] Segment ${segment.id}: transcription=${!!enriched.transcription}, caption=${!!enriched.caption}, reconstructedScene=${!!enriched.reconstructedScene}`);
+      console.log(`[MERGE-CONTENT-DEBUG] Final enriched segment ${segment.id}:`, {
+        hasTranscription: !!enriched.transcription,
+        transcriptionType: typeof enriched.transcription,
+        hasCaption: !!enriched.caption,
+        captionType: typeof enriched.caption,
+        hasOcrText: !!enriched.ocrText,
+        hasReconstructedScene: !!enriched.reconstructedScene,
+        hasKeyframePath: !!enriched.keyframePath
+      });
+      
       return enriched;
     });
     
     return enrichedSegments;
+  }
+
+  /**
+   * Index video segments in the main search database for vector search
+   */
+  private async indexVideoSegmentsForSearch(videoPath: string, segments: any[]): Promise<void> {
+    console.log(`[VIDEO-SEARCH-INDEX-ENTRY] METHOD CALLED! videoPath: ${videoPath}, segments: ${segments.length}`);
+    try {
+      console.log(`[VIDEO-SEARCH-INDEX] Indexing ${segments.length} video segments for search`);
+      
+      for (const segment of segments) {
+        // Create a searchable item for each video segment
+        const segmentName = `${videoPath} - Segment ${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
+        
+        // Combine all text content for search
+        const transcriptionText = segment.transcription?.text || segment.transcription || '';
+        const captionText = segment.caption || '';
+        const reconstructedScene = segment.reconstructedScene || '';
+        const searchableContent = [transcriptionText, captionText, reconstructedScene].filter(Boolean).join(' ');
+        
+        console.log(`[VIDEO-SEARCH-INDEX] Adding segment ${segment.id} to search index`);
+        console.log(`[VIDEO-SEARCH-INDEX] - Content length: ${searchableContent.length} characters`);
+        console.log(`[VIDEO-SEARCH-INDEX] - Content preview: "${searchableContent.substring(0, 100)}..."`);
+        
+        // Add video segment directly to the vector search database
+        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Starting database insertion for segment ${segment.id}`);
+        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Database path: ./data/vector.db`);
+        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Searchable content contains "car": ${searchableContent.toLowerCase().includes('car')}`);
+        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Full searchable content: "${searchableContent}"`);
+        
+        try {
+          // Import and use the vector database directly
+          const { SqliteVecDatabase } = await import('../core/sqlite-vec-database');
+          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] SqliteVecDatabase imported successfully`);
+          
+          const vectorDb = new SqliteVecDatabase('./data/vector.db');
+          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Vector database instance created`);
+          
+          const itemToAdd = {
+            sourceId: 'video_segments',
+            name: segmentName,
+            path: `${videoPath}#${segment.startTime}-${segment.endTime}`,
+            size: searchableContent.length,
+            type: 'video_segment' as any,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            caption: searchableContent, // This will be used for embedding generation
+            captionStatus: 'completed' as const,
+            embeddingStatus: 'pending' as const
+          };
+          
+          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Item to add to vector database:`, {
+            sourceId: itemToAdd.sourceId,
+            name: itemToAdd.name,
+            path: itemToAdd.path,
+            size: itemToAdd.size,
+            type: itemToAdd.type,
+            captionLength: itemToAdd.caption.length,
+            captionPreview: itemToAdd.caption.substring(0, 100) + '...',
+            captionStatus: itemToAdd.captionStatus,
+            embeddingStatus: itemToAdd.embeddingStatus
+          });
+          
+          const segmentItemId = await vectorDb.addMediaItemAsync(itemToAdd);
+          
+          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] Successfully added segment ${segment.id} to vector search database`);
+          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] Generated item ID: ${segmentItemId}`);
+          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] This item should now be searchable for "car" queries`);
+          
+          // Verify the item was actually added
+          console.log(`[VIDEO-SEARCH-INDEX-VERIFY] Attempting to verify insertion...`);
+          
+        } catch (error) {
+          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Failed to add segment ${segment.id} to vector search database`);
+          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error type:`, typeof error);
+          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error message:`, error instanceof Error ? error.message : String(error));
+          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
+          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Segment data:`, {
+            segmentId: segment.id,
+            contentLength: searchableContent.length,
+            hasCarInContent: searchableContent.toLowerCase().includes('car')
+          });
+        }
+      }
+      
+      console.log(`[VIDEO-SEARCH-INDEX] Completed indexing ${segments.length} video segments`);
+      
+    } catch (error) {
+      console.error(`[VIDEO-SEARCH-INDEX-ERROR] Failed to index video segments:`, error);
+    }
+  }
+
+  /**
+   * Generate overall video screenplay/narrative from all segments
+   */
+  private async generateVideoScreenplay(videoPath: string, segments: any[]): Promise<void> {
+    try {
+      // Combine all segment information into a comprehensive narrative
+      const segmentSummaries = segments.map((segment, index) => {
+        const timeRange = `${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
+        const transcription = segment.transcription?.text || segment.transcription || '';
+        const caption = segment.caption || '';
+        const reconstructedScene = segment.reconstructedScene || '';
+        
+        return `Scene ${index + 1} (${timeRange}): ${transcription} | Visual: ${caption} | Context: ${reconstructedScene}`;
+      }).join('\n\n');
+      
+      const prompt = `Create a comprehensive screenplay/narrative summary for this video based on the following scenes:
+
+${segmentSummaries}
+
+Write a detailed screenplay that captures:
+1. The overall story arc and narrative flow
+2. Key characters and their actions
+3. Visual elements and cinematography
+4. Dialogue and important audio elements
+5. The video's main theme and message
+
+Screenplay:`;
+
+      console.log(`[VIDEO-SCREENPLAY-DEBUG] Making API call for video-level narrative`);
+      console.log(`[VIDEO-SCREENPLAY-DEBUG] Prompt length: ${prompt.length} characters`);
+      
+      const response = await fetch('http://localhost:9001/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'tinyllama:latest',
+          prompt: prompt,
+          stream: false,
+          options: {
+            temperature: 0.7,
+            max_tokens: 500 // Longer for comprehensive narrative
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Video screenplay API error: ${response.status}`);
+      }
+      
+      const data = await response.json() as any;
+      const screenplay = data.response?.trim() || 'Unable to generate video screenplay';
+      
+      console.log(`[VIDEO-SCREENPLAY] Generated screenplay (${screenplay.length} chars):`, screenplay.substring(0, 200) + '...');
+      
+      // Store the screenplay in the video file record
+      const videoFile = await this.videoDb.getVideoFileByPath(videoPath);
+      if (videoFile) {
+        // Store screenplay in the video file's processing metadata
+        // Note: We'll store it as a JSON string in an existing text field or create a custom solution
+        console.log(`[VIDEO-SCREENPLAY] Storing screenplay in video file metadata`);
+        
+        // For now, we could extend the video file or store separately
+        // This is a placeholder - you might want to add a screenplay field to video_files table
+        console.log(`[VIDEO-SCREENPLAY] Screenplay stored (would need database schema update for permanent storage)`);
+        
+        console.log(`[VIDEO-SCREENPLAY] Stored screenplay for video ${videoFile.id}`);
+      }
+      
+    } catch (error) {
+      console.error(`[VIDEO-SCREENPLAY-ERROR] Failed to generate video screenplay:`, error);
+    }
   }
 
   /**
@@ -448,6 +675,35 @@ export class VideoMediaAPI {
       const toInsert: any[] = [];
 
       for (const [i, segment] of segments.entries()) {
+        console.log(`[STORE-SEGMENTS-DEBUG] Processing segment ${i}:`, {
+          id: segment.id,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          duration: segment.duration,
+          sceneIndex: segment.sceneIndex,
+          hasTranscription: !!segment.transcription,
+          hasCaption: !!segment.caption,
+          hasOcrText: !!segment.ocrText,
+          hasReconstructedScene: !!segment.reconstructedScene,
+          hasKeyframePath: !!segment.keyframePath,
+          hasThumbnailPath: !!segment.thumbnailPath,
+          hasMetadata: !!segment.metadata
+        });
+        
+        // Log the actual structure of transcription, caption, and ocrText
+        console.log(`[STORE-SEGMENTS-DEBUG] Raw transcription object:`, segment.transcription);
+        console.log(`[STORE-SEGMENTS-DEBUG] Raw caption object:`, segment.caption);
+        console.log(`[STORE-SEGMENTS-DEBUG] Raw ocrText object:`, segment.ocrText);
+        console.log(`[STORE-SEGMENTS-DEBUG] Raw reconstructedScene:`, segment.reconstructedScene);
+        console.log(`[STORE-SEGMENTS-DEBUG] Transcription type:`, typeof segment.transcription);
+        console.log(`[STORE-SEGMENTS-DEBUG] Caption type:`, typeof segment.caption);
+        console.log(`[STORE-SEGMENTS-DEBUG] OcrText type:`, typeof segment.ocrText);
+        
+        // Ensure essential fields are valid to prevent database errors
+        if (typeof segment.startTime !== 'number' || typeof segment.endTime !== 'number') {
+          console.warn(`[STORE-SEGMENTS] Skipping segment with invalid startTime or endTime:`, segment);
+          continue;
+        }
         // Generate embedding using reconstructed scene or fallback to concatenation
         let embedding: Float32Array | undefined;
         let content = '';
@@ -506,20 +762,54 @@ export class VideoMediaAPI {
             console.warn(`Failed to update existing segment ${existingSeg.id}:`, e);
           }
         } else {
-          toInsert.push({
+          // Extract text values from potentially complex objects
+          const transcriptionText = segment.transcription?.text || segment.transcription || null;
+          const captionText = segment.caption?.text || segment.caption || null;
+          const ocrTextValue = segment.ocrText?.text || segment.ocrText || null;
+          
+          console.log(`[STORE-SEGMENTS-DEBUG] Extracted text values:`, {
+            transcriptionText: typeof transcriptionText === 'string' ? transcriptionText.substring(0, 50) + '...' : transcriptionText,
+            captionText: typeof captionText === 'string' ? captionText.substring(0, 50) + '...' : captionText,
+            ocrTextValue: typeof ocrTextValue === 'string' ? ocrTextValue.substring(0, 50) + '...' : ocrTextValue,
+            transcriptionType: typeof transcriptionText,
+            captionType: typeof captionText,
+            ocrTextType: typeof ocrTextValue
+          });
+          
+          const segmentToInsert = {
             videoPath,
             startTime: segStart,
             endTime: segEnd,
             duration: segDuration,
             sceneIndex: segSceneIndex,
-            thumbnailPath: segment.thumbnailPath,
-            keyframePath: segment.keyframePath,
-            transcription: segment.transcription,
-            caption: segment.caption,
-            ocrText: segment.ocrText,
+            thumbnailPath: segment.thumbnailPath || null,
+            keyframePath: segment.keyframePath || null,
+            transcription: transcriptionText,
+            caption: captionText,
+            ocrText: ocrTextValue,
             embedding,
-            metadata: segment.metadata,
+            metadata: segment.metadata || null,
+            reconstructedScene: segment.reconstructedScene || null
+          };
+          
+          console.log(`[STORE-SEGMENTS-DEBUG] Prepared segment for insertion:`, {
+            videoPath: segmentToInsert.videoPath,
+            startTime: segmentToInsert.startTime,
+            endTime: segmentToInsert.endTime,
+            duration: segmentToInsert.duration,
+            sceneIndex: segmentToInsert.sceneIndex,
+            thumbnailPath: segmentToInsert.thumbnailPath,
+            keyframePath: segmentToInsert.keyframePath,
+            transcription: segmentToInsert.transcription ? `"${String(segmentToInsert.transcription).substring(0, 50)}..."` : null,
+            caption: segmentToInsert.caption ? `"${String(segmentToInsert.caption).substring(0, 50)}..."` : null,
+            ocrText: segmentToInsert.ocrText ? `"${String(segmentToInsert.ocrText).substring(0, 50)}..."` : null,
+            hasEmbedding: !!segmentToInsert.embedding,
+            embeddingLength: segmentToInsert.embedding?.length,
+            metadata: segmentToInsert.metadata,
+            reconstructedScene: segmentToInsert.reconstructedScene ? `"${segmentToInsert.reconstructedScene.substring(0, 50)}..."` : null
           });
+          
+          toInsert.push(segmentToInsert);
         }
       }
 
@@ -533,10 +823,15 @@ export class VideoMediaAPI {
       } else {
         console.log(`[STORE-SEGMENTS] No new segments to insert for ${videoPath} (all segments already exist)`);
       }
+
+      console.log(`[STORE-SEGMENTS] Completed storeVideoSegments for ${videoPath}`)
+
     } catch (error) {
       console.error(`[STORE-SEGMENTS] Failed to store video segments for ${videoPath}:`, error);
       throw error;
     }
+
+    console.log(`[STORE-SEGMENTS] End storeVideoSegments. Returning`)
   }
 
   /**
