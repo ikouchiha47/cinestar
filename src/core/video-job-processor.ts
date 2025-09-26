@@ -642,10 +642,40 @@ export class VideoJobProcessor {
       // Check if parent video exists in main database using path search
       const existingVideos = this.vectorDb.searchByPath(videoPath);
       
-      if (existingVideos.length === 0) {
+      console.log(`[VIDEO-INDEXING-DEBUG] Checking for existing parent video:`);
+      console.log(`[VIDEO-INDEXING-DEBUG] - Video path: ${videoPath}`);
+      console.log(`[VIDEO-INDEXING-DEBUG] - Existing videos found: ${existingVideos.length}`);
+      
+      // Additional check: Query main database directly to avoid race conditions
+      let mainDbVideos: any[] = [];
+      try {
+        const { MainMediaAPI } = await import('../api/main-media-api');
+        const itemsResult = await MainMediaAPI.getItems();
+        if (itemsResult.success && itemsResult.items) {
+          mainDbVideos = itemsResult.items.filter((item: any) => 
+            item.path === videoPath && item.type === 'video'
+          );
+          console.log(`[VIDEO-INDEXING-DEBUG] - Main DB videos found: ${mainDbVideos.length}`);
+        }
+      } catch (error) {
+        console.warn(`[VIDEO-INDEXING-DEBUG] Could not check main database:`, error);
+      }
+      
+      const totalExistingVideos = existingVideos.length + mainDbVideos.length;
+      console.log(`[VIDEO-INDEXING-DEBUG] - Total existing parent videos: ${totalExistingVideos}`);
+      
+      if (totalExistingVideos === 0) {
         console.log(`[VIDEO-JOB-PROCESSOR] Parent video not found, creating it in main DB`);
         // Create the parent video entry
         const videoName = videoPath.split('/').pop() || 'Unknown Video';
+        
+        console.log(`[VIDEO-CREATION-DEBUG] Creating parent video:`, {
+          name: videoName,
+          path: videoPath,
+          type: 'video',
+          sourceId: videoPath
+        });
+        
         const parentVideoId = await this.vectorDb.addMediaItemAsync({
           name: videoName,
           path: videoPath,
@@ -660,11 +690,24 @@ export class VideoJobProcessor {
         });
         console.log(`[VIDEO-JOB-PROCESSOR] Created parent video with ID: ${parentVideoId}`);
       } else {
-        console.log(`[VIDEO-JOB-PROCESSOR] Parent video found in main DB: ${existingVideos[0].name}`);
+        console.log(`[VIDEO-JOB-PROCESSOR] Parent video found in database:`);
+        
+        // Use the first available parent video (prefer main DB over vector DB)
+        const allExistingVideos = [...mainDbVideos, ...existingVideos];
+        allExistingVideos.forEach((video: any, index: number) => {
+          console.log(`[VIDEO-EXISTING-DEBUG] Video ${index + 1}:`, {
+            id: video.id,
+            name: video.name,
+            type: video.type,
+            path: video.path,
+            sourceId: video.sourceId
+          });
+        });
       }
       
       for (const segment of segments) {
-        const segmentName = `${videoPath} - Segment ${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
+        const videoFileName = videoPath.split('/').pop() || 'Unknown Video';
+        const segmentName = `${videoFileName} - Segment ${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
         
         // Combine all text content for search
         const transcriptionText = segment.transcription?.text || segment.transcription || '';
@@ -675,20 +718,32 @@ export class VideoJobProcessor {
           .filter(text => text && text.length > 0)
           .join(' ');
         
-        console.log(`[VIDEO-JOB-PROCESSOR] Adding segment to search index:`);
-        console.log(`[VIDEO-JOB-PROCESSOR] - Content length: ${searchableContent.length} characters`);
-        console.log(`[VIDEO-JOB-PROCESSOR] - Contains "car": ${searchableContent.toLowerCase().includes('car')}`);
-        console.log(`[VIDEO-JOB-PROCESSOR] - Content preview: "${searchableContent.substring(0, 100)}..."`);
+        console.log(`[SEGMENT-CREATION-DEBUG] Preparing segment for indexing:`, {
+          segmentName: segmentName,
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          contentLength: searchableContent.length,
+          hasTranscription: !!transcriptionText,
+          hasCaption: !!captionText,
+          hasReconstruction: !!reconstructedText
+        });
         
         if (searchableContent.length > 0) {
-          // Get the correct sourceId from the parent video
-          const parentVideo = existingVideos[0];
+          // Get the correct sourceId from the parent video (prefer main DB over vector DB)
+          const allExistingVideos = [...mainDbVideos, ...existingVideos];
+          const parentVideo = allExistingVideos[0];
+          
+          console.log(`[SEGMENT-CREATION-DEBUG] Using parent video for sourceId:`, {
+            parentVideoId: parentVideo?.id,
+            parentVideoName: parentVideo?.name,
+            parentSourceId: parentVideo?.sourceId
+          });
           
           // Generate embedding for the searchable content
           console.log(`[VIDEO-JOB-PROCESSOR] Generating embedding for search content`);
           const searchEmbedding = await this.embeddingService.embedSingle(searchableContent);
           
-          const segmentItemId = await this.vectorDb.addMediaItemAsync({
+          const segmentData = {
             name: segmentName,
             path: `${videoPath}#t=${segment.startTime},${segment.endTime}`,
             type: 'video_segment' as const,
@@ -697,11 +752,21 @@ export class VideoJobProcessor {
             createdAt: new Date(),
             updatedAt: new Date(),
             caption: searchableContent, // This will be used for embedding generation
+            embedding: searchEmbedding,
             captionStatus: 'completed' as const,
-            embedding: searchEmbedding, // Include the embedding
-            embeddingStatus: 'completed' as const, // Mark as completed
+            embeddingStatus: 'completed' as const,
             embeddingGeneratedAt: new Date() // Prevent background processor from picking it up
+          };
+          
+          console.log(`[SEGMENT-CREATION-DEBUG] About to create segment with data:`, {
+            name: segmentData.name,
+            path: segmentData.path,
+            type: segmentData.type,
+            sourceId: segmentData.sourceId,
+            captionLength: segmentData.caption.length
           });
+          
+          const segmentItemId = await this.vectorDb.addMediaItemAsync(segmentData);
           
           console.log(`[VIDEO-JOB-PROCESSOR] Successfully indexed segment with ID: ${segmentItemId}`);
         } else {

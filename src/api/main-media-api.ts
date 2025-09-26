@@ -194,6 +194,36 @@ export class MainMediaAPI {
       await this.ensureInitialized();
       console.log(`[MainMediaAPI] getItems(${sourceId ?? 'ALL'}) using backend=${this.backendType}`);
       const items = await this.db.getMediaItems(sourceId);
+      
+      // [DEBUG] Log actual data structure and detect duplicates
+      console.log(`[ITEMS-DEBUG] Retrieved ${items.length} items from database`);
+      const videoItems = items.filter((item: any) => item.type === 'video' || item.type === 'video_segment');
+      if (videoItems.length > 0) {
+        console.log(`[ITEMS-DEBUG] Video items found: ${videoItems.length}`);
+        videoItems.forEach((item: any, index: number) => {
+          console.log(`[ITEMS-DEBUG] Video ${index + 1}:`, {
+            id: item.id,
+            name: item.name,
+            type: item.type,
+            path: item.path,
+            sourceId: item.sourceId
+          });
+        });
+        
+        // Check for potential duplicates
+        const nameGroups = videoItems.reduce((groups: any, item: any) => {
+          const key = item.name || 'unnamed';
+          groups[key] = (groups[key] || 0) + 1;
+          return groups;
+        }, {});
+        
+        Object.entries(nameGroups).forEach(([name, count]) => {
+          if ((count as number) > 1) {
+            console.warn(`[ITEMS-DEBUG] ⚠️ Potential duplicate detected: "${name}" appears ${count} times`);
+          }
+        });
+      }
+      
       return { success: true, items };
     } catch (error) {
       console.error('Failed to get items:', error);
@@ -212,10 +242,34 @@ export class MainMediaAPI {
       const name = path.basename(filePath);
       const mime = getMimeType(filePath);
       const lower = (mime || '').toLowerCase();
-      let type: 'image' | 'video' | 'audio' | 'other' = 'other';
-      if (lower.startsWith('image/')) type = 'image';
-      else if (lower.startsWith('video/')) type = 'video';
+      let type: 'image' | 'video' | 'audio' = 'image';
+      if (lower.startsWith('video/')) type = 'video';
       else if (lower.startsWith('audio/')) type = 'audio';
+
+      console.log(`[ADD-ITEM-FOR-FILE-DEBUG] Adding media item:`, {
+        sourceId: sourceId,
+        name: name,
+        path: filePath,
+        type: type,
+        size: Number(stats.size || 0),
+        description: description,
+        metadata: metadata
+      });
+
+      // Check if item already exists to prevent duplicates
+      const existingItems = await this.db.getMediaItems();
+      const existingItem = existingItems.find((item: any) => 
+        item.path === filePath && item.type === type
+      );
+      
+      if (existingItem) {
+        console.log(`[ADD-ITEM-FOR-FILE-DEBUG] Item already exists, returning existing ID:`, {
+          existingId: existingItem.id,
+          name: existingItem.name,
+          type: existingItem.type
+        });
+        return { success: true, id: existingItem.id };
+      }
 
       const id = await this.db.addMediaItem({
         sourceId,
@@ -229,9 +283,21 @@ export class MainMediaAPI {
         description,
         metadata,
       });
+      
+      console.log(`[ADD-ITEM-FOR-FILE-DEBUG] Media item added successfully:`, {
+        id: id,
+        name: name,
+        type: type
+      });
+      
       return { success: true, id };
     } catch (error) {
       console.error('[MainMediaAPI] addItemForFile failed:', error);
+      console.error('[ADD-ITEM-FOR-FILE-ERROR] Failed to add item:', {
+        sourceId: sourceId,
+        filePath: filePath,
+        error: error instanceof Error ? error.message : String(error)
+      });
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
@@ -337,7 +403,7 @@ export class MainMediaAPI {
   }
 
   /**
-   * Get indexing status
+   * Get indexing status (includes both media indexing and video processing jobs)
    */
   static async getIndexingStatus(): Promise<{ 
     success: boolean; 
@@ -356,10 +422,42 @@ export class MainMediaAPI {
   }> {
     try {
       await this.ensureInitialized();
-      const jobs = await this.db.getActiveJobs();
-      const activeJobs = jobs.map((job: any) => job.id);
       
-      const jobDetails = jobs.map((j: any) => ({
+      // Get media indexing jobs
+      const mediaJobs = await this.db.getActiveJobs();
+      
+      // Get video processing jobs
+      let videoJobs: any[] = [];
+      try {
+        const { VideoDatabase } = await import('../core/video-database');
+        const videoDb = new VideoDatabase();
+        await videoDb.initialize();
+        
+        const activeVideoJobs = await videoDb.getJobs('processing');
+        const pendingVideoJobs = await videoDb.getJobs('pending');
+        
+        videoJobs = [...activeVideoJobs, ...pendingVideoJobs].map((job: any) => ({
+          id: job.id,
+          sourceId: job.videoPath, // Use video path as source identifier
+          status: job.status === 'processing' ? 'running' : job.status,
+          progress: job.progress || 0,
+          totalItems: job.totalSegments || 1,
+          processedItems: job.segmentCount || 0,
+          startedAt: job.startTime,
+          completedAt: job.endTime,
+          type: 'video', // Mark as video processing job
+          refinementPass: job.refinementPass || 1,
+          threshold: job.threshold || 0.8
+        }));
+      } catch (error) {
+        console.warn('[INDEXING-STATUS] Failed to get video jobs:', error);
+      }
+      
+      // Combine all jobs
+      const allJobs = [...mediaJobs, ...videoJobs];
+      const activeJobs = allJobs.map((job: any) => job.id);
+      
+      const jobDetails = allJobs.map((j: any) => ({
         id: j.id,
         sourceId: j.sourceId,
         status: j.status,
@@ -368,6 +466,9 @@ export class MainMediaAPI {
         processedItems: j.processedItems,
         startedAt: j.startedAt,
         completedAt: j.completedAt,
+        type: j.type || 'media', // Distinguish job types
+        refinementPass: j.refinementPass,
+        threshold: j.threshold
       }));
       
       return { success: true, activeJobs, jobs: jobDetails };

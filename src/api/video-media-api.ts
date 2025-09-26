@@ -219,15 +219,18 @@ export class VideoMediaAPI {
   /**
    * Process a video file through the complete pipeline
    */
-  async processVideo(videoPath: string): Promise<string> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    // Check if file exists
+  async processVideo(videoPath: string): Promise<{ success: boolean; error?: string }> {
     if (!fs.existsSync(videoPath)) {
       throw new Error(`Video file not found: ${videoPath}`);
     }
+
+    // [DEBUG] Log video upload details
+    const uploadFileName = path.basename(videoPath);
+    console.log(`[VIDEO-UPLOAD-DEBUG] Video upload initiated:`, {
+      fullPath: videoPath,
+      fileName: uploadFileName,
+      timestamp: new Date().toISOString()
+    });
 
     // Add video as source to main SQLite database via MainMediaAPI (no JSON paths)
     try {
@@ -265,9 +268,21 @@ export class VideoMediaAPI {
       // Insert this specific video file as an item so it appears in the home UI
       if (sourceId) {
         try {
+          console.log(`[VIDEO-PARENT-CREATION-DEBUG] Creating parent video via addItemForFile:`, {
+            sourceId: sourceId,
+            videoPath: videoPath,
+            videoName: videoName,
+            timestamp: new Date().toISOString()
+          });
+          
           const addItem = await MainMediaAPI.addItemForFile(sourceId, videoPath, `Video file: ${videoName}`, { via: 'VideoMediaAPI' });
           if (addItem.success) {
             console.log(`[Video Source] Inserted/updated video item in main DB: ${videoName}`);
+            console.log(`[VIDEO-PARENT-CREATION-DEBUG] Parent video created successfully:`, {
+              itemId: addItem.id,
+              sourceId: sourceId,
+              videoName: videoName
+            });
           } else {
             console.warn(`[Video Source] Failed to insert video item into main DB: ${addItem.error}`);
           }

@@ -219,19 +219,47 @@ function App() {
                       return Math.round(job.progress || 0);
                     };
                     const percent = calcPercent();
-                    const phase = job.status === 'pending' ? 'Queued' : (percent < 50 ? 'Scanning' : (job.status === 'completed' ? 'Completed' : 'Processing'));
+                    const isVideo = (job as any).type === 'video';
+                    const refinementPass = (job as any).refinementPass;
+                    const threshold = (job as any).threshold;
+                    
+                    const getPhase = () => {
+                      if (job.status === 'pending') return 'Queued';
+                      if (job.status === 'completed') return 'Completed';
+                      if (isVideo) {
+                        if (refinementPass === 1) return 'Video Processing (Pass 1)';
+                        if (refinementPass === 2) return `Refinement (Pass 2, ${threshold})`;
+                        if (refinementPass === 3) return `Refinement (Pass 3, ${threshold})`;
+                        return `Video Processing (Pass ${refinementPass})`;
+                      }
+                      return percent < 50 ? 'Scanning' : 'Processing';
+                    };
+                    
+                    const phase = getPhase();
+                    const barColor = isVideo ? 'bg-purple-500' : 'bg-blue-500';
+                    
                     return (
                       <div key={job.id} className="text-xs">
                         <div className="flex items-center justify-between mb-1">
-                          <div className="font-mono">{job.id.slice(0,8)}…</div>
-                          <div className="text-neutral-400">{phase} • {percent}%</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-mono">{job.id.slice(0,8)}…</div>
+                            {isVideo && (
+                              <div className="px-1.5 py-0.5 bg-purple-900/50 text-purple-300 rounded text-[10px]">
+                                VIDEO
+                              </div>
+                            )}
+                          </div>
+                          <div className="text-neutral-400">{percent}%</div>
+                        </div>
+                        <div className="text-[10px] text-neutral-500 mb-1 truncate" title={phase}>
+                          {phase}
                         </div>
                         <div className="h-2 w-full bg-neutral-800 rounded">
-                          <div className="h-2 rounded bg-blue-500" style={{ width: `${percent}%` }} />
+                          <div className={`h-2 rounded ${barColor}`} style={{ width: `${percent}%` }} />
                         </div>
                         {(job.totalItems || job.processedItems) && (
                           <div className="mt-1 text-[10px] text-neutral-500">
-                            {job.processedItems ?? 0}/{job.totalItems ?? '?'} items
+                            {job.processedItems ?? 0}/{job.totalItems ?? '?'} {isVideo ? 'segments' : 'items'}
                           </div>
                         )}
                       </div>

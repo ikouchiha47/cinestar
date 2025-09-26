@@ -47,10 +47,16 @@ export const VideoSelection: React.FC<VideoSelectionProps> = ({ onVideoAdded }) 
     try {
       if (formData.type === 'file') {
         // Process single video file
+        console.log(`[UPLOAD-TRIGGER-DEBUG] Starting video upload process for: ${formData.path}`);
         const result = await window.videoAPI.processVideo(formData.path);
+        console.log(`[UPLOAD-TRIGGER-DEBUG] Upload result:`, result);
+        
         if (result.success) {
-          setSuccess(`Video "${formData.name}" processed successfully!`);
+          setSuccess(`Video "${formData.name}" uploaded successfully! Indexing in progress...`);
           setFormData({ name: '', path: '', type: 'file' });
+          
+          // Force immediate UI refresh to see current state
+          console.log(`[UPLOAD-TRIGGER-DEBUG] Triggering onVideoAdded callback`);
           onVideoAdded?.();
         } else {
           setError(result.error || 'Failed to process video');

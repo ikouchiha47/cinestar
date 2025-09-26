@@ -277,32 +277,75 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         const st = await window.mediaAPI.getIndexingStatus();
         const active = !!(st?.success && Array.isArray(st.activeJobs) && st.activeJobs.length > 0);
         if (!active && prevActive && mounted) {
-          // Jobs just finished — refresh sources and items
+          // Jobs just finished — refresh sources and items ONCE
           try {
-            const res = await window.mediaAPI.getSources();
-            if (res.success && Array.isArray(res.sources)) {
-              const mapped: Place[] = res.sources.map((s) => ({ id: s.id, kind: 'local', label: s.name, path: s.path || '', pinned: false }));
+            const [sourcesRes, itemsRes] = await Promise.all([
+              window.mediaAPI.getSources(),
+              window.mediaAPI.getItems()
+            ]);
+            
+            if (sourcesRes.success && Array.isArray(sourcesRes.sources)) {
+              const mapped: Place[] = sourcesRes.sources.map((s) => ({ id: s.id, kind: 'local', label: s.name, path: s.path || '', pinned: false }));
               setPlaces(mapped);
             }
-          } catch {}
-          try {
-            const itemsRes = await window.mediaAPI.getItems();
-            if (itemsRes?.success && Array.isArray(itemsRes.items)) {
-              const items: any[] = itemsRes.items;
-              const mapped: MediaT[] = items.map((it: any) => {
+            
+            if (itemsRes.success && Array.isArray(itemsRes.items)) {
+              console.log(`[UI-MAPPING-DEBUG] Processing ${itemsRes.items.length} items for UI display`);
+              
+              // Filter out video segments - they should only be searchable, not displayed as separate cards
+              const displayableItems = itemsRes.items.filter((it: any) => {
+                const itemType = (it.type || '').toLowerCase();
+                const isVideoSegment = itemType === 'video_segment';
+                if (isVideoSegment) {
+                  console.log(`[UI-FILTER-DEBUG] Excluding video segment from display: ${it.name}`);
+                }
+                return !isVideoSegment;
+              });
+              
+              console.log(`[UI-FILTER-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
+              
+              const mapped: MediaT[] = displayableItems.map((it: any, index: number) => {
                 const mime = (it.mimeType || '').toLowerCase();
                 let kind: 'image' | 'video' | 'audio' = 'image';
                 if (mime.startsWith('video/')) kind = 'video';
                 else if (mime.startsWith('audio/')) kind = 'audio';
                 else if (typeof it.type === 'string') {
                   const t = it.type.toLowerCase();
-                  if (t.includes('video')) kind = 'video';
+                  if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
                   else if (t.includes('audio')) kind = 'audio';
                 }
-                return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                
+                const mappedItem = { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                
+                // Log video items specifically
+                if (kind === 'video') {
+                  console.log(`[UI-MAPPING-DEBUG] Video item ${index + 1}:`, {
+                    originalItem: {
+                      id: it.id,
+                      name: it.name,
+                      type: it.type,
+                      path: it.path,
+                      sourceId: it.sourceId
+                    },
+                    mappedItem: mappedItem
+                  });
+                }
+                
+                return mappedItem;
               });
+              
               const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
               mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
+              
+              // Final check for duplicates in UI
+              const videoItems = mapped.filter(item => item.type === 'video');
+              if (videoItems.length > 1) {
+                console.warn(`[UI-MAPPING-DEBUG] ⚠️ Multiple video items will be displayed: ${videoItems.length}`);
+                videoItems.forEach((item, index) => {
+                  console.log(`[UI-MAPPING-DEBUG] UI Video ${index + 1}: ${item.name} (${item.id})`);
+                });
+              }
+              
               setLibrary(mapped);
             }
           } catch {}
@@ -665,15 +708,28 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                 try {
                   const itemsRes = await window.mediaAPI.getItems();
                   if (itemsRes?.success && Array.isArray(itemsRes.items)) {
-                    const items: any[] = itemsRes.items;
-                    const mappedItems: MediaT[] = items.map((it: any) => {
+                    console.log(`[UPLOAD-CALLBACK-DEBUG] Processing ${itemsRes.items.length} items after upload`);
+                    
+                    // Filter out video segments - same logic as polling
+                    const displayableItems = itemsRes.items.filter((it: any) => {
+                      const itemType = (it.type || '').toLowerCase();
+                      const isVideoSegment = itemType === 'video_segment';
+                      if (isVideoSegment) {
+                        console.log(`[UPLOAD-CALLBACK-DEBUG] Excluding video segment: ${it.name}`);
+                      }
+                      return !isVideoSegment;
+                    });
+                    
+                    console.log(`[UPLOAD-CALLBACK-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
+                    
+                    const mappedItems: MediaT[] = displayableItems.map((it: any) => {
                       const mime = (it.mimeType || '').toLowerCase();
                       let kind: 'image' | 'video' | 'audio' = 'image';
                       if (mime.startsWith('video/')) kind = 'video';
                       else if (mime.startsWith('audio/')) kind = 'audio';
                       else if (typeof it.type === 'string') {
                         const t = it.type.toLowerCase();
-                        if (t.includes('video')) kind = 'video';
+                        if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
                         else if (t.includes('audio')) kind = 'audio';
                       }
                       return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
