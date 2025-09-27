@@ -5,6 +5,7 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
+import { VideoJobProcessor } from '../src/core/video-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 
@@ -262,6 +263,7 @@ ipcMain.handle('app:getDataDir', async () => {
 // Initialize MediaAPI in main process
 let mediaAPI: typeof MainMediaAPI | null = null;
 let videoAPI: VideoMediaAPI | null = null;
+let videoJobProcessor: VideoJobProcessor | null = null;
 let mediaInitAttempted = false;
 let mediaInitFailed = false;
 let mediaInitErrorMessage = '';
@@ -302,6 +304,13 @@ async function initializeVideoAPI() {
     // Attach partial writer to persist segments early for non-blocking search
     attachPartialSegmentWriter(videoAPI);
     console.log('VideoMediaAPI initialized in main process');
+    
+    // Start the background job processor
+    if (!videoJobProcessor) {
+      videoJobProcessor = new VideoJobProcessor();
+      await videoJobProcessor.start();
+      console.log('VideoJobProcessor started in main process');
+    }
   } catch (error) {
     console.error('Failed to initialize VideoMediaAPI:', error);
   }

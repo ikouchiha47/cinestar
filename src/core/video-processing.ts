@@ -20,9 +20,42 @@ export interface VideoSegment {
 }
 
 /**
- * Detect scene changes in a video using ffmpeg's scene detection filter
+ * Detect scene changes in a video using simple multi-modal detection
  */
-export async function detectScenes(videoFile: string, threshold = 0.4): Promise<number[]> {
+export async function detectScenes(videoFile: string, threshold = 0.4, passNumber = 1): Promise<number[]> {
+  try {
+    // Import simple scene detection
+    const { simpleSceneDetection } = await import('./simple-scene-detection');
+    
+    // Get video metadata for better detection
+    const duration = await getVideoDuration(videoFile);
+    const videoMetadata = {
+      duration,
+      contentType: 'video',
+      motionLevel: duration < 60 ? 'high' : 'medium' as 'low' | 'medium' | 'high'
+    };
+
+    console.log(`[SCENE-DETECTION] Using simple multi-modal detection for pass ${passNumber}`);
+    console.log(`[SCENE-DETECTION] Video metadata: duration=${duration}s, motionLevel=${videoMetadata.motionLevel}`);
+
+    // Use simple scene detection with configuration
+    const cuts = await simpleSceneDetection.detectScenes(videoFile, passNumber, videoMetadata);
+    
+    console.log(`[SCENE-DETECTION] Multi-modal detection found ${cuts.length} scene cuts`);
+    return cuts;
+
+  } catch (error) {
+    console.warn(`[SCENE-DETECTION] Multi-modal detection failed, falling back to basic:`, error);
+    
+    // Fallback to basic scene detection
+    return detectScenesBasic(videoFile, threshold);
+  }
+}
+
+/**
+ * Basic scene detection fallback (original implementation)
+ */
+export async function detectScenesBasic(videoFile: string, threshold = 0.4): Promise<number[]> {
   return new Promise<number[]>((resolve, reject) => {
     const cuts: number[] = [];
     

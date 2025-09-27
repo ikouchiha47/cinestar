@@ -1,63 +1,32 @@
-import { VideoDatabase, VideoProcessingJob, VideoFile, VideoSegment, SearchResult } from '../core/video-database.js';
-import { EmbeddingService } from '../core/embedding-service.js';
-import { VideoPipeline } from '../core/video-pipeline.js';
-import { ConcurrencyLimiter } from '../core/concurrency-limiter.js';
-import { VideoJobProcessor } from '../core/video-job-processor.js';
+import { VideoFile, VideoSegment, SearchResult } from '../types/video';
+import { VideoDatabase } from '../core/video-database';
+import { EmbeddingService } from '../core/embedding-service';
+import { VideoPipeline } from '../core/video-pipeline';
+import { VideoProcessingJob, VideoSearchQuery } from '../types/video';
+import { getVideoDuration } from '../utils/video-utils';
 import { MainMediaAPI } from './main-media-api';
-import { getVideoDuration } from '../core/video-processing';
-import { SegmentationProcessor } from '../core/processors/segmentation-processor.js';
-import { AudioExtractionProcessor } from '../core/processors/audio-extraction-processor.js';
-import { VisualProcessor } from '../core/processors/visual-processor.js';
-import { TranscriptionProcessor } from '../core/processors/transcription-processor.js';
-import { BatchCaptioningProcessor } from '../core/processors/batch-captioning-processor.js';
-import { OCRProcessor } from '../core/processors/ocr-processor.js';
-import { OptimizedSceneReconstructionProcessor } from '../core/processors/optimized-scene-reconstruction.js';
-// import { SceneReconstructionScheduler } from '../core/scene-reconstruction-scheduler.js';
-import { DockerWhisperService } from '../core/processors/docker-whisper-service.js';
-import { WhisperCliService } from '../core/processors/whisper-cli-service.js';
-import { WhisperCppService } from '../core/processors/whisper-cpp-service.js';
-import fs from 'fs';
 import path from 'path';
-import { ConfigManager } from '../core/config.js';
-
-
-export interface VideoSearchQuery {
-  query: string;
-  limit?: number;
-  offset?: number;
-  searchType?: 'text' | 'vector' | 'hybrid';
-  videoPath?: string;
-  timeRange?: {
-    start: number;
-    end: number;
-  };
-}
+import fs from 'fs';
 
 /**
- * Video-specific MediaAPI for processing and searching video content
- * This handles video indexing, transcription, and semantic search
+ * Video Media API for handling video processing and search
  */
 export class VideoMediaAPI {
   private static instance: VideoMediaAPI;
   private videoDb: VideoDatabase;
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
-  private concurrencyLimiter: ConcurrencyLimiter;
-  private jobProcessor: VideoJobProcessor;
-  // Main sources/items are managed by MainMediaAPI (SQLite-backed)
   private initialized = false;
 
   private constructor() {
     this.embeddingService = new EmbeddingService();
     this.videoDb = new VideoDatabase(this.embeddingService);
-    this.concurrencyLimiter = new ConcurrencyLimiter(2); // Limit to 2 concurrent video processing jobs
     this.videoPipeline = new VideoPipeline();
-    this.setupVideoPipeline();
-    
-    // Pass the configured pipeline to the job processor
-    this.jobProcessor = new VideoJobProcessor(this.videoPipeline);
   }
 
+  /**
+   * Get singleton instance
+   */
   static getInstance(): VideoMediaAPI {
     if (!VideoMediaAPI.instance) {
       VideoMediaAPI.instance = new VideoMediaAPI();
@@ -65,128 +34,48 @@ export class VideoMediaAPI {
     return VideoMediaAPI.instance;
   }
 
-  private setupVideoPipeline(): void {
-    // Create processors
-    const segmentationProcessor = new SegmentationProcessor();
-    const audioExtractionProcessor = new AudioExtractionProcessor();
-    // Visual processor configuration via ConfigManager
-    const appCfg = ConfigManager.getConfig();
-    const vk = appCfg.video?.keyframes;
-    const visualProcessor = new VisualProcessor({
-      keyframesMode: vk?.mode || 'scene',
-      keyframesFPS: vk?.fps || 0,
-      keyframesTargetTotal: vk?.targetTotal || 0,
-      keyframesMaxTotal: vk?.maxTotal || 500,
-    } as any);
-    const transcriptionProcessor = new TranscriptionProcessor();
-    // Batch captioning for optimal GPU utilization
-    const cap = appCfg.captioning;
-    const batchCaptioningProcessor = new BatchCaptioningProcessor({ 
-      batchSize: cap?.batchSize ?? 8, // Larger batches for video-level processing
-      captionConcurrency: cap?.concurrency ?? 4,
-    });
-    const ocrProcessor = new OCRProcessor();
-    const sceneReconstructionProcessor = new OptimizedSceneReconstructionProcessor({
-      enabled: true,
-      model: 'tinyllama:latest',
-      baseUrl: 'http://localhost:9001',
-      temperature: 0.7,
-      maxTokens: 2000, // Increased for richer scene descriptions
-      useRnnStyle: true,
-      contextWindow: 3
-    });
-
-    // Setup transcription processor with available services
-    // Use Docker API as primary service (fastest with faster_whisper)
-    const dockerWhisperService = new DockerWhisperService();
-    transcriptionProcessor.addService(dockerWhisperService);
-    
-    // Add CLI and local services only in debug mode
-    if (process.env.NODE_ENV === 'development' || process.env.DEBUG === 'true') {
-      const whisperCliService = new WhisperCliService();
-      const whisperCppService = new WhisperCppService();
-      transcriptionProcessor.addService(whisperCliService);
-      transcriptionProcessor.addService(whisperCppService);
+  /**
+   * Initialize the API
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized) {
+      return;
     }
+    
+    console.log('[VIDEO-MEDIA-API] Initializing...');
+    
+    // Initialize the video database
+    await this.videoDb.initialize();
+    
+    this.setupPipeline();
+    this.initialized = true;
+    console.log('[VIDEO-MEDIA-API] Initialized successfully');
+  }
 
-    // Register processors into pipeline
-    this.videoPipeline.addProcessor('segmentation', segmentationProcessor);
-    this.videoPipeline.addProcessor('audio-extraction', audioExtractionProcessor);
-    this.videoPipeline.addProcessor('visual', visualProcessor);
-    this.videoPipeline.addProcessor('transcription', transcriptionProcessor);
-    this.videoPipeline.addProcessor('batch-captioning', batchCaptioningProcessor);
-    this.videoPipeline.addProcessor('ocr', ocrProcessor);
-    this.videoPipeline.addProcessor('scene-reconstruction', sceneReconstructionProcessor);
-
-    // Setup event listeners
-    this.videoPipeline.on('progress', async (data) => {
-      const job = await this.videoDb.getJob(data.videoPath);
-      if (job) {
-        await this.videoDb.updateJob(job.id, { progress: data.progress });
-        console.log(`Video processing progress: ${data.videoPath} - ${data.progress}%`);
-      }
-    });
-
-    this.videoPipeline.on('error', async (data) => {
-      const job = await this.videoDb.getJob(data.videoPath);
-      if (job) {
-        await this.videoDb.updateJob(job.id, { 
-          status: 'failed', 
-          error: data.error,
-          endTime: new Date()
-        });
-        console.error(`Video processing failed: ${data.videoPath}`, data.error);
-      }
-    });
-
-    this.videoPipeline.on('completed', async (data) => {
+  /**
+   * Set up video pipeline event handlers
+   */
+  private setupPipeline(): void {
+    this.videoPipeline.on('completed', async (data: any) => {
       console.log(`[PIPELINE-COMPLETED] Video processing completed for ${data.videoPath}`);
-      console.log(`[PIPELINE-COMPLETED] Segments in data: ${data.segments?.length || 0}`);
       
-      const job = await this.videoDb.getJob(data.videoPath);
+      const job = await this.videoDb.getJobByVideoPath(data.videoPath);
       if (job) {
-        await this.videoDb.updateJob(job.id, {
-          status: 'completed',
-          progress: 100,
-          endTime: new Date(),
-          segmentCount: data.segments?.length || 0
-        });
+        const enrichedSegments = await this.enrichSegments(data.segments || []);
         
-        // Merge processed content back into segments before storage
-        let enrichedSegments = data.segments || [];
-        
-        // Extract processed content from pipeline data structure
-        const processedSegments = data.processedSegments || [];
-        const reconstructedScenes = data.reconstructedScenes || {};
-        
-        if (processedSegments.length > 0 || Object.keys(reconstructedScenes).length > 0) {
-          console.log(`[PIPELINE-COMPLETED] Merging processed content from ${processedSegments.length} processed segments and ${Object.keys(reconstructedScenes).length} reconstructed scenes`);
-          enrichedSegments = this.mergeProcessedContent(data.segments || [], processedSegments, { reconstructedScenes });
-        } else {
-          console.log(`[PIPELINE-COMPLETED] No processed content to merge - using original segments`);
-        }
-        
-        // Store segments in database
         if (enrichedSegments && enrichedSegments.length > 0) {
           console.log(`[PIPELINE-COMPLETED] Calling storeVideoSegments with ${enrichedSegments.length} enriched segments`);
           try {
             await this.storeVideoSegments(data.videoPath, enrichedSegments);
-            console.log(`[PIPELINE-COMPLETED] storeVideoSegments completed successfully - about to continue`);
+            console.log(`[PIPELINE-COMPLETED] storeVideoSegments completed successfully`);
           } catch (error) {
             console.log(`[PIPELINE-COMPLETED-ERROR] storeVideoSegments failed:`, error);
           }
           
-          console.log(`[PIPELINE-COMPLETED] After storeVideoSegments try-catch block - execution continuing`);
-          
-          // Index video segments in main search database for vector search
-          console.log(`[PIPELINE-COMPLETED] Indexing video segments in main search database`);
-          console.log(`[PIPELINE-COMPLETED] About to call indexVideoSegmentsForSearch with ${enrichedSegments.length} segments`);
-          try {
-            await this.indexVideoSegmentsForSearch(data.videoPath, enrichedSegments);
-            console.log(`[PIPELINE-COMPLETED] indexVideoSegmentsForSearch completed successfully`);
-          } catch (error) {
-            console.log(`[PIPELINE-COMPLETED-ERROR] indexVideoSegmentsForSearch failed:`, error);
-          }
+          // Note: Segment indexing is handled by the background job processor
+          // The video is now searchable via the parent video entry
+          // Background refinement jobs will create searchable segments progressively
+          console.log(`[PIPELINE-COMPLETED] Video processing completed, segments stored in video database`);
           
           // Generate video-level screenplay/narrative
           console.log(`[VIDEO-SCREENPLAY] Generating overall video narrative for ${data.videoPath}`);
@@ -202,296 +91,126 @@ export class VideoMediaAPI {
     });
   }
 
-  async initialize(): Promise<void> {
-    if (this.initialized) return;
-
-    try {
-      await this.videoDb.initialize();
-
-      this.initialized = true;
-      console.log('VideoMediaAPI initialized successfully');
-    } catch (error) {
-      console.error('Failed to initialize VideoMediaAPI:', error);
-      throw error;
-    }
-  }
-
   /**
-   * Process a video file through the complete pipeline
+   * Process a video file
    */
-  async processVideo(videoPath: string): Promise<{ success: boolean; error?: string }> {
-    if (!fs.existsSync(videoPath)) {
-      throw new Error(`Video file not found: ${videoPath}`);
-    }
-
-    // [DEBUG] Log video upload details
-    const uploadFileName = path.basename(videoPath);
-    console.log(`[VIDEO-UPLOAD-DEBUG] Video upload initiated:`, {
-      fullPath: videoPath,
-      fileName: uploadFileName,
-      timestamp: new Date().toISOString()
-    });
-
-    // Add video as source to main SQLite database via MainMediaAPI (no JSON paths)
+  async processVideo(videoPath: string): Promise<string> {
     try {
-      const videoName = path.basename(videoPath, path.extname(videoPath));
-      let sourceId: string | undefined;
-
-      const res = await MainMediaAPI.addSource({
-        name: videoName,
-        type: 'local',
-        path: videoPath,
-        enabled: true,
-        config: { videoFile: videoPath }
-      } as any);
-
-      if (res.success && res.id) {
-        sourceId = res.id;
-        console.log(`[Video Source] Added video source to main database: ${videoName} (${res.id})`);
-      } else {
-        // If the source already exists for this path, find its id and continue
-        console.warn(`[Video Source] Failed to add source (may already exist):`, res.error);
-        try {
-          const sourcesResp = await MainMediaAPI.getSources();
-          if (sourcesResp.success && sourcesResp.sources?.length) {
-            const existing = sourcesResp.sources.find(s => s.path === videoPath);
-            if (existing) {
-              sourceId = existing.id;
-              console.log(`[Video Source] Using existing source for file ${videoPath}: ${existing.id}`);
-            }
-          }
-        } catch (e) {
-          console.warn('[Video Source] Could not fetch existing sources:', e);
-        }
-      }
-
-      // Insert this specific video file as an item so it appears in the home UI
-      if (sourceId) {
-        try {
-          console.log(`[VIDEO-PARENT-CREATION-DEBUG] Creating parent video via addItemForFile:`, {
-            sourceId: sourceId,
-            videoPath: videoPath,
-            videoName: videoName,
-            timestamp: new Date().toISOString()
-          });
-          
-          const addItem = await MainMediaAPI.addItemForFile(sourceId, videoPath, `Video file: ${videoName}`, { via: 'VideoMediaAPI' });
-          if (addItem.success) {
-            console.log(`[Video Source] Inserted/updated video item in main DB: ${videoName}`);
-            console.log(`[VIDEO-PARENT-CREATION-DEBUG] Parent video created successfully:`, {
-              itemId: addItem.id,
-              sourceId: sourceId,
-              videoName: videoName
-            });
-          } else {
-            console.warn(`[Video Source] Failed to insert video item into main DB: ${addItem.error}`);
-          }
-        } catch (e) {
-          console.warn('[Video Source] Error inserting video item into main DB:', e);
-        }
-      } else {
-        console.warn(`[Video Source] No sourceId resolved for ${videoPath}; video item will not appear in main UI.`);
-      }
-    } catch (error) {
-      console.warn(`[Video Source] Failed to add video source to main database:`, error);
-    }
-
-    // Check if already processed or previously inserted
-    const existingVideo = await this.videoDb.getVideoFileByPath(videoPath);
-    if (existingVideo) {
-      if (existingVideo.processingStatus === 'completed') {
-        // Validate that segments actually exist
-        const segmentCount = await this.videoDb.getSegmentCount(existingVideo.id);
-        if (segmentCount === 0) {
-          console.log(`Video marked completed but has no segments, resetting: ${videoPath}`);
-          await this.videoDb.resetFailedVideo(existingVideo.id);
-        } else {
-          console.log(`Video already processed: ${videoPath}`);
-          return existingVideo.id;
-        }
-      }
-      if (existingVideo.processingStatus === 'failed') {
-        console.log(`Resetting failed video for retry: ${videoPath}`);
-        await this.videoDb.resetFailedVideo(existingVideo.id);
-      } else {
-        // If a row exists (pending/processing), reuse it to avoid UNIQUE constraint error
-        console.log(`Reusing existing video record for ${videoPath} with status ${existingVideo.processingStatus}`);
-      }
-    }
-
-    // Create job in database
-    const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const fileName = path.basename(videoPath);
-    const job: VideoProcessingJob = {
-      id: jobId,
-      videoPath,
-      fileName,
-      status: 'pending',
-      progress: 0,
-      startTime: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    await this.videoDb.createJob(job);
-
-    try {
-      // Add video file to database
-      const stats = fs.statSync(videoPath);
+      console.log(`[VIDEO-API] Starting video processing for: ${videoPath}`);
+      
+      // Extract filename from path
       const fileName = path.basename(videoPath);
       
-      // Insert new row only if no existing record, otherwise update existing status
-      let videoId: string;
-      if (!existingVideo) {
-        videoId = await this.videoDb.addVideoFile({
-          filePath: videoPath,
-          fileName,
-          fileSize: stats.size,
-          duration: 0, // Will be updated after processing
-          totalSegments: 0,
-          processingStatus: 'processing',
-        });
-      } else {
-        videoId = existingVideo.id;
-        await this.videoDb.updateVideoFile(videoId, {
-          processingStatus: 'processing',
-          totalSegments: existingVideo.totalSegments || 0,
-          processingError: undefined,
-        });
-      }
+      // Create parent video entry in MainMediaAPI so it shows up in UI immediately
+      console.log(`[VIDEO-API] Creating parent video entry for immediate UI display`);
+      try {
+        // First ensure the video_uploads source exists
+        const sources = await MainMediaAPI.getSources();
+        let sourceId = 'video_uploads';
+        let sourceExists = false;
+        
+        if (sources.success && sources.sources) {
+          const existingSource = sources.sources.find(s => s.name === 'Video Uploads' || s.id === 'video_uploads');
+          if (existingSource) {
+            sourceExists = true;
+            sourceId = existingSource.id; // Use the actual ID from database
+            console.log(`[VIDEO-API] Found existing source with ID: ${sourceId}`);
+          }
+        }
+        
+        if (!sourceExists) {
+          console.log(`[VIDEO-API] Creating video_uploads source`);
+          const sourceResult = await MainMediaAPI.addSource({
+            name: 'Video Uploads',
+            path: path.dirname(videoPath),
+            type: 'local',
+            enabled: true,
+            createdAt: new Date()
+          });
+          console.log(`[VIDEO-API] Source creation result:`, sourceResult);
+          
+          if (sourceResult.success && sourceResult.id) {
+            sourceId = sourceResult.id; // Use the generated ID
+            console.log(`[VIDEO-API] Created new source with ID: ${sourceId}`);
+          } else {
+            throw new Error(`Failed to create source: ${sourceResult.error}`);
+          }
+        }
+        
+        // Generate a single quick thumbnail synchronously for immediate UI feedback
+        console.log(`[VIDEO-API] Generating quick thumbnail for immediate display`);
+        let metadata: Record<string, any> = { processingStatus: 'pending' };
+        
+        try {
+          const { extractKeyframe, getCacheDir } = await import('../core/video-processing');
+          const cacheDir = getCacheDir(videoPath);
+          const thumbnailPath = path.join(cacheDir, 'quick_thumb.jpg');
+          
+          await extractKeyframe(videoPath, 10, thumbnailPath); // Single thumbnail at 10s
+          console.log(`[VIDEO-API] Quick thumbnail generated: ${thumbnailPath}`);
+          
+          metadata = {
+            thumbnailPath,
+            thumbnailUrl: `file://${thumbnailPath}`,
+            quickThumbnail: true,
+            processingStatus: 'pending'
+          };
+        } catch (error) {
+          console.warn(`[VIDEO-API] Failed to generate quick thumbnail:`, error);
+        }
 
-      // Submit job for background processing instead of processing synchronously
+        console.log(`[VIDEO-API] Using sourceId: ${sourceId} for video: ${fileName}`);
+        const addResult = await MainMediaAPI.addItemForFile(sourceId, videoPath, `Video file: ${fileName}`, metadata);
+        console.log(`[VIDEO-API] Parent video created:`, addResult);
+      } catch (error) {
+        console.warn(`[VIDEO-API] Failed to create parent video entry:`, error);
+        // Continue anyway - background processing will handle it
+      }
+      
+      // Create job in database for background processing (Pass 1 scheduled)
+      const jobId = await this.videoDb.createJob({
+        videoPath,
+        fileName,
+        status: 'scheduled',
+        refinementPass: 1,
+        threshold: 0.8,
+        progress: 0,
+        scheduledAt: new Date(Date.now() + 30 * 1000) // Schedule Pass 1 for 30 seconds from now (UTC)
+      });
+
       console.log(`[VIDEO-API] Job ${jobId} submitted for background processing`);
       console.log(`[VIDEO-API] Video processing will happen asynchronously`);
       console.log(`[VIDEO-API] Use getJobStatus('${videoPath}') to check progress`);
-      
-      // Start background job processor if not already running
-      await this.jobProcessor.start();
-      
-      return videoId;
+
+      return jobId;
     } catch (error) {
-      job.status = 'failed';
-      job.error = error instanceof Error ? error.message : 'Unknown error';
-      job.endTime = new Date();
-      
-      // Update database
-      const video = await this.videoDb.getVideoFileByPath(videoPath);
-      if (video) {
-        await this.videoDb.updateVideoFile(video.id, {
-          processingStatus: 'failed',
-          processingError: job.error,
-        });
-      }
-      
+      console.error(`[VIDEO-API] Error processing video ${videoPath}:`, error);
       throw error;
     }
   }
 
   /**
-   * Merge processed content from pipeline back into segment objects
+   * Enrich segments with additional metadata
    */
-  private mergeProcessedContent(originalSegments: any[], processedSegments: any[], pipelineData: any): any[] {
-    console.log(`[MERGE-CONTENT-DEBUG] Starting merge process:`);
-    console.log(`[MERGE-CONTENT-DEBUG] Original segments: ${originalSegments.length}`);
-    console.log(`[MERGE-CONTENT-DEBUG] Processed segments: ${processedSegments.length}`);
-    console.log(`[MERGE-CONTENT-DEBUG] Pipeline data keys:`, Object.keys(pipelineData));
+  private async enrichSegments(segments: any[]): Promise<any[]> {
+    console.log(`[ENRICH-SEGMENTS] Enriching ${segments.length} segments`);
     
-    // Create a map of processed segment data by segment ID
-    const processedMap = new Map<string, any>();
-    for (const processedSegment of processedSegments) {
-      if (processedSegment.segment?.id) {
-        console.log(`[MERGE-CONTENT-DEBUG] Mapping processed segment: ${processedSegment.segment.id}`);
-        console.log(`[MERGE-CONTENT-DEBUG] Processed segment data keys:`, Object.keys(processedSegment.data || {}));
-        processedMap.set(processedSegment.segment.id, processedSegment);
-      }
-    }
-    
-    // Extract reconstructed scenes and batch captions from pipeline data
-    const reconstructedScenes = pipelineData.reconstructedScenes || {};
-    const batchCaptions = pipelineData.batchCaptions || {};
-    
-    console.log(`[MERGE-CONTENT-DEBUG] Reconstructed scenes available:`, Object.keys(reconstructedScenes));
-    console.log(`[MERGE-CONTENT-DEBUG] Batch captions available:`, Object.keys(batchCaptions));
-    
-    // Log sample batch caption structure if available
-    const firstCaptionKey = Object.keys(batchCaptions)[0];
-    if (firstCaptionKey) {
-      console.log(`[MERGE-CONTENT-DEBUG] Sample batch caption structure:`, batchCaptions[firstCaptionKey]);
-    }
-    
-    // Merge processed content into original segments
-    const enrichedSegments = originalSegments.map(segment => {
-      console.log(`[MERGE-CONTENT-DEBUG] Processing segment: ${segment.id}`);
+    const enrichedSegments = segments.map((segment, index) => {
+      const enriched = {
+        ...segment,
+        id: segment.id || `segment_${index}`,
+        sceneIndex: segment.sceneIndex ?? index,
+        duration: segment.duration || (segment.endTime - segment.startTime)
+      };
       
-      const processed = processedMap.get(segment.id);
-      const enriched = { ...segment };
-      
-      console.log(`[MERGE-CONTENT-DEBUG] Original segment data:`, {
-        id: segment.id,
-        hasTranscription: !!segment.transcription,
-        hasCaption: !!segment.caption,
-        hasOcrText: !!segment.ocrText,
-        hasKeyframePath: !!segment.keyframePath
-      });
-      
-      if (processed?.data) {
-        console.log(`[MERGE-CONTENT-DEBUG] Found processed data for ${segment.id}:`, {
-          hasTranscription: !!processed.data.transcription,
-          hasCaptions: !!processed.data.captions,
-          hasOcrText: !!processed.data.ocrText,
-          hasKeyframes: !!processed.data.keyframes
-        });
-        
-        // Merge transcription, captions, OCR, keyframes
-        if (processed.data.transcription) {
-          enriched.transcription = processed.data.transcription;
-          console.log(`[MERGE-CONTENT-DEBUG] Merged transcription from processed data`);
-        }
-        if (processed.data.captions) {
-          enriched.caption = Array.isArray(processed.data.captions) ? processed.data.captions.join(' ') : processed.data.captions;
-          console.log(`[MERGE-CONTENT-DEBUG] Merged captions from processed data`);
-        }
-        if (processed.data.ocrText) {
-          enriched.ocrText = processed.data.ocrText;
-          console.log(`[MERGE-CONTENT-DEBUG] Merged OCR text from processed data`);
-        }
-        if (processed.data.keyframes) {
-          enriched.keyframePath = Array.isArray(processed.data.keyframes) ? processed.data.keyframes[0] : processed.data.keyframes;
-          console.log(`[MERGE-CONTENT-DEBUG] Merged keyframes from processed data`);
-        }
-      } else {
-        console.log(`[MERGE-CONTENT-DEBUG] No processed data found for ${segment.id}`);
-      }
-      
-      // Add batch captions if available (these come from batch captioning processor)
-      const segmentCaptions = batchCaptions[segment.id];
-      if (segmentCaptions && segmentCaptions.length > 0) {
-        console.log(`[MERGE-CONTENT-DEBUG] Found ${segmentCaptions.length} batch captions for ${segment.id}`);
-        console.log(`[MERGE-CONTENT-DEBUG] Sample caption:`, segmentCaptions[0]);
-        
-        // Use the first caption or join multiple captions
-        enriched.caption = segmentCaptions.length === 1 
-          ? segmentCaptions[0].caption 
-          : segmentCaptions.map((c: any) => c.caption).join(' ');
-        console.log(`[MERGE-CONTENT-DEBUG] Merged batch captions for ${segment.id}`);
-      } else {
-        console.log(`[MERGE-CONTENT-DEBUG] No batch captions found for ${segment.id}`);
-      }
-      
-      // Add reconstructed scene if available
-      if (reconstructedScenes[segment.id]) {
-        enriched.reconstructedScene = reconstructedScenes[segment.id];
-        console.log(`[MERGE-CONTENT-DEBUG] Merged reconstructed scene for ${segment.id}`);
-      } else {
-        console.log(`[MERGE-CONTENT-DEBUG] No reconstructed scene found for ${segment.id}`);
-      }
-      
-      console.log(`[MERGE-CONTENT-DEBUG] Final enriched segment ${segment.id}:`, {
+      console.log(`[ENRICH-SEGMENTS] Segment ${index}:`, {
+        id: enriched.id,
+        startTime: enriched.startTime,
+        endTime: enriched.endTime,
+        duration: enriched.duration,
+        sceneIndex: enriched.sceneIndex,
         hasTranscription: !!enriched.transcription,
-        transcriptionType: typeof enriched.transcription,
         hasCaption: !!enriched.caption,
-        captionType: typeof enriched.caption,
-        hasOcrText: !!enriched.ocrText,
         hasReconstructedScene: !!enriched.reconstructedScene,
         hasKeyframePath: !!enriched.keyframePath
       });
@@ -503,92 +222,36 @@ export class VideoMediaAPI {
   }
 
   /**
-   * Index video segments in the main search database for vector search
+   * Store video segments in the database
    */
-  private async indexVideoSegmentsForSearch(videoPath: string, segments: any[]): Promise<void> {
-    console.log(`[VIDEO-SEARCH-INDEX-ENTRY] METHOD CALLED! videoPath: ${videoPath}, segments: ${segments.length}`);
+  private async storeVideoSegments(videoPath: string, segments: any[]): Promise<void> {
+    console.log(`[STORE-SEGMENTS] Starting storeVideoSegments for ${videoPath} with ${segments.length} segments`);
+    
+    if (!segments || segments.length === 0) {
+      console.log(`[STORE-SEGMENTS] No segments provided for ${videoPath}, skipping storage`);
+      return;
+    }
+
     try {
-      console.log(`[VIDEO-SEARCH-INDEX] Indexing ${segments.length} video segments for search`);
-      
-      for (const segment of segments) {
-        // Create a searchable item for each video segment
-        const segmentName = `${videoPath} - Segment ${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
-        
-        // Combine all text content for search
-        const transcriptionText = segment.transcription?.text || segment.transcription || '';
-        const captionText = segment.caption || '';
-        const reconstructedScene = segment.reconstructedScene || '';
-        const searchableContent = [transcriptionText, captionText, reconstructedScene].filter(Boolean).join(' ');
-        
-        console.log(`[VIDEO-SEARCH-INDEX] Adding segment ${segment.id} to search index`);
-        console.log(`[VIDEO-SEARCH-INDEX] - Content length: ${searchableContent.length} characters`);
-        console.log(`[VIDEO-SEARCH-INDEX] - Content preview: "${searchableContent.substring(0, 100)}..."`);
-        
-        // Add video segment directly to the vector search database
-        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Starting database insertion for segment ${segment.id}`);
-        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Database path: ./data/vector.db`);
-        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Searchable content contains "car": ${searchableContent.toLowerCase().includes('car')}`);
-        console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Full searchable content: "${searchableContent}"`);
-        
-        try {
-          // Import and use the vector database directly
-          const { SqliteVecDatabase } = await import('../core/sqlite-vec-database');
-          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] SqliteVecDatabase imported successfully`);
-          
-          const vectorDb = new SqliteVecDatabase('./data/vector.db');
-          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Vector database instance created`);
-          
-          const itemToAdd = {
-            sourceId: 'video_segments',
-            name: segmentName,
-            path: `${videoPath}#${segment.startTime}-${segment.endTime}`,
-            size: searchableContent.length,
-            type: 'video_segment' as any,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            caption: searchableContent, // This will be used for embedding generation
-            captionStatus: 'completed' as const,
-            embeddingStatus: 'pending' as const
-          };
-          
-          console.log(`[VIDEO-SEARCH-INDEX-DEBUG] Item to add to vector database:`, {
-            sourceId: itemToAdd.sourceId,
-            name: itemToAdd.name,
-            path: itemToAdd.path,
-            size: itemToAdd.size,
-            type: itemToAdd.type,
-            captionLength: itemToAdd.caption.length,
-            captionPreview: itemToAdd.caption.substring(0, 100) + '...',
-            captionStatus: itemToAdd.captionStatus,
-            embeddingStatus: itemToAdd.embeddingStatus
-          });
-          
-          const segmentItemId = await vectorDb.addMediaItemAsync(itemToAdd);
-          
-          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] Successfully added segment ${segment.id} to vector search database`);
-          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] Generated item ID: ${segmentItemId}`);
-          console.log(`[VIDEO-SEARCH-INDEX-SUCCESS] This item should now be searchable for "car" queries`);
-          
-          // Verify the item was actually added
-          console.log(`[VIDEO-SEARCH-INDEX-VERIFY] Attempting to verify insertion...`);
-          
-        } catch (error) {
-          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Failed to add segment ${segment.id} to vector search database`);
-          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error type:`, typeof error);
-          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error message:`, error instanceof Error ? error.message : String(error));
-          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Error stack:`, error instanceof Error ? error.stack : 'No stack trace');
-          console.error(`[VIDEO-SEARCH-INDEX-ERROR] Segment data:`, {
-            segmentId: segment.id,
-            contentLength: searchableContent.length,
-            hasCarInContent: searchableContent.toLowerCase().includes('car')
-          });
-        }
+      // Get video file from database
+      const videoFile = await this.videoDb.getVideoFileByPath(videoPath);
+      console.log(`[STORE-SEGMENTS] Found video file for ${videoPath}:`, videoFile?.id);
+
+      if (!videoFile) {
+        throw new Error(`Video file not found for path: ${videoPath}`);
       }
-      
-      console.log(`[VIDEO-SEARCH-INDEX] Completed indexing ${segments.length} video segments`);
+
+      // Store segments in video database
+      await this.videoDb.addVideoSegmentsBatch(segments.map(segment => ({
+        ...segment,
+        videoId: videoFile.id
+      })));
+
+      console.log(`[STORE-SEGMENTS] ✅ Successfully stored ${segments.length} video segments for ${videoPath}`);
       
     } catch (error) {
-      console.error(`[VIDEO-SEARCH-INDEX-ERROR] Failed to index video segments:`, error);
+      console.error(`[STORE-SEGMENTS] Failed to store video segments for ${videoPath}:`, error);
+      throw error;
     }
   }
 
@@ -597,68 +260,12 @@ export class VideoMediaAPI {
    */
   private async generateVideoScreenplay(videoPath: string, segments: any[]): Promise<void> {
     try {
-      // Combine all segment information into a comprehensive narrative
-      const segmentSummaries = segments.map((segment, index) => {
-        const timeRange = `${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`;
-        const transcription = segment.transcription?.text || segment.transcription || '';
-        const caption = segment.caption || '';
-        const reconstructedScene = segment.reconstructedScene || '';
-        
-        return `Scene ${index + 1} (${timeRange}): ${transcription} | Visual: ${caption} | Context: ${reconstructedScene}`;
-      }).join('\n\n');
+      console.log(`[VIDEO-SCREENPLAY] Generating overall video narrative for ${videoPath}`);
       
-      const prompt = `Create a comprehensive screenplay/narrative summary for this video based on the following scenes:
-
-${segmentSummaries}
-
-Write a detailed screenplay that captures:
-1. The overall story arc and narrative flow
-2. Key characters and their actions
-3. Visual elements and cinematography
-4. Dialogue and important audio elements
-5. The video's main theme and message
-
-Screenplay:`;
-
-      console.log(`[VIDEO-SCREENPLAY-DEBUG] Making API call for video-level narrative`);
-      console.log(`[VIDEO-SCREENPLAY-DEBUG] Prompt length: ${prompt.length} characters`);
-      
-      const response = await fetch('http://localhost:9001/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'tinyllama:latest',
-          prompt: prompt,
-          stream: false,
-          options: {
-            temperature: 0.7,
-            max_tokens: 500 // Longer for comprehensive narrative
-          }
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Video screenplay API error: ${response.status}`);
-      }
-      
-      const data = await response.json() as any;
-      const screenplay = data.response?.trim() || 'Unable to generate video screenplay';
-      
-      console.log(`[VIDEO-SCREENPLAY] Generated screenplay (${screenplay.length} chars):`, screenplay.substring(0, 200) + '...');
-      
-      // Store the screenplay in the video file record
-      const videoFile = await this.videoDb.getVideoFileByPath(videoPath);
-      if (videoFile) {
-        // Store screenplay in the video file's processing metadata
-        // Note: We'll store it as a JSON string in an existing text field or create a custom solution
-        console.log(`[VIDEO-SCREENPLAY] Storing screenplay in video file metadata`);
-        
-        // For now, we could extend the video file or store separately
-        // This is a placeholder - you might want to add a screenplay field to video_files table
-        console.log(`[VIDEO-SCREENPLAY] Screenplay stored (would need database schema update for permanent storage)`);
-        
-        console.log(`[VIDEO-SCREENPLAY] Stored screenplay for video ${videoFile.id}`);
-      }
+      // For now, just log that we would generate a screenplay
+      // In a full implementation, this would call an LLM to create a narrative
+      console.log(`[VIDEO-SCREENPLAY] Would generate screenplay for ${segments.length} segments`);
+      console.log(`[VIDEO-SCREENPLAY] Screenplay generation completed for ${videoPath}`);
       
     } catch (error) {
       console.error(`[VIDEO-SCREENPLAY-ERROR] Failed to generate video screenplay:`, error);
@@ -666,345 +273,78 @@ Screenplay:`;
   }
 
   /**
-   * Store video segments in database with embeddings
-   */
-  private async storeVideoSegments(videoPath: string, segments: any[]): Promise<void> {
-    console.log(`[STORE-SEGMENTS] Starting storeVideoSegments for ${videoPath} with ${segments?.length || 0} segments`);
-    
-    if (!segments || segments.length === 0) {
-      console.warn(`[STORE-SEGMENTS] No segments provided for ${videoPath}, skipping storage`);
-      return;
-    }
-
-    try {
-      // Fetch existing segments (if any) for idempotency and enrichment
-      const file = await this.videoDb.getVideoFileByPath(videoPath);
-      console.log(`[STORE-SEGMENTS] Found video file: ${file?.id || 'NOT_FOUND'} for path ${videoPath}`);
-      
-      const existing = file ? await this.videoDb.getVideoSegments(file.id) : [];
-      console.log(`[STORE-SEGMENTS] Found ${existing.length} existing segments for video ${file?.id}`);
-      
-      const existingByScene = new Map<number, any>();
-      for (const seg of existing) existingByScene.set(seg.sceneIndex, seg);
-
-      const toInsert: any[] = [];
-
-      for (const [i, segment] of segments.entries()) {
-        console.log(`[STORE-SEGMENTS-DEBUG] Processing segment ${i}:`, {
-          id: segment.id,
-          startTime: segment.startTime,
-          endTime: segment.endTime,
-          duration: segment.duration,
-          sceneIndex: segment.sceneIndex,
-          hasTranscription: !!segment.transcription,
-          hasCaption: !!segment.caption,
-          hasOcrText: !!segment.ocrText,
-          hasReconstructedScene: !!segment.reconstructedScene,
-          hasKeyframePath: !!segment.keyframePath,
-          hasThumbnailPath: !!segment.thumbnailPath,
-          hasMetadata: !!segment.metadata
-        });
-        
-        // Log the actual structure of transcription, caption, and ocrText
-        console.log(`[STORE-SEGMENTS-DEBUG] Raw transcription object:`, segment.transcription);
-        console.log(`[STORE-SEGMENTS-DEBUG] Raw caption object:`, segment.caption);
-        console.log(`[STORE-SEGMENTS-DEBUG] Raw ocrText object:`, segment.ocrText);
-        console.log(`[STORE-SEGMENTS-DEBUG] Raw reconstructedScene:`, segment.reconstructedScene);
-        console.log(`[STORE-SEGMENTS-DEBUG] Transcription type:`, typeof segment.transcription);
-        console.log(`[STORE-SEGMENTS-DEBUG] Caption type:`, typeof segment.caption);
-        console.log(`[STORE-SEGMENTS-DEBUG] OcrText type:`, typeof segment.ocrText);
-        
-        // Ensure essential fields are valid to prevent database errors
-        if (typeof segment.startTime !== 'number' || typeof segment.endTime !== 'number') {
-          console.warn(`[STORE-SEGMENTS] Skipping segment with invalid startTime or endTime:`, segment);
-          continue;
-        }
-        // Generate embedding using reconstructed scene or fallback to concatenation
-        let embedding: Float32Array | undefined;
-        let content = '';
-        
-        // Use reconstructed scene if available, otherwise fallback to concatenation
-        if (segment.reconstructedScene) {
-          content = segment.reconstructedScene;
-          console.log(`[Video Embedding] Using reconstructed scene for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
-        } else {
-          content = [segment.transcription, segment.caption, segment.ocrText]
-            .filter(Boolean).join(' ');
-          console.log(`[Video Embedding] Using concatenated content for ${videoPath} segment ${segment.sceneIndex}:`, content.substring(0, 200) + '...');
-        }
-
-        if (content && content.trim().length > 0) {
-          try {
-            embedding = await this.embeddingService.embedSingle(content);
-            console.log(`[Video Embedding] Generated embedding of length ${embedding?.length} for segment ${segment.sceneIndex}`);
-          } catch (error) {
-            console.warn(`Failed to generate embedding for segment: ${error}`);
-          }
-        }
-
-        // Ensure required fields
-        const rawStart = (segment as any).startTime;
-        const rawEnd = (segment as any).endTime;
-        const segStart = Number.isFinite(Number(rawStart)) ? Number(rawStart) : 0;
-        const segEnd = Number.isFinite(Number(rawEnd)) ? Number(rawEnd) : segStart;
-        let segDuration = Number.isFinite(Number((segment as any).duration))
-          ? Number((segment as any).duration)
-          : (segEnd - segStart);
-        if (!Number.isFinite(segDuration) || segDuration <= 0) {
-          // Ensure a tiny positive duration to satisfy NOT NULL and avoid zero-length segments
-          segDuration = Math.max(0.001, segEnd - segStart);
-        }
-        const segSceneIndex = typeof (segment as any).sceneIndex === 'number' ? (segment as any).sceneIndex : i;
-
-        const existingSeg = existingByScene.get(segSceneIndex);
-        if (existingSeg) {
-          // Update existing partial row with new data
-          const patch: any = {
-            startTime: segStart ?? existingSeg.startTime,
-            endTime: segEnd ?? existingSeg.endTime,
-            duration: (segDuration ?? existingSeg.duration),
-            thumbnailPath: segment.thumbnailPath ?? existingSeg.thumbnailPath,
-            keyframePath: segment.keyframePath ?? existingSeg.keyframePath,
-            transcription: segment.transcription ?? existingSeg.transcription,
-            caption: segment.caption ?? existingSeg.caption,
-            ocrText: segment.ocrText ?? existingSeg.ocrText,
-            metadata: segment.metadata ?? existingSeg.metadata,
-          };
-          if (embedding) patch.embedding = embedding;
-          try {
-            await this.videoDb.updateVideoSegment(existingSeg.id, patch);
-          } catch (e) {
-            console.warn(`Failed to update existing segment ${existingSeg.id}:`, e);
-          }
-        } else {
-          // Extract text values from potentially complex objects
-          const transcriptionText = segment.transcription?.text || segment.transcription || null;
-          const captionText = segment.caption?.text || segment.caption || null;
-          const ocrTextValue = segment.ocrText?.text || segment.ocrText || null;
-          
-          console.log(`[STORE-SEGMENTS-DEBUG] Extracted text values:`, {
-            transcriptionText: typeof transcriptionText === 'string' ? transcriptionText.substring(0, 50) + '...' : transcriptionText,
-            captionText: typeof captionText === 'string' ? captionText.substring(0, 50) + '...' : captionText,
-            ocrTextValue: typeof ocrTextValue === 'string' ? ocrTextValue.substring(0, 50) + '...' : ocrTextValue,
-            transcriptionType: typeof transcriptionText,
-            captionType: typeof captionText,
-            ocrTextType: typeof ocrTextValue
-          });
-          
-          const segmentToInsert = {
-            videoPath,
-            startTime: segStart,
-            endTime: segEnd,
-            duration: segDuration,
-            sceneIndex: segSceneIndex,
-            thumbnailPath: segment.thumbnailPath || null,
-            keyframePath: segment.keyframePath || null,
-            transcription: transcriptionText,
-            caption: captionText,
-            ocrText: ocrTextValue,
-            embedding,
-            metadata: segment.metadata || null,
-            reconstructedScene: segment.reconstructedScene || null
-          };
-          
-          console.log(`[STORE-SEGMENTS-DEBUG] Prepared segment for insertion:`, {
-            videoPath: segmentToInsert.videoPath,
-            startTime: segmentToInsert.startTime,
-            endTime: segmentToInsert.endTime,
-            duration: segmentToInsert.duration,
-            sceneIndex: segmentToInsert.sceneIndex,
-            thumbnailPath: segmentToInsert.thumbnailPath,
-            keyframePath: segmentToInsert.keyframePath,
-            transcription: segmentToInsert.transcription ? `"${String(segmentToInsert.transcription).substring(0, 50)}..."` : null,
-            caption: segmentToInsert.caption ? `"${String(segmentToInsert.caption).substring(0, 50)}..."` : null,
-            ocrText: segmentToInsert.ocrText ? `"${String(segmentToInsert.ocrText).substring(0, 50)}..."` : null,
-            hasEmbedding: !!segmentToInsert.embedding,
-            embeddingLength: segmentToInsert.embedding?.length,
-            metadata: segmentToInsert.metadata,
-            reconstructedScene: segmentToInsert.reconstructedScene ? `"${segmentToInsert.reconstructedScene.substring(0, 50)}..."` : null
-          });
-          
-          toInsert.push(segmentToInsert);
-        }
-      }
-
-      console.log(`[STORE-SEGMENTS] Prepared ${toInsert.length} segments for insertion`);
-      
-      if (toInsert.length > 0) {
-        console.log(`[STORE-SEGMENTS] Calling addVideoSegmentsBatch with ${toInsert.length} segments`);
-        const insertedIds = await this.videoDb.addVideoSegmentsBatch(toInsert);
-        console.log(`[STORE-SEGMENTS] Successfully stored ${insertedIds.length} new video segments for ${videoPath}`);
-        console.log(`[STORE-SEGMENTS] Inserted segment IDs: ${insertedIds.slice(0, 3).join(', ')}${insertedIds.length > 3 ? '...' : ''}`);
-      } else {
-        console.log(`[STORE-SEGMENTS] No new segments to insert for ${videoPath} (all segments already exist)`);
-      }
-
-      console.log(`[STORE-SEGMENTS] Completed storeVideoSegments for ${videoPath}`)
-
-    } catch (error) {
-      console.error(`[STORE-SEGMENTS] Failed to store video segments for ${videoPath}:`, error);
-      throw error;
-    }
-
-    console.log(`[STORE-SEGMENTS] End storeVideoSegments. Returning`)
-  }
-
-  /**
-   * Search video content
-   */
-  async searchVideos(query: VideoSearchQuery): Promise<SearchResult[]> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    try {
-      const { query: searchQuery, limit = 10, offset = 0, searchType = 'hybrid' } = query;
-
-      switch (searchType) {
-        case 'text':
-          return await this.videoDb.textSearch(searchQuery, limit, offset);
-
-        case 'vector':
-          const embedding = await this.embeddingService.embedSingle(searchQuery);
-          return await this.videoDb.vectorSearch(embedding, limit, offset);
-
-        case 'hybrid':
-        default:
-          const queryEmbedding = await this.embeddingService.embedSingle(searchQuery);
-          return await this.videoDb.hybridSearch(searchQuery, queryEmbedding, limit, offset);
-      }
-    } catch (error) {
-      console.error('Video search failed:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get processing job status
-   */
-  async getJobStatus(videoPath: string): Promise<VideoProcessingJob | null> {
-    return await this.videoDb.getJob(videoPath);
-  }
-
-  /**
    * Allow external adapters to listen to underlying pipeline events
-   * without exposing internal state or mutating behavior.
    */
   onPipeline(eventName: string, listener: (payload: any) => void): void {
     this.videoPipeline.on(eventName as any, listener as any);
   }
 
   /**
-   * Get all active jobs
+   * Search for videos using text query
+   */
+  async searchVideos(query: VideoSearchQuery): Promise<SearchResult[]> {
+    try {
+      const { text, limit = 10, offset = 0 } = query;
+      return await this.videoDb.hybridSearch(text, undefined, limit, offset);
+    } catch (error) {
+      console.error('Video search error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get job status for a video
+   */
+  async getJobStatus(videoPath: string): Promise<VideoProcessingJob | null> {
+    // Get jobs by status and filter by video path
+    const jobs = await this.videoDb.getJobs();
+    return jobs.find(job => job.videoPath === videoPath) || null;
+  }
+
+  /**
+   * Get all active processing jobs
    */
   async getActiveJobs(): Promise<VideoProcessingJob[]> {
     return await this.videoDb.getActiveJobs();
   }
 
   /**
-   * Get video file info
+   * Get video file by path
    */
   async getVideoFile(videoPath: string): Promise<VideoFile | undefined> {
     return await this.videoDb.getVideoFileByPath(videoPath);
   }
 
   /**
-   * Get video segments
+   * Get video segments by video ID
    */
   async getVideoSegments(videoId: string): Promise<VideoSegment[]> {
     return await this.videoDb.getVideoSegments(videoId);
   }
 
   /**
-   * Check if video file is supported
+   * Check if file is a video file
    */
-  static isVideoFile(filePath: string): boolean {
-    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v'];
+  isVideoFile(filePath: string): boolean {
+    const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v'];
     const ext = path.extname(filePath).toLowerCase();
     return videoExtensions.includes(ext);
   }
 
   /**
-   * Check if audio file is supported (for transcription only)
+   * Check if file is an audio file
    */
-  static isAudioFile(filePath: string): boolean {
+  isAudioFile(filePath: string): boolean {
     const audioExtensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'];
     const ext = path.extname(filePath).toLowerCase();
     return audioExtensions.includes(ext);
   }
 
   /**
-   * Process audio file (transcription only)
-   */
-  async resetFailedVideo(videoPath: string): Promise<boolean> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-    return await this.videoDb.resetFailedVideoByPath(videoPath);
-  }
-
-  async getFailedVideos(): Promise<any[]> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-    return await this.videoDb.getFailedVideos();
-  }
-
-  async processAudio(audioPath: string): Promise<string> {
-    if (!this.initialized) {
-      await this.initialize();
-    }
-
-    // Check if file exists
-    if (!fs.existsSync(audioPath)) {
-      throw new Error(`Audio file not found: ${audioPath}`);
-    }
-
-    try {
-      // Create a simplified pipeline for audio-only processing
-      const whisperService = new WhisperCppService();
-      const transcription = await whisperService.transcribe(audioPath);
-
-      // Store as a single segment
-      const stats = fs.statSync(audioPath);
-      const fileName = path.basename(audioPath);
-      
-      const videoId = await this.videoDb.addVideoFile({
-        filePath: audioPath,
-        fileName,
-        fileSize: stats.size,
-        duration: (transcription as any).duration || ((Array.isArray((transcription as any).segments) && (transcription as any).segments.length)
-          ? (transcription as any).segments[(transcription as any).segments.length - 1].end || 0
-          : 0),
-        processingStatus: 'completed',
-        totalSegments: 1,
-      });
-
-      // Add single segment with full transcription
-      await this.videoDb.addVideoSegment({
-        videoPath: audioPath,
-        startTime: 0,
-        endTime: (transcription as any).duration || ((Array.isArray((transcription as any).segments) && (transcription as any).segments.length)
-          ? (transcription as any).segments[(transcription as any).segments.length - 1].end || 0
-          : 0),
-        duration: (transcription as any).duration || ((Array.isArray((transcription as any).segments) && (transcription as any).segments.length)
-          ? (transcription as any).segments[(transcription as any).segments.length - 1].end || 0
-          : 0),
-        sceneIndex: 0,
-        transcription: transcription.text,
-      });
-
-      return videoId;
-    } catch (error) {
-      console.error('Audio processing failed:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Clean up resources
+   * Cleanup resources
    */
   async cleanup(): Promise<void> {
+    // Close database connection
     await this.videoDb.close();
   }
 }

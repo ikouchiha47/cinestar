@@ -545,36 +545,42 @@ export class VideoDatabase {
   }
 
   // Video Processing Jobs methods
-  async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-    const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const now = new Date().toISOString();
-    
-    const stmt = this.db.prepare(`
-      INSERT INTO video_processing_jobs (
-        id, video_path, file_name, status, progress, error,
-        start_time, end_time, segment_count, total_segments,
-        current_stage, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    stmt.run(
-      id,
-      job.videoPath,
-      job.fileName,
-      job.status,
-      job.progress,
-      job.error || null,
-      job.startTime?.toISOString() || null,
-      job.endTime?.toISOString() || null,
-      job.segmentCount || 0,
-      job.totalSegments || null,
-      job.currentStage || null,
-      now,
-      now
-    );
-    
-    return id;
-  }
+async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const now = new Date().toISOString();
+  
+  const stmt = this.db.prepare(`
+    INSERT INTO video_processing_jobs (
+      id, video_path, file_name, status, progress, error,
+      start_time, end_time, segment_count, total_segments,
+      current_stage, refinement_pass, threshold, parent_job_id,
+      trigger_condition, scheduled_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  stmt.run(
+    id,
+    job.videoPath,
+    job.fileName,
+    job.status,
+    job.progress,
+    job.error || null,
+    job.startTime?.toISOString() || null,
+    job.endTime?.toISOString() || null,
+    job.segmentCount || 0,
+    job.totalSegments || null,
+    job.currentStage || null,
+    job.refinementPass || 1,
+    job.threshold || 0.8,
+    job.parentJobId || null,
+    job.triggerCondition || 'immediate',
+    job.scheduledAt?.toISOString() || null,
+    now,
+    now
+  );
+  
+  return id;
+}
 
   async updateJob(id: string, updates: Partial<Omit<VideoProcessingJob, 'id' | 'createdAt'>>): Promise<void> {
     const fields = [];
@@ -634,8 +640,19 @@ export class VideoDatabase {
     return this.getJobs('processing');
   }
 
-  async getPendingJobs(): Promise<VideoProcessingJob[]> {
-    return this.getJobs('pending');
+  async getPendingJobs(limit: number = 5): Promise<VideoProcessingJob[]> {
+    // Get pending jobs in batches with priority ordering
+    const stmt = this.db.prepare(`
+      SELECT * FROM video_processing_jobs 
+      WHERE status = 'pending' 
+      ORDER BY 
+        CASE WHEN refinement_pass = 1 THEN 1 ELSE 2 END, -- Prioritize initial processing
+        created_at ASC -- FIFO within same priority
+      LIMIT ?
+    `);
+    
+    const rows = stmt.all(limit) as any[];
+    return rows.map(row => this.mapJobRow(row));
   }
 
   private mapJobRow(row: any): VideoProcessingJob {
@@ -651,6 +668,11 @@ export class VideoDatabase {
       segmentCount: row.segment_count,
       totalSegments: row.total_segments,
       currentStage: row.current_stage,
+      refinementPass: row.refinement_pass,
+      threshold: row.threshold,
+      parentJobId: row.parent_job_id,
+      triggerCondition: row.trigger_condition,
+      scheduledAt: row.scheduled_at ? new Date(row.scheduled_at) : undefined,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at || row.created_at)
     };
@@ -703,12 +725,16 @@ export class VideoDatabase {
         const videoRow = videoStmt.get(segment.videoPath) as any;
         const videoId = videoRow?.id || 'unknown';
 
-        // Log the parameters being passed to the database
+        // Convert text fields to strings and log the parameters being passed to the database
+        const transcriptionStr = segment.transcription ? String(segment.transcription) : null;
+        const captionStr = segment.caption ? String(segment.caption) : null;
+        const ocrTextStr = segment.ocrText ? String(segment.ocrText) : null;
+        
         const params = [
           id, videoId, segment.videoPath, segment.startTime, segment.endTime,
           segment.duration, segment.sceneIndex, segment.thumbnailPath,
-          segment.keyframePath, segment.transcription, segment.caption,
-          segment.ocrText, segment.embedding ? Buffer.from(segment.embedding.buffer) : null,
+          segment.keyframePath, transcriptionStr, captionStr,
+          ocrTextStr, segment.embedding ? Buffer.from(segment.embedding.buffer) : null,
           segment.metadata ? JSON.stringify(segment.metadata) : null,
           segment.reconstructedScene || null
         ];
@@ -723,9 +749,9 @@ export class VideoDatabase {
           sceneIndex: segment.sceneIndex,
           thumbnailPath: segment.thumbnailPath,
           keyframePath: segment.keyframePath,
-          transcription: segment.transcription ? `"${segment.transcription.substring(0, 30)}..."` : null,
-          caption: segment.caption ? `"${segment.caption.substring(0, 30)}..."` : null,
-          ocrText: segment.ocrText ? `"${segment.ocrText.substring(0, 30)}..."` : null,
+          transcription: transcriptionStr ? `"${transcriptionStr.substring(0, 30)}..."` : null,
+          caption: captionStr ? `"${captionStr.substring(0, 30)}..."` : null,
+          ocrText: ocrTextStr ? `"${ocrTextStr.substring(0, 30)}..."` : null,
           hasEmbedding: !!segment.embedding,
           hasMetadata: !!segment.metadata
         });

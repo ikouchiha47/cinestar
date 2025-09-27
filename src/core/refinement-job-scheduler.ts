@@ -8,6 +8,7 @@ export interface RefinementPass {
   triggerCondition: 'immediate' | 'delayed' | 'conditional';
   enabled: boolean;
   description: string;
+  jitterPercent?: number; // Optional jitter percentage (default 0.2 = 20%)
 }
 
 export interface RefinementMetrics {
@@ -87,9 +88,15 @@ export class RefinementJobScheduler {
       const refinementPasses = await this.getRefinementPasses();
       const scheduledJobIds: string[] = [];
 
-      // Schedule passes 2 and beyond (pass 1 is immediate)
+      // Schedule passes 2 and beyond (pass 1 is now scheduled separately)
       for (const pass of refinementPasses.filter(p => p.passNumber > 1 && p.enabled)) {
-        const scheduledAt = new Date(Date.now() + pass.delaySeconds * 1000);
+        // Add jitter to prevent thundering herd problem
+        const jitterPercent = pass.jitterPercent ?? 0.2; // Default ±20% jitter
+        const maxJitter = pass.delaySeconds * jitterPercent;
+        const jitter = (Math.random() - 0.5) * 2 * maxJitter; // Random between -maxJitter and +maxJitter
+        const delayWithJitter = Math.max(0, pass.delaySeconds + jitter); // Ensure non-negative delay
+        
+        const scheduledAt = new Date(Date.now() + delayWithJitter * 1000); // UTC time
         
         const jobId = await this.videoDb.createJob({
           videoPath,
@@ -105,7 +112,7 @@ export class RefinementJobScheduler {
 
         scheduledJobIds.push(jobId);
         
-        console.log(`[REFINEMENT-SCHEDULER] Scheduled pass ${pass.passNumber} (threshold=${pass.threshold}) for ${new Date(scheduledAt).toLocaleTimeString()}`);
+        console.log(`[REFINEMENT-SCHEDULER] Scheduled pass ${pass.passNumber} (threshold=${pass.threshold}) for ${new Date(scheduledAt).toLocaleTimeString()} (jitter: ${jitter > 0 ? '+' : ''}${Math.round(jitter)}s)`);
       }
 
       return scheduledJobIds;
@@ -167,18 +174,21 @@ export class RefinementJobScheduler {
   }
 
   /**
-   * Get jobs that are scheduled to run now or in the past
+   * Get jobs that are scheduled to run now or in the past (with batching)
    */
-  private async getScheduledJobs(): Promise<VideoProcessingJob[]> {
+  private async getScheduledJobs(limit: number = 10): Promise<VideoProcessingJob[]> {
     const stmt = this.videoDb['db'].prepare(`
       SELECT * FROM video_processing_jobs 
       WHERE status = 'scheduled' 
         AND scheduled_at IS NOT NULL 
-        AND scheduled_at <= datetime('now')
-      ORDER BY scheduled_at ASC
+        AND datetime(scheduled_at) <= datetime('now', 'utc')
+      ORDER BY 
+        scheduled_at ASC,
+        CASE WHEN refinement_pass = 2 THEN 1 ELSE 2 END -- Prioritize pass 2 over pass 3
+      LIMIT ?
     `);
 
-    const rows = stmt.all() as any[];
+    const rows = stmt.all(limit) as any[];
     return rows.map(row => this.videoDb['mapJobRow'](row));
   }
 
@@ -246,7 +256,8 @@ export class RefinementJobScheduler {
       delaySeconds: row.delay_seconds,
       triggerCondition: row.trigger_condition,
       enabled: row.enabled,
-      description: row.description
+      description: row.description,
+      jitterPercent: row.jitter_percent || 0.2 // Default 20% if not specified
     }));
   }
 

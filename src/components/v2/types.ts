@@ -1,4 +1,4 @@
-export type Scope = 'all' | 'mac' | 's3' | 'drive' | 'folders';
+export type Scope = 'all' | 's3' | 'drive' | 'folders';
 
 export type Place = {
   id: string;
@@ -14,5 +14,6 @@ export type MediaT = {
   placeId: string;
   type: 'image' | 'video' | 'audio';
   name: string;
-  thumb: string;
+  path: string;
+  thumb?: string;
 };

@@ -220,6 +220,14 @@ export class MainMediaAPI {
         Object.entries(nameGroups).forEach(([name, count]) => {
           if ((count as number) > 1) {
             console.warn(`[ITEMS-DEBUG] ⚠️ Potential duplicate detected: "${name}" appears ${count} times`);
+            // Show which items are duplicated for debugging
+            const duplicatedItems = videoItems.filter((item: any) => (item.name || 'unnamed') === name);
+            console.warn(`[ITEMS-DEBUG] Duplicate items:`, duplicatedItems.map((item: any) => ({
+              id: item.id,
+              type: item.type,
+              sourceId: item.sourceId,
+              path: item.path
+            })));
           }
         });
       }

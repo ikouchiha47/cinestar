@@ -3,159 +3,21 @@ import { createPortal } from 'react-dom';
 import { AutoSizer, List } from 'react-virtualized';
 import VideoSelection from '../VideoSelection';
 
-// Minimal inline icons
-const Icon = {
-  Search: (p: any) => (
-    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  ),
-  Plus: (p: any) => (
-    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  ),
-  Bolt: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-    </svg>
-  ),
-  Image: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <rect x="3" y="3" width="18" height="18" rx="3" />
-      <circle cx="8.5" cy="8.5" r="1.5" />
-      <path d="M21 15l-5-5L5 21" />
-    </svg>
-  ),
-  Browse: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-5l-2-2H5a2 2 0 00-2 2z" />
-    </svg>
-  ),
-  Index: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-    </svg>
-  ),
-  Refresh: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-    </svg>
-  ),
-  Pin: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M9 9l3-3 3 3" />
-      <path d="M12 6v12" />
-      <path d="M21 21l-6-6" />
-    </svg>
-  ),
-  Video: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <rect x="3" y="5" width="15" height="14" rx="2" />
-      <path d="M22 7l-4 2v6l4 2V7z" />
-    </svg>
-  ),
-  Audio: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M9 18V5l12-2v13" />
-      <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
-    </svg>
-  ),
-  Folder: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M3 7h6l2 2h10v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  ),
-  Server: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <rect x="3" y="4" width="18" height="8" rx="2" />
-      <rect x="3" y="12" width="18" height="8" rx="2" />
-      <circle cx="7" cy="8" r="1" />
-      <circle cx="7" cy="16" r="1" />
-    </svg>
-  ),
-  Cloud: (p: any) => (
-    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25" />
-    </svg>
-  ),
-  Close: (p: any) => (
-    <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" fill="none" strokeWidth="2" className={p.className}>
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  ),
-};
+// Import decomposed components
+import { Icon } from './components/Icons';
+import { PlacesGrid } from './components/PlacesGrid';
+import { MediaGroup, MediaCard } from './components/MediaGrid';
+import { ConnectModal } from './components/ConnectModal';
+import { useMediaLibrary } from './hooks/useMediaLibrary';
+import { useDebounce } from './hooks/useDebounce';
+import { Scope, Place, MediaT } from './types';
 
-export type Scope = 'all' | 's3' | 'drive' | 'folders';
-
-type Place = { id: string; kind: 'local' | 's3' | 'gdrive'; label: string; path: string; count?: number; pinned?: boolean };
-
-type MediaT = { id: string; placeId: string; type: 'image' | 'video' | 'audio'; name: string; path: string; thumb?: string };
-
-// Early-defined Folders grid to ensure availability during render
-function PlacesGrid({ places, onBrowse, onIndex }: { places: Place[]; onBrowse: (placeId: string) => void; onIndex?: (placeId: string, forceReindex?: boolean) => void }) {
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm text-neutral-300">
-          <b>Folders & places</b> <span className="text-neutral-500">{places.length}</span>
-        </div>
-        <div className="text-xs text-neutral-500">Sorted by recent use</div>
-      </div>
-      {places.length === 0 ? (
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-6 text-center text-neutral-500">
-          No folders match the current filter.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {places.map((p) => (
-            <div key={p.id} className="rounded-2xl border border-neutral-800 bg-neutral-900 p-3 hover:border-neutral-700">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {p.kind === 'local' ? <Icon.Folder /> : p.kind === 's3' ? <Icon.Server /> : <Icon.Cloud />}
-                  <div className="text-sm font-medium">{p.label}</div>
-                </div>
-                {p.pinned && <span className="text-[10px] rounded-md bg-neutral-800 px-2 py-0.5">Pinned</span>}
-              </div>
-              <div className="mt-1 text-xs text-neutral-500 truncate">{p.path}</div>
-              <div className="mt-3 flex items-center justify-between text-xs text-neutral-400">
-                <span>{p.count ? p.count.toLocaleString() : '—'} items</span>
-                <div className="flex gap-1">
-                  <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" onClick={() => onBrowse(p.id)} title="Browse">
-                    <Icon.Browse />
-                  </button>
-                  {onIndex && (
-                    <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" onClick={() => onIndex(p.id)} title="Index">
-                      <Icon.Index />
-                    </button>
-                  )}
-                  {onIndex && (
-                    <button className="rounded-md border border-orange-700 p-1.5 hover:bg-orange-900/50 text-orange-400 hover:text-orange-300" onClick={() => onIndex(p.id, true)} title="Force Re-index">
-                      <Icon.Refresh />
-                    </button>
-                  )}
-                  <button className="rounded-md border border-neutral-700 p-1.5 hover:bg-neutral-800" title="Pin">
-                    <Icon.Pin />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
 
 export default function DrillerV2(props: { overallProgress?: number; onOpenIndexing: () => void }) {
   const { overallProgress = -1, onOpenIndexing } = props;
 
   const [q, setQ] = useState('');
-  const [activeTab, setActiveTab] = useState<'media' | 'videos'>('media');
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [scope, setScope] = useState<Scope>('all');
   const [selectedPlace, setSelectedPlace] = useState<string | undefined>();
   const [connectOpen, setConnectOpen] = useState(false);
@@ -207,7 +69,20 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         console.log('[DRILLER] getItems response:', res);
         if (res?.success && Array.isArray(res.items)) {
           const items: any[] = res.items;
-          const mapped: MediaT[] = items.map((it: any) => {
+          console.log('[UI-FILTER-DEBUG] Raw items from API:', items.length);
+          
+          // Filter out video_segment items - only show parent videos
+          const filteredItems = items.filter((it: any) => {
+            const isVideoSegment = it.type === 'video_segment';
+            if (isVideoSegment) {
+              console.log('[UI-FILTER-DEBUG] Filtering out video segment:', it.name);
+            }
+            return !isVideoSegment;
+          });
+          
+          console.log('[UI-FILTER-DEBUG] After filtering segments:', filteredItems.length);
+          
+          const mapped: MediaT[] = filteredItems.map((it: any) => {
             const mime = (it.mimeType || '').toLowerCase();
             let kind: 'image' | 'video' | 'audio' = 'image';
             if (mime.startsWith('video/')) kind = 'video';
@@ -223,6 +98,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               type: kind,
               name: it.name || 'item',
               path: it.path,
+              thumb: it.metadata?.thumbnailPath || undefined,
             } as MediaT;
           });
           // Sort by recency (modifiedAt or createdAt)
@@ -248,7 +124,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         const res = await window.mediaAPI.getItems();
         if (res?.success && Array.isArray(res.items)) {
           const items: any[] = res.items;
-          const mapped: MediaT[] = items.map((it: any) => {
+          
+          // Filter out video_segment items - only show parent videos
+          const filteredItems = items.filter((it: any) => {
+            return it.type !== 'video_segment';
+          });
+          
+          const mapped: MediaT[] = filteredItems.map((it: any) => {
             const mime = (it.mimeType || '').toLowerCase();
             let kind: 'image' | 'video' | 'audio' = 'image';
             if (mime.startsWith('video/')) kind = 'video';
@@ -258,7 +140,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               if (t.includes('video')) kind = 'video';
               else if (t.includes('audio')) kind = 'audio';
             }
-            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
           });
           const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
           mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
@@ -392,7 +274,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
             else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
           }
-          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
         });
 
         // Map videos (video DB segments -> flattened video files)
@@ -505,6 +387,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             <button onClick={() => setConnectOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
               <Icon.Plus /> Connect a place
             </button>
+            <button onClick={() => setUploadModalOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
+              <Icon.Video /> Upload Media
+            </button>
           </div>
           <div className="text-center">
             <div className="text-lg font-semibold tracking-tight">Distillery</div>
@@ -564,7 +449,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                           else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
                           else kind = 'image';
                         }
-                        return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+                        return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
                       });
                       const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
                       const videoItems: MediaT[] = videos.map((r: any) => ({
@@ -595,42 +480,17 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             {searching && <span className="text-[11px] text-neutral-500">Searching…</span>}
           </div>
 
-          {/* Tab Navigation */}
-          <div className="mt-3 flex items-center justify-center gap-2 mb-4">
-            <button
-              onClick={() => setActiveTab('media')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'media'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
-              }`}
-            >
-              Media Search
-            </button>
-            <button
-              onClick={() => setActiveTab('videos')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'videos'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
-              }`}
-            >
-              Add Videos
-            </button>
-          </div>
-
-          {/* Media Search Pills - only show for media tab */}
-          {activeTab === 'media' && (
-            <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
-              {/* pinned places */}
-              <Pill
-                active={!selectedPlace && scope === 'all'}
-                label="All"
-                onClick={() => {
-                  setSelectedPlace(undefined);
-                  setScope('all');
-                }}
-              />
+          {/* Media Search Pills */}
+          <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
+            {/* pinned places */}
+            <Pill
+              active={!selectedPlace && scope === 'all'}
+              label="All"
+              onClick={() => {
+                setSelectedPlace(undefined);
+                setScope('all');
+              }}
+            />
               {pinned.map((p) => (
                 <Pill
                   key={p.id}
@@ -654,7 +514,6 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                 />
               ))}
             </div>
-          )}
         </div>
       </header>
 
@@ -687,64 +546,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
       {/* Main */}
       <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-        {activeTab === 'videos' ? (
-          <VideoSelection 
-            onVideoAdded={async () => {
-              // Refresh sources when video is added
-              try {
-                const res = await window.mediaAPI.getSources();
-                if (res.success && Array.isArray(res.sources)) {
-                  const mapped: Place[] = res.sources.map((s) => ({
-                    id: s.id,
-                    kind: 'local',
-                    label: s.name,
-                    path: s.path || '',
-                    pinned: false,
-                    count: 0
-                  }));
-                  setPlaces(mapped);
-                }
-                // Also refresh items so the new video shows up in the Videos group immediately
-                try {
-                  const itemsRes = await window.mediaAPI.getItems();
-                  if (itemsRes?.success && Array.isArray(itemsRes.items)) {
-                    console.log(`[UPLOAD-CALLBACK-DEBUG] Processing ${itemsRes.items.length} items after upload`);
-                    
-                    // Filter out video segments - same logic as polling
-                    const displayableItems = itemsRes.items.filter((it: any) => {
-                      const itemType = (it.type || '').toLowerCase();
-                      const isVideoSegment = itemType === 'video_segment';
-                      if (isVideoSegment) {
-                        console.log(`[UPLOAD-CALLBACK-DEBUG] Excluding video segment: ${it.name}`);
-                      }
-                      return !isVideoSegment;
-                    });
-                    
-                    console.log(`[UPLOAD-CALLBACK-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
-                    
-                    const mappedItems: MediaT[] = displayableItems.map((it: any) => {
-                      const mime = (it.mimeType || '').toLowerCase();
-                      let kind: 'image' | 'video' | 'audio' = 'image';
-                      if (mime.startsWith('video/')) kind = 'video';
-                      else if (mime.startsWith('audio/')) kind = 'audio';
-                      else if (typeof it.type === 'string') {
-                        const t = it.type.toLowerCase();
-                        if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
-                        else if (t.includes('audio')) kind = 'audio';
-                      }
-                      return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-                    });
-                    const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-                    mappedItems.sort((a: any, b: any) => withDate(b) - withDate(a));
-                    setLibrary(mappedItems);
-                  }
-                } catch {}
-              } catch (error) {
-                console.error('Failed to refresh sources:', error);
-              }
-            }}
-          />
-        ) : scope === 'folders' ? (
+        {scope === 'folders' ? (
           <PlacesGrid
             places={q.trim() ? places.filter(p => p.label.toLowerCase().includes(q.toLowerCase()) || p.path.toLowerCase().includes(q.toLowerCase())) : places}
             onBrowse={(id) => { setSelectedPlace(id); setScope('all'); }}
@@ -850,6 +652,81 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         />
       )}
 
+      {/* Upload Modal */}
+      {uploadModalOpen && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setUploadModalOpen(false)} />
+          <div className="absolute right-0 top-0 h-full w-full sm:w-[520px] bg-neutral-900 border-l border-neutral-800 shadow-xl flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
+              <div className="font-semibold">Upload Media</div>
+              <button onClick={() => setUploadModalOpen(false)} className="rounded-lg border border-neutral-700 p-2 hover:bg-neutral-800">
+                <Icon.Close />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <VideoSelection 
+                onVideoAdded={async () => {
+                  // Refresh sources when video is added
+                  try {
+                    const res = await window.mediaAPI.getSources();
+                    if (res.success && Array.isArray(res.sources)) {
+                      const mapped: Place[] = res.sources.map((s) => ({
+                        id: s.id,
+                        kind: 'local',
+                        label: s.name,
+                        path: s.path || '',
+                        pinned: false,
+                        count: 0
+                      }));
+                      setPlaces(mapped);
+                    }
+                    // Also refresh items so the new video shows up in the Videos group immediately
+                    try {
+                      const itemsRes = await window.mediaAPI.getItems();
+                      if (itemsRes?.success && Array.isArray(itemsRes.items)) {
+                        console.log(`[UPLOAD-CALLBACK-DEBUG] Processing ${itemsRes.items.length} items after upload`);
+                        
+                        // Filter out video segments - same logic as polling
+                        const displayableItems = itemsRes.items.filter((it: any) => {
+                          const itemType = (it.type || '').toLowerCase();
+                          const isVideoSegment = itemType === 'video_segment';
+                          if (isVideoSegment) {
+                            console.log(`[UPLOAD-CALLBACK-DEBUG] Excluding video segment: ${it.name}`);
+                          }
+                          return !isVideoSegment;
+                        });
+                        
+                        console.log(`[UPLOAD-CALLBACK-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
+                        
+                        const mappedItems: MediaT[] = displayableItems.map((it: any) => {
+                          const mime = (it.mimeType || '').toLowerCase();
+                          let kind: 'image' | 'video' | 'audio' = 'image';
+                          if (mime.startsWith('video/')) kind = 'video';
+                          else if (mime.startsWith('audio/')) kind = 'audio';
+                          else if (typeof it.type === 'string') {
+                            const t = it.type.toLowerCase();
+                            if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
+                            else if (t.includes('audio')) kind = 'audio';
+                          }
+                          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
+                        });
+                        const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
+                        mappedItems.sort((a: any, b: any) => withDate(b) - withDate(a));
+                        setLibrary(mappedItems);
+                      }
+                    } catch {}
+                  } catch (error) {
+                    console.error('Failed to refresh sources:', error);
+                  }
+                  // Close modal after successful upload
+                  setUploadModalOpen(false);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       <footer className="fixed bottom-3 right-4 z-10 text-xs text-neutral-500">© Driller — v2 UI</footer>
     </div>
   );
@@ -879,115 +756,6 @@ function StackCard({ title }: { title: string }) {
   );
 }
 
-function MediaGroup({
-  title,
-  icon,
-  items,
-  places,
-  maxVisible,
-  onShowMore,
-  expanded,
-  onBack,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  items: MediaT[];
-  places: Place[];
-  maxVisible?: number;
-  onShowMore?: () => void;
-  expanded?: boolean;
-  onBack?: () => void;
-}) {
-  if (items.length === 0) return null;
-  const cap = expanded ? items.length : Math.min(items.length, maxVisible ?? items.length);
-  const visible = items.slice(0, cap);
-  const hasMore = !expanded && items.length > cap;
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2 text-sm text-neutral-300">
-          <span className="inline-flex items-center justify-center w-6 h-6 rounded-md border border-neutral-800 bg-neutral-900">{icon}</span>
-          <b>{title}</b>
-          <span className="text-neutral-500">{items.length}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {expanded && onBack && (
-            <button className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:border-neutral-700" onClick={onBack}>
-              Back
-            </button>
-          )}
-          <div className="text-xs text-neutral-500">Grid • Newest first</div>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        {visible.map((m) => (
-          <MediaCard key={m.id} item={m} placeLabel={places.find((p) => p.id === m.placeId)?.label || '—'} />
-        ))}
-        {hasMore && onShowMore && (
-          <div className="rounded-xl overflow-hidden border border-dashed border-neutral-800 hover:border-neutral-700 bg-neutral-900/30">
-            <button onClick={onShowMore} className="w-full">
-              <div className="aspect-square flex items-center justify-center text-sm text-neutral-400">
-                <div className="flex flex-col items-center gap-1">
-                  <Icon.Plus />
-                  <span>Show more</span>
-                </div>
-              </div>
-              <div className="p-2">
-                <div className="text-[11px] text-neutral-500 text-center">Expand to see more</div>
-              </div>
-            </button>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function MediaCard({ item, placeLabel }: { item: MediaT; placeLabel: string }) {
-  const [thumbUrl, setThumbUrl] = useState<string | null>(item.thumb || null);
-  const [loading, setLoading] = useState<boolean>(item.type === 'image' || !!item.thumb);
-
-  useEffect(() => {
-    let cancelled = false;
-    const wantImageThumb = item.type === 'image';
-    const wantVideoThumb = item.type === 'video' && typeof item.thumb === 'string' && item.thumb.length > 0;
-    if (!wantImageThumb && !wantVideoThumb) return;
-    (async () => {
-      try {
-        setLoading(true);
-        const srcPath = wantImageThumb ? item.path : (item.thumb as string);
-        const res = await window.mediaAPI.getImageThumbnail(srcPath);
-        if (!cancelled && res.success && res.dataUrl) setThumbUrl(res.dataUrl);
-      } catch {}
-      finally { if (!cancelled) setLoading(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [item.path, item.type, item.thumb]);
-
-  return (
-    <div className="rounded-xl overflow-hidden border border-neutral-900 hover:border-neutral-700 bg-neutral-900/40">
-      <div className="aspect-square bg-neutral-900/50 flex items-center justify-center">
-        {item.type === 'image' || (item.type === 'video' && thumbUrl) ? (
-          thumbUrl ? (
-            <img src={thumbUrl} alt={item.name} className="w-full h-full object-cover" />
-          ) : (
-            <div className="w-full h-full bg-neutral-900/60 flex items-center justify-center text-xs text-neutral-500">
-              {loading ? 'Loading…' : '—'}
-            </div>
-          )
-        ) : (
-          <div className="text-2xl opacity-70">{item.type === 'video' ? '🎥' : '🎵'}</div>
-        )}
-      </div>
-      <div className="p-2">
-        <div className="truncate text-[13px]" title={item.name}>{item.name}</div>
-        <div className="text-[11px] text-neutral-500">
-          {item.type} • {placeLabel}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'video'|'audio'|null; placeId?: string; onBack: () => void }) {
   const [items, setItems] = useState<MediaT[]>([]);
@@ -1016,7 +784,7 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
               if (t.includes('video')) kind = 'video';
               else if (t.includes('audio')) kind = 'audio';
             }
-            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
+            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
           });
           setItems(mapped);
           setOffset(mapped.length);

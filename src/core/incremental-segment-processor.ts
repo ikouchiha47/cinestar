@@ -55,8 +55,8 @@ export class IncrementalSegmentProcessor {
       const existingSegments = await this.videoDb.getVideoSegments(videoFile.id);
       console.log(`[INCREMENTAL-PROCESSOR] Found ${existingSegments.length} existing segments`);
 
-      // Generate new segmentation with lower threshold
-      const newSceneCuts = await detectScenes(videoPath, newThreshold);
+      // Detect new scene cuts with the refined threshold using enhanced detection
+      const newSceneCuts = await detectScenes(videoPath, newThreshold, refinementPass);
       console.log(`[INCREMENTAL-PROCESSOR] Detected ${newSceneCuts.length} scene cuts with threshold ${newThreshold}`);
 
       // Create new segments
