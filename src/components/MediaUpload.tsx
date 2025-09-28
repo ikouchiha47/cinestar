@@ -128,14 +128,15 @@ export const MediaUpload: React.FC<MediaUploadProps> = ({ onMediaAdded }) => {
       title: 'Single Image',
       description: 'Upload an image for visual search and analysis',
       color: 'from-green-500 to-teal-600'
-    },
-    {
-      type: 'audio' as const,
-      icon: Icon.Music,
-      title: 'Single Audio',
-      description: 'Upload an audio file for transcription and search',
-      color: 'from-orange-500 to-red-600'
     }
+    // Temporarily disabled - audio upload
+    // {
+    //   type: 'audio' as const,
+    //   icon: Icon.Music,
+    //   title: 'Single Audio',
+    //   description: 'Upload an audio file for transcription and search',
+    //   color: 'from-orange-500 to-red-600'
+    // }
   ];
 
   return (

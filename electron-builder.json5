@@ -1,12 +1,13 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  "appId": "com.clipwise.app",
   "asar": true,
-  "productName": "YourAppName",
+  "productName": "Clipwise",
   "directories": {
     "output": "release/${version}"
   },
+  "icon": "public/icons/clipwise-transparent.png",
   "files": [
     "dist",
     "dist-electron"
@@ -15,7 +16,8 @@
     "target": [
       "dmg"
     ],
-    "artifactName": "${productName}-Mac-${version}-Installer.${ext}"
+    "icon": "public/icons/clipwise-transparent.png",
+    "artifactName": "${productName}-${version}-mac.${ext}"
   },
   "win": {
     "target": [
@@ -26,7 +28,8 @@
         ]
       }
     ],
-    "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
+    "icon": "public/icons/clipwise-transparent.png",
+    "artifactName": "${productName}-${version}-win.${ext}"
   },
   "nsis": {
     "oneClick": false,
@@ -36,8 +39,12 @@
   },
   "linux": {
     "target": [
-      "AppImage"
+      {
+        "target": "AppImage",
+        "arch": ["x64", "arm64"]
+      }
     ],
-    "artifactName": "${productName}-Linux-${version}.${ext}"
+    "icon": "public/icons/clipwise-transparent.png",
+    "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
   }
 }

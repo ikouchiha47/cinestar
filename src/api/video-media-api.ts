@@ -175,7 +175,7 @@ export class VideoMediaAPI {
         refinementPass: 1,
         threshold: 0.8,
         progress: 0,
-        scheduledAt: new Date(Date.now() + 30 * 1000) // Schedule Pass 1 for 30 seconds from now (UTC)
+        scheduledAt: new Date(Date.now() + (5 + Math.random() * 5) * 1000) // Schedule Pass 1 for 5-10 seconds from now (UTC)
       });
 
       console.log(`[VIDEO-API] Job ${jobId} submitted for background processing`);

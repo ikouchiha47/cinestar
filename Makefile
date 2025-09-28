@@ -2,10 +2,10 @@
 # Builds and packages the Electron app for distribution
 
 # Configuration
-APP_NAME = drillbit
+APP_NAME = clipwise
 RELEASE_DIR = ../clipwise-release
 DIST_DIR = dist
-BUILD_DIR = dist-electron
+BUILD_DIR = release/$(VERSION)
 
 # Version from package.json
 VERSION := $(shell node -p "require('./package.json').version")
@@ -70,7 +70,7 @@ build: ## Build the application
 	@echo "🔨 Building application..."
 	@if [ -f $(ENV_PROD) ]; then \
 		echo "📄 Using production environment from $(ENV_PROD)"; \
-		export $$(cat $(ENV_PROD) | xargs) && npm run build; \
+		export $$(grep -v '^#' $(ENV_PROD) | grep -v '^$$' | xargs) && npm run build; \
 	else \
 		echo "⚠️  No $(ENV_PROD) found, using default build"; \
 		npm run build; \
@@ -81,7 +81,7 @@ build-dev: ## Build with development environment
 	@echo "🔨 Building application (development)..."
 	@if [ -f $(ENV_DEV) ]; then \
 		echo "📄 Using development environment from $(ENV_DEV)"; \
-		export $$(cat $(ENV_DEV) | xargs) && npm run build; \
+		export $$(grep -v '^#' $(ENV_DEV) | grep -v '^$$' | xargs) && npm run build; \
 	else \
 		echo "⚠️  No $(ENV_DEV) found, using default build"; \
 		npm run build; \
@@ -101,18 +101,17 @@ package-dev: build-dev ## Package with development configuration
 copy-assets: setup-release-dir ## Copy distribution assets to release directory
 	@echo "📋 Copying assets to release directory..."
 	
-	# Copy built application
-	@if [ "$(PLATFORM)" = "mac" ]; then \
-		cp -r $(BUILD_DIR)/*.dmg $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-		cp -r $(BUILD_DIR)/*.app $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-	elif [ "$(PLATFORM)" = "linux" ]; then \
-		cp -r $(BUILD_DIR)/*.AppImage $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-		cp -r $(BUILD_DIR)/*.deb $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-		cp -r $(BUILD_DIR)/*.rpm $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-	elif [ "$(PLATFORM)" = "win" ]; then \
-		cp -r $(BUILD_DIR)/*.exe $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-		cp -r $(BUILD_DIR)/*.msi $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true; \
-	fi
+	# Copy built applications for all platforms
+	@echo "📦 Copying macOS builds..."
+	@cp -r $(BUILD_DIR)/*.dmg $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@cp -r $(BUILD_DIR)/*.app $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@echo "📦 Copying Linux builds..."
+	@cp -r $(BUILD_DIR)/*.AppImage $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@cp -r $(BUILD_DIR)/*.deb $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@cp -r $(BUILD_DIR)/*.rpm $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@echo "📦 Copying Windows builds..."
+	@cp -r $(BUILD_DIR)/*.exe $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
+	@cp -r $(BUILD_DIR)/*.msi $(RELEASE_DIR)/releases/v$(VERSION)/ 2>/dev/null || true
 	
 	# Copy Docker setup for AI services
 	cp docker-compose.yml $(RELEASE_DIR)/docker/
@@ -131,9 +130,9 @@ copy-assets: setup-release-dir ## Copy distribution assets to release directory
 
 create-docs: setup-release-dir ## Generate documentation for release
 	@echo "📚 Creating release documentation..."
-	@echo "# Drillbit - AI-Powered Media Search" > $(RELEASE_DIR)/README.md
+	@echo "# Clipwise - AI-Powered Media Search" > $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
-	@echo "Drillbit is a powerful desktop application that uses AI to search through your images, videos, and audio files using natural language queries." >> $(RELEASE_DIR)/README.md
+	@echo "Clipwise is a powerful desktop application that uses AI to search through your images, videos, and audio files using natural language queries." >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
 	@echo "## Features" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
@@ -148,13 +147,13 @@ create-docs: setup-release-dir ## Generate documentation for release
 	@echo "### 1. Install the Application" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
 	@echo "Download the latest release for your platform:" >> $(RELEASE_DIR)/README.md
-	@echo "- **macOS**: \`drillbit-$(VERSION)-mac.dmg\`" >> $(RELEASE_DIR)/README.md
-	@echo "- **Windows**: \`drillbit-$(VERSION)-win.exe\`" >> $(RELEASE_DIR)/README.md
-	@echo "- **Linux**: \`drillbit-$(VERSION)-linux.AppImage\`" >> $(RELEASE_DIR)/README.md
+	@echo "- **macOS**: \`Clipwise-$(VERSION)-mac.dmg\`" >> $(RELEASE_DIR)/README.md
+	@echo "- **Windows**: \`Clipwise-$(VERSION)-win.exe\`" >> $(RELEASE_DIR)/README.md
+	@echo "- **Linux**: \`Clipwise-$(VERSION)-linux.AppImage\`" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
 	@echo "### 2. Set Up AI Services" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
-	@echo "Drillbit requires local AI services. Use Docker Compose:" >> $(RELEASE_DIR)/README.md
+	@echo "Clipwise requires local AI services. Use Docker Compose:" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
 	@echo "\`\`\`bash" >> $(RELEASE_DIR)/README.md
 	@echo "cd docker" >> $(RELEASE_DIR)/README.md
@@ -165,7 +164,7 @@ create-docs: setup-release-dir ## Generate documentation for release
 	@echo "" >> $(RELEASE_DIR)/README.md
 	@echo "### 3. Launch and Configure" >> $(RELEASE_DIR)/README.md
 	@echo "" >> $(RELEASE_DIR)/README.md
-	@echo "1. Launch Drillbit" >> $(RELEASE_DIR)/README.md
+	@echo "1. Launch Clipwise" >> $(RELEASE_DIR)/README.md
 	@echo "2. Go to Settings to verify AI service connections" >> $(RELEASE_DIR)/README.md
 	@echo "3. Add your media sources" >> $(RELEASE_DIR)/README.md
 	@echo "4. Start searching with natural language!" >> $(RELEASE_DIR)/README.md
@@ -197,13 +196,13 @@ create-docs: setup-release-dir ## Generate documentation for release
 create-scripts: setup-release-dir ## Create installation and setup scripts
 	@echo "🔧 Creating setup scripts..."
 	@echo "#!/bin/bash" > $(RELEASE_DIR)/scripts/install.sh
-	@echo "# Drillbit Installation Script" >> $(RELEASE_DIR)/scripts/install.sh
+	@echo "# Clipwise Installation Script" >> $(RELEASE_DIR)/scripts/install.sh
 	@echo "set -e" >> $(RELEASE_DIR)/scripts/install.sh
-	@echo "echo '🚀 Setting up Drillbit AI services...'" >> $(RELEASE_DIR)/scripts/install.sh
+	@echo "echo '🚀 Setting up Clipwise AI services...'" >> $(RELEASE_DIR)/scripts/install.sh
 	@echo "cd docker" >> $(RELEASE_DIR)/scripts/install.sh
 	@echo "docker-compose pull" >> $(RELEASE_DIR)/scripts/install.sh
 	@echo "docker-compose up -d" >> $(RELEASE_DIR)/scripts/install.sh
-	@echo "echo '✅ Services started! Launch Drillbit app and configure in Settings.'" >> $(RELEASE_DIR)/scripts/install.sh
+	@echo "echo '✅ Services started! Launch Clipwise app and configure in Settings.'" >> $(RELEASE_DIR)/scripts/install.sh
 	@chmod +x $(RELEASE_DIR)/scripts/install.sh
 	
 	@echo "#!/bin/bash" > $(RELEASE_DIR)/scripts/setup-models.sh
@@ -232,23 +231,21 @@ dev-release: package-dev copy-assets create-docs create-scripts ## Create a deve
 	@echo "⚠️  This build includes development features and debug mode"
 
 # Platform-specific builds (for CI/CD)
-build-mac: ## Build for macOS
+build-mac: build ## Build for macOS
 	@echo "🍎 Building for macOS..."
 	npm run electron:build -- --mac
 	
-build-windows: ## Build for Windows  
+build-windows: build ## Build for Windows  
 	@echo "🪟 Building for Windows..."
 	npm run electron:build -- --win
 
-build-linux: ## Build for Linux
+build-linux: build ## Build for Linux
 	@echo "🐧 Building for Linux..."
 	npm run electron:build -- --linux
 
-all-platforms: clean install ## Build for all platforms (requires platform-specific tools)
+all-platforms: clean install build ## Build for all platforms (requires platform-specific tools)
 	@echo "🌍 Building for all platforms..."
-	$(MAKE) build-mac
-	$(MAKE) build-windows  
-	$(MAKE) build-linux
+	npm run electron:build:all
 	$(MAKE) copy-assets
 	$(MAKE) create-docs
 	$(MAKE) create-scripts
