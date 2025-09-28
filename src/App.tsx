@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import { motion } from 'framer-motion';
+import PortalSplash from './components/PortalSplash';
 const DrillerV2 = lazy(() => import('./components/v2/DrillerV2'));
 
 // Icon components (only what's used in this file)
@@ -17,6 +19,10 @@ const Icon = {
 };
 
 function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const [appReady, setAppReady] = useState(false);
+  const [componentLoaded, setComponentLoaded] = useState(false);
+  const [startReveal, setStartReveal] = useState(false);
   const [indexDrawerOpen, setIndexDrawerOpen] = useState(false);
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
   const [indexLogs, setIndexLogs] = useState<string[]>([]);
@@ -169,9 +175,35 @@ function App() {
   // removed old browse/search handlers; DrillerV2 owns main UI now
 
   console.log('[APP] Rendering main UI at:', new Date().toISOString());
+  // Overlay approach (PortalSplash controls timing). We'll trigger
+  // landing reveal when the splash fires onReveal, and signal main
+  // process onComplete.
+
+  // Preload the main component
+  useEffect(() => {
+    const preloadComponent = async () => {
+      try {
+        await import('./components/v2/DrillerV2');
+        setComponentLoaded(true);
+      } catch (error) {
+        console.warn('Failed to preload component:', error);
+        setComponentLoaded(true); // Continue anyway
+      }
+    };
+    
+    preloadComponent();
+  }, []);
 
   return (
-    <div className="min-h-screen">
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.6, ease: "easeOut" }}
+      className="min-h-screen"
+      style={{
+        background: 'linear-gradient(135deg, #000000 0%, #0a0a0a 25%, #111111 50%, #0a0a0a 75%, #000000 100%)'
+      }}
+    >
       {/* Top progress bar (subtle) */}
       {overallProgress >= 0 && (
         <div className="fixed top-0 left-0 right-0 z-50">
@@ -187,19 +219,26 @@ function App() {
         </div>
       )}
 
-      {/* V2 Main UI with Suspense (compact fallback to avoid covering the whole app) */}
+      {/* V2 Main UI with Suspense and improved loading */}
       <Suspense fallback={
-        <div className="px-4 py-6">
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900 p-6 text-center text-neutral-400">
-            <Icon.Spinner className="w-6 h-6 animate-spin mx-auto mb-3" />
-            <div className="text-sm">Loading media library…</div>
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="rounded-2xl border border-neutral-700/50 bg-neutral-800/50 backdrop-blur-sm p-8 text-center text-neutral-300">
+            <Icon.Spinner className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-400" />
+            <div className="text-lg font-medium mb-2">Loading Clipwise</div>
+            <div className="text-sm text-neutral-400">Preparing your media library…</div>
           </div>
         </div>
       }>
-        <DrillerV2
-          overallProgress={overallProgress}
-          onOpenIndexing={() => setIndexDrawerOpen(true)}
-        />
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: startReveal ? 1 : 0, y: startReveal ? 0 : 10 }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+        >
+          <DrillerV2
+            overallProgress={overallProgress}
+            onOpenIndexing={() => setIndexDrawerOpen(true)}
+          />
+        </motion.div>
       </Suspense>
 
       {/* Indexing Drawer */}
@@ -375,7 +414,24 @@ function App() {
       )}
 
       {/* Footer removed: DrillerV2 renders a fixed bottom-right footer */}
-    </div>
+      <PortalSplash
+        visible={showSplash}
+        onReveal={() => {
+          console.log('[PORTAL] Reveal triggered, starting landing fade-in');
+          setStartReveal(true);
+        }}
+        onComplete={() => {
+          console.log('[PORTAL] Splash complete, hiding overlay');
+          setShowSplash(false);
+          setAppReady(true);
+          try {
+            // @ts-ignore - exposed by preload
+            window.ipcRenderer?.send('renderer:app-mounted');
+          } catch {}
+        }}
+        minDurationMs={2200}
+      />
+    </motion.div>
   );
 }
 

@@ -1,3 +1,7 @@
+# Drillbit AI Services
+# Docker Compose setup for the AI services required by Drillbit desktop app
+# The Drillbit app itself runs as a native desktop application, not in Docker
+
 version: '3.8'
 
 x-ollama: &ollama
@@ -7,10 +11,10 @@ x-ollama: &ollama
   environment: &env
     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
     OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-5m}
-    OLLAMA_MAX_LOADED_MODELS: 3
-    OLLAMA_NUM_PARALLEL: 5
+    OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-3}
+    OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-5}
     OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-0}
-    OLLAMA_DEBUG: ${OLLAMA_DEBUG:-1}
+    OLLAMA_DEBUG: ${OLLAMA_DEBUG:-0}
     OLLAMA_HOST: 0.0.0.0
   restart: unless-stopped
   deploy:
@@ -19,19 +23,15 @@ x-ollama: &ollama
         memory: 6G
       reservations:
         memory: 4G
-  entrypoint: >
-    /bin/bash -c "
-      ollama serve &
-      wait
-    "
 
 services:
+  # Primary Ollama instance
   ollama-1:
     <<: *ollama
-    container_name: driller-ollama-1
+    container_name: drillbit-ollama-1
     environment:
       <<: *env
-      CUDA_VISIBLE_DEVICES: 0
+      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_1:-0}
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 15s
@@ -39,74 +39,72 @@ services:
       retries: 5
       start_period: 30s
 
+  # Secondary Ollama instance (optional, for load balancing)
   ollama-2:
     <<: *ollama
-    container_name: driller-ollama-2
+    container_name: drillbit-ollama-2
     environment:
       <<: *env
-      CUDA_VISIBLE_DEVICES: 1
+      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_2:-1}
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+    profiles: ["multi-gpu"]  # Only start with --profile multi-gpu
 
-  # ollama-3:
-  #   <<: *ollama
-  #   container_name: driller-ollama-3
-  #   environment:
-  #     <<: *env
-  #     CUDA_VISIBLE_DEVICES: 0
-  #   healthcheck:
-  #     test: ["CMD", "ollama", "list"]
-  #     interval: 15s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-  # 
-  # ollama-4:
-  #   <<: *ollama
-  #   container_name: driller-ollama-4
-  #   environment:
-  #     <<: *env
-  #     CUDA_VISIBLE_DEVICES: 0
-  #   healthcheck:
-  #     test: ["CMD", "ollama", "list"]
-  #     interval: 15s
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 30s
-
-  ollama:
-    container_name: driller-ollama-lb
+  # Load balancer for multiple Ollama instances
+  ollama-lb:
+    container_name: drillbit-ollama-lb
     image: nginx:alpine
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "9001:11434"
+      - "${OLLAMA_LB_PORT:-9001}:11434"
     depends_on:
       ollama-1:
         condition: service_healthy
       ollama-2:
         condition: service_healthy
-      # ollama-3:
-      #   condition: service_healthy
-      # ollama-4:
-      #   condition: service_healthy
     restart: unless-stopped
+    profiles: ["multi-gpu"]  # Only start with --profile multi-gpu
 
+  # Main Ollama service (single instance)
+  ollama:
+    <<: *ollama
+    container_name: drillbit-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Whisper transcription service
   whisper:
     image: onerahmet/openai-whisper-asr-webservice:latest
-    container_name: driller-whisper
+    container_name: drillbit-whisper
     ports:
-      - "9000:9000"
+      - "${WHISPER_PORT:-9000}:9000"
     environment:
-      - ASR_MODEL=base.en
-      - ASR_ENGINE=faster_whisper
+      - ASR_MODEL=${WHISPER_MODEL:-base.en}
+      - ASR_ENGINE=${WHISPER_ENGINE:-faster_whisper}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/"]
       interval: 30s
       timeout: 10s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+volumes:
+  ollama_models:
+    driver: local

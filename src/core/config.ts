@@ -70,6 +70,9 @@ export interface AppConfig {
     saveCompressedImages: boolean;
     saveLLaVAOutputs: boolean;
     outputDir: string;
+    persistTempFiles: boolean;     // Keep temp files after processing
+    cleanupOnExit: boolean;        // Clean temp files on app exit
+    maxTempSizeGB: number;         // Max temp storage (GB)
   };
   vectorDbPath: string; // NEW: unified DB path for vectors
 }
@@ -151,7 +154,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true
     saveCompressedImages: process.env.DEBUG_MODE === 'true',
     saveLLaVAOutputs: process.env.DEBUG_MODE === 'true',
-    outputDir: process.env.DEBUG_OUTPUT_DIR || './debug-output'
+    outputDir: process.env.DEBUG_OUTPUT_DIR || './debug-output',
+    persistTempFiles: process.env.DEBUG_MODE === 'true', // Keep temp files in debug mode
+    cleanupOnExit: process.env.DEBUG_MODE !== 'true',    // Clean up unless debugging
+    maxTempSizeGB: parseFloat(process.env.MAX_TEMP_SIZE_GB || '5.0') // 5GB default limit
   },
   vectorDbPath: defaultDbPath // Unified vector DB path
 };
@@ -279,7 +285,10 @@ export class ConfigManager {
       enabled: true,
       saveCompressedImages: saveImages,
       saveLLaVAOutputs: saveLLaVAOutputs,
-      outputDir: outputDir || './debug-output'
+      outputDir: outputDir || './debug-output',
+      persistTempFiles: true,
+      cleanupOnExit: false,
+      maxTempSizeGB: 5.0
     };
     console.log('🐛 [DEBUG] Debug mode enabled:', this.config.debug);
   }
@@ -291,6 +300,8 @@ export class ConfigManager {
     this.config.debug.enabled = false;
     this.config.debug.saveCompressedImages = false;
     this.config.debug.saveLLaVAOutputs = false;
+    this.config.debug.persistTempFiles = false;
+    this.config.debug.cleanupOnExit = true;
     console.log('🐛 [DEBUG] Debug mode disabled');
   }
 

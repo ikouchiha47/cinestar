@@ -89,19 +89,8 @@ async function createWindow() {
     return { x: 0, y: 0, width, height } as const;
   };
 
-  // Create a splash BrowserView and attach it immediately
-  let splashView: BrowserView | null = null;
-  try {
-    const splashPath = path.join(process.env.VITE_PUBLIC, 'splash.html');
-    splashView = new BrowserView({ webPreferences: { backgroundThrottling: false } });
-    win.setBrowserView(splashView);
-    splashView.setBounds(getContentBounds());
-    splashView.setAutoResize({ width: true, height: true });
-    await splashView.webContents.loadFile(splashPath);
-    console.log('[MAIN-PROCESS] Splash loaded at:', new Date().toISOString());
-  } catch (e) {
-    console.warn('[MAIN-PROCESS] Failed to load splash:', e);
-  }
+  // No separate splash view needed - React component handles splash
+  console.log('[MAIN-PROCESS] Using React splash component');
 
   // Keep current views fitted on resize
   win.on('resize', () => {
@@ -112,20 +101,7 @@ async function createWindow() {
   // Prepare the main app BrowserView; swap when page fully loads to avoid black gap
   const appView = new BrowserView({ webPreferences: { preload: path.join(__dirname, 'preload.mjs'), backgroundThrottling: false } });
 
-  // Helper to remove splash safely
-  const removeSplash = () => {
-    if (!splashView) return;
-    try {
-      console.log('[MAIN-PROCESS] Removing splash at:', new Date().toISOString());
-      try { win?.removeBrowserView(splashView); } catch {}
-    } catch (e) {
-      console.warn('[MAIN-PROCESS] Failed removing splash:', e);
-    } finally {
-      splashView = null;
-    }
-  };
-
-  let splashFallbackTimer: NodeJS.Timeout | null = null;
+  // React component handles splash - no need for separate splash view
 
   if (VITE_DEV_SERVER_URL) {
     console.log('[MAIN-PROCESS] Waiting for dev server at:', VITE_DEV_SERVER_URL, 'time:', new Date().toISOString());
@@ -140,17 +116,10 @@ async function createWindow() {
         appView.webContents.openDevTools();
       }
       try {
-        // Add app view under splash
-        win?.addBrowserView(appView);
+        // Add app view - React splash component will handle the transition
+        win?.setBrowserView(appView);
         appView.setBounds(getContentBounds());
         appView.setAutoResize({ width: true, height: true });
-        // Ensure splash stays on top until renderer signals readiness
-        if (splashView && typeof (win as any).setTopBrowserView === 'function') {
-          (win as any).setTopBrowserView(splashView);
-        }
-        // Fallback: if renderer doesn't signal within 5s, remove splash
-        if (splashFallbackTimer) clearTimeout(splashFallbackTimer);
-        splashFallbackTimer = setTimeout(removeSplash, 5000);
       } catch (e) {
         console.warn('[MAIN-PROCESS] Failed to add app view:', e);
       }
@@ -167,35 +136,25 @@ async function createWindow() {
       appView.webContents.openDevTools();
     }
     try {
-      win?.addBrowserView(appView);
+      win?.setBrowserView(appView);
       appView.setBounds(getContentBounds());
       appView.setAutoResize({ width: true, height: true });
-      if (splashView && typeof (win as any).setTopBrowserView === 'function') {
-        (win as any).setTopBrowserView(splashView);
-      }
-      if (splashFallbackTimer) clearTimeout(splashFallbackTimer);
-      splashFallbackTimer = setTimeout(removeSplash, 5000);
     } catch (e) {
       console.warn('[MAIN-PROCESS] Failed to add app view (prod):', e);
     }
   }
 
-  // When the renderer signals it's mounted, remove the splash and bring app to front
+  // When the renderer signals it's mounted, ensure app view is properly sized
   ipcMain.on('renderer:app-mounted', () => {
     try {
-      if (splashView) {
-        console.log('[MAIN-PROCESS] Renderer reported app-mounted; removing splash at:', new Date().toISOString());
-        removeSplash();
-      }
+      console.log('[MAIN-PROCESS] Renderer reported app-mounted at:', new Date().toISOString());
       // Ensure appView is visible and sized
       try {
-        win?.addBrowserView(appView);
         appView.setBounds(getContentBounds());
         appView.setAutoResize({ width: true, height: true });
       } catch {}
-      if (splashFallbackTimer) { clearTimeout(splashFallbackTimer); splashFallbackTimer = null; }
     } catch (e) {
-      console.warn('[MAIN-PROCESS] Failed to finalize splash removal:', e);
+      console.warn('[MAIN-PROCESS] Failed to finalize app setup:', e);
     }
   });
 }
@@ -734,6 +693,18 @@ ipcMain.handle('config:set', async (_, config) => {
 });
 
 app.whenReady().then(async () => {
+  // Run data migration first
+  try {
+    const { DataMigrator } = await import('../src/core/data-migrator');
+    const migrationResult = await DataMigrator.migrateFromPreviousInstallations();
+    
+    if (migrationResult.migratedFiles.length > 0) {
+      console.log(`[MAIN-PROCESS] Migrated ${migrationResult.migratedFiles.length} files from previous installations`);
+    }
+  } catch (error) {
+    console.warn('[MAIN-PROCESS] Data migration failed:', error);
+  }
+
   // Only create browser window in local development mode
   const isLocalMode = process.env.NODE_ENV === 'development' || process.env.LOCAL_MODE === 'true';
   
@@ -751,4 +722,19 @@ app.whenReady().then(async () => {
     // Kick off background auto-tuning of FFmpeg per-process threads after initializations
     runAutoTune();
   }, 0);
+})
+
+// Cleanup on app exit
+app.on('before-quit', async () => {
+  try {
+    const { DataMigrator } = await import('../src/core/data-migrator');
+    const { ConfigManager } = await import('../src/core/config');
+    
+    const debugConfig = ConfigManager.getDebugConfig();
+    if (debugConfig.cleanupOnExit) {
+      await DataMigrator.cleanupTemporaryFiles(debugConfig.enabled);
+    }
+  } catch (error) {
+    console.warn('[MAIN-PROCESS] Cleanup failed:', error);
+  }
 })

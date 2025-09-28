@@ -394,7 +394,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   };
 
   return (
-    <div className="min-h-screen tokyo-bg text-neutral-100">
+    <div className="min-h-screen text-neutral-100">
       {/* Header */}
       <header className="sticky top-0 z-20 border-b app-border tokyo-bg backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 py-3 grid grid-cols-3 items-center">
