@@ -1,7 +1,11 @@
-import { TranscriptionService } from './transcription-processor';
+//NOTE: Remove this - Unused transcription service
+//NOTE: The main implementation uses DockerWhisperService in docker-whisper-service.ts
+//NOTE: This whisper.cpp-based service is not being used in the current pipeline
+
+import { TranscriptionService } from './transcription-processor.js';
 import { spawn } from 'child_process';
-import path from 'path';
 import fs from 'fs/promises';
+import path from 'path';
 import { ExternalProcessPool } from '../process-pool';
 
 export class WhisperCppService implements TranscriptionService {

@@ -169,40 +169,15 @@ export class SimpleSceneDetection {
     threshold: number,
     config: Record<string, any>
   ): Promise<number[]> {
-    return new Promise((resolve, reject) => {
-      const cuts: number[] = [];
-      const psnrThreshold = 30 + (threshold * 20); // Convert to PSNR range
-      
-      const ffmpegArgs = [
-        '-i', videoPath,
-        '-vf', `select='lt(psnr,${psnrThreshold})',showinfo`,
-        '-f', 'null', '-'
-      ];
-      
-      const proc = spawn('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
-      
-      proc.stderr.on('data', (data) => {
-        const str = data.toString();
-        const matches = str.match(/pts_time:([0-9.]+)/g) || [];
-        
-        for (const match of matches) {
-          const time = parseFloat(match.split(':')[1]);
-          if (!isNaN(time)) {
-            cuts.push(time);
-          }
-        }
-      });
-      
-      proc.on('close', (code) => {
-        if (code === 0) {
-          resolve(cuts);
-        } else {
-          reject(new Error(`Histogram analysis failed with code ${code}`));
-        }
-      });
-      
-      proc.on('error', reject);
-    });
+    // NOTE: The previous approach attempted to use `select='lt(psnr,...)'` which is invalid.
+    // PSNR/SSIM require two inputs and are not exposed as scalar variables in a single-stream
+    // select expression. To keep this technique useful and stable, fall back to ffmpeg's
+    // built-in scene change detector but with a different sensitivity curve so that the
+    // histogram technique behaves distinctly from basic_scene.
+    console.warn('[SIMPLE-SCENE-DETECTION] histogram_analysis uses fallback to scene metric');
+    // Make this pass a bit more sensitive than basic_scene by scaling threshold down.
+    const adjusted = Math.max(0.05, threshold * 0.75);
+    return this.executeBasicScene(videoPath, adjusted, { adaptiveThreshold: false });
   }
   
   /**

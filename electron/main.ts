@@ -8,6 +8,7 @@ import { VideoMediaAPI } from '../src/api/video-media-api'
 import { VideoJobProcessor } from '../src/core/video-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
+import { getMimeType } from '../src/core/utils'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -20,9 +21,9 @@ const __dirname = path.dirname(__filename)
 // Reduce background throttling to avoid delayed paints in development
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 const IS_DEV = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true'
-const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller')
+const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.clipwise')
 const DATA_DIR = process.env.MAIN_DB_DIR || DEFAULT_DATA_DIR
-process.env.DRILLER_DATA_DIR = DATA_DIR
+process.env.CLIPWISE_DATA_DIR = DATA_DIR
 
 // Default main DB backend to sqlite unless explicitly overridden
 if (!process.env.MAIN_DB_BACKEND) process.env.MAIN_DB_BACKEND = 'sqlite'
@@ -69,15 +70,18 @@ async function createWindow() {
     width: 1400,
     height: 900,
     minWidth: 1000,
-    minHeight: 700,
+    minHeight: 600,
     backgroundColor: '#0b0b0b',
     show: true,
+    title: 'Clipwise',
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       backgroundThrottling: false,
     },
   })
+
+  // We'll open dev tools on the app view later, not the main window
 
   // Helper to compute content bounds for views
   const getContentBounds = () => {
@@ -130,6 +134,11 @@ async function createWindow() {
       console.log('[MAIN-PROCESS] Dev server reachable. Loading main URL at:', new Date().toISOString());
       await appView.webContents.loadURL(VITE_DEV_SERVER_URL);
       console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
+      
+      // Open dev tools on the app view in development
+      if (IS_DEV) {
+        appView.webContents.openDevTools();
+      }
       try {
         // Add app view under splash
         win?.addBrowserView(appView);
@@ -152,6 +161,11 @@ async function createWindow() {
     console.log('[MAIN-PROCESS] Loading production index.html at:', new Date().toISOString());
     await appView.webContents.loadFile(path.join(RENDERER_DIST, 'index.html'))
     console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
+    
+    // Open dev tools on the app view in development
+    if (IS_DEV) {
+      appView.webContents.openDevTools();
+    }
     try {
       win?.addBrowserView(appView);
       appView.setBounds(getContentBounds());
@@ -199,13 +213,15 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   // On OS X it's common to re-create a window in the app when the
   // dock icon is clicked and there are no other windows open.
-  if (BrowserWindow.getAllWindows().length === 0) {
+  const isLocalMode = process.env.NODE_ENV === 'development' || process.env.LOCAL_MODE === 'true';
+  
+  if (isLocalMode && BrowserWindow.getAllWindows().length === 0) {
     createWindow()
   }
 })
 
 // Database file operations
-const DB_PATH = path.join(app.getPath('userData'), 'driller-db');
+const DB_PATH = path.join(app.getPath('userData'), 'clipwise-db');
 
 // Ensure DB directory exists
 if (!fs.existsSync(DB_PATH)) {
@@ -355,6 +371,22 @@ ipcMain.handle('media:addSource', async (_, name: string, type: string, path: st
   }));
 });
 
+ipcMain.handle('media:addItemForFile', async (_, sourceId: string, filePath: string, description?: string, metadata?: Record<string, any>) => {
+  return await guardMedia(() => MainMediaAPI.addItemForFile(sourceId, filePath, description, metadata));
+});
+
+ipcMain.handle('media:indexUnprocessedImages', async () => {
+  return await guardMedia(() => MainMediaAPI.indexUnprocessedImages());
+});
+
+ipcMain.handle('media:deleteMediaItem', async (_, itemId: string, deleteFile: boolean = false) => {
+  return await guardMedia(() => MainMediaAPI.deleteMediaItem(itemId, deleteFile));
+});
+
+ipcMain.handle('media:startCleanupJob', async () => {
+  return await guardMedia(() => MainMediaAPI.startCleanupJob());
+});
+
 ipcMain.handle('media:removeSource', async (_, sourceId: string) => {
   return await guardMedia(() => MainMediaAPI.removeSource(sourceId));
 });
@@ -455,63 +487,25 @@ ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
   return await guardMedia(() => MainMediaAPI.getImageThumbnail(imagePath));
 });
 
-// Unified search IPC handler
-ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: number; offset?: number }) => {
-  // Ensure both APIs are initialized (guarded)
+// Unified search IPC handler - now uses the new unifiedSearch method
+ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: number; offset?: number; types?: ('image' | 'video' | 'audio')[] }) => {
   if (!mediaAPI) await initializeMediaAPI();
-  if (!videoAPI) await initializeVideoAPI();
-
-  // Default response shape
-  const grouped = {
-    images: [] as any[],
-    videos: [] as any[],
-    totals: { images: 0, videos: 0 },
-    hasMore: { images: false, videos: false }
-  };
-
-  const q = query?.query ?? '';
-  const limit = query?.limit ?? 20;
-  const offset = query?.offset ?? 0;
-  const videoFetchLimit = Math.max(1, limit) + 1; // fetch one extra to determine hasMore
-
-  // Media/vector: use existing MainMediaAPI.search (returns items + total + hasMore)
-  let mediaOk = false;
+  
   try {
-    if (mediaAPI) {
-      const mediaSearch = await MainMediaAPI.search({ query: q, limit, offset });
-      if (mediaSearch?.success && mediaSearch?.results) {
-        grouped.images = mediaSearch.results.items || [];
-        grouped.totals.images = mediaSearch.results.total || 0;
-        grouped.hasMore.images = !!mediaSearch.results.hasMore;
-        mediaOk = true;
-      }
-    }
-  } catch (e) {
-    console.warn('[UNIFIED-SEARCH] Media search failed:', e);
+    const result = await MainMediaAPI.unifiedSearch(query.query || '', {
+      types: query.types || ['image', 'video', 'audio'],
+      limit: query.limit || 20,
+      offset: query.offset || 0
+    });
+    
+    return result;
+  } catch (error) {
+    console.error('[UNIFIED-SEARCH] Failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown search error'
+    };
   }
-
-  // Video/text: call VideoMediaAPI.searchVideos (text search over segments_fts)
-  let videoOk = false;
-  try {
-    if (videoAPI) {
-      const raw = await videoAPI.searchVideos({ query: q, limit: videoFetchLimit, offset, searchType: 'text' });
-      if (Array.isArray(raw)) {
-        const hasMore = raw.length > limit;
-        const trimmed = hasMore ? raw.slice(0, limit) : raw;
-        grouped.videos = trimmed;
-        grouped.totals.videos = offset + trimmed.length; // approximate when total unknown
-        grouped.hasMore.videos = hasMore;
-        videoOk = true;
-      }
-    }
-  } catch (e) {
-    console.warn('[UNIFIED-SEARCH] Video search failed:', e);
-  }
-
-  return {
-    success: mediaOk || videoOk,
-    results: grouped
-  };
 });
 
 // Video processing IPC handlers
@@ -537,7 +531,64 @@ ipcMain.handle('video:searchVideos', async (_, query: any) => {
   if (!videoAPI) await initializeVideoAPI();
   try {
     const results = await videoAPI!.searchVideos(query);
-    return { success: true, results };
+    
+    // Group segments by parent video to avoid duplicates
+    const videoGroups = new Map<string, any[]>();
+    results.forEach((result: any) => {
+      const videoId = result.video.id;
+      if (!videoGroups.has(videoId)) {
+        videoGroups.set(videoId, []);
+      }
+      videoGroups.get(videoId)!.push(result);
+    });
+
+    // Transform to MediaItem[] format, one result per parent video
+    const transformedResults = Array.from(videoGroups.entries()).map(([videoId, segments]) => {
+      // Use the highest scoring segment for this video
+      const bestSegment = segments.sort((a, b) => b.score - a.score)[0];
+      const segment = bestSegment.segment;
+      const video = bestSegment.video;
+      
+      const isSegment = segment && segment.startTime !== undefined;
+      const hasMultipleSegments = segments.length > 1;
+      
+      return {
+        id: video.id, // Use video ID to avoid duplicates
+        name: hasMultipleSegments 
+          ? `${video.fileName} (${segments.length} segments match)`
+          : isSegment 
+            ? `${video.fileName} - Segment ${Math.floor(segment.startTime)}s-${Math.floor(segment.endTime)}s`
+            : video.fileName,
+        path: isSegment 
+          ? `${video.filePath}#t=${segment.startTime},${segment.endTime}`
+          : video.filePath,
+        size: video.fileSize || 0,
+        type: 'video', // Always mark as video since these are video search results
+        mimeType: getMimeType(video.filePath) || 'video/mp4',
+        sourceId: video.id,
+        createdAt: video.createdAt || new Date(),
+        modifiedAt: video.updatedAt || new Date(),
+        description: hasMultipleSegments
+          ? `Video with ${segments.length} matching segments: ${segments.map(s => `${Math.floor(s.segment.startTime)}s-${Math.floor(s.segment.endTime)}s`).join(', ')}`
+          : isSegment 
+            ? `Video segment: ${segment.transcription || segment.caption || 'No description'}`
+            : `Video file: ${video.fileName}`,
+        score: bestSegment.score, // Use best segment's score
+        matchType: bestSegment.matchType,
+        snippet: bestSegment.snippet,
+        // Additional video-specific fields
+        duration: video.duration, // Always use full video duration
+        matchingSegments: segments.length, // How many segments matched
+        bestSegment: isSegment ? {
+          startTime: segment.startTime,
+          endTime: segment.endTime,
+          duration: segment.duration
+        } : undefined,
+      };
+    })
+    .sort((a, b) => b.score - a.score); // Re-sort by best scores
+    
+    return { success: true, results: transformedResults };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
@@ -604,8 +655,95 @@ ipcMain.handle('dialog:selectVideoFile', async () => {
   return { canceled: false, path: result.filePaths[0] };
 });
 
+// File selection dialog for image files
+ipcMain.handle('dialog:selectImageFile', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    title: 'Select Image File',
+    filters: [
+      { name: 'Image Files', extensions: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'ico', 'heic', 'heif'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+  
+  return { canceled: false, path: result.filePaths[0] };
+});
+
+// File selection dialog for audio files
+ipcMain.handle('dialog:selectAudioFile', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    title: 'Select Audio File',
+    filters: [
+      { name: 'Audio Files', extensions: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma', 'opus', 'amr'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  
+  if (result.canceled || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+  
+  return { canceled: false, path: result.filePaths[0] };
+});
+
+// Configuration management
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+
+ipcMain.handle('config:get', async () => {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
+      const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+      return JSON.parse(configData);
+    }
+    return {};
+  } catch (error) {
+    console.error('Failed to read config:', error);
+    return {};
+  }
+});
+
+ipcMain.handle('config:set', async (_, config) => {
+  try {
+    // Ensure config directory exists
+    await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
+    
+    // Read existing config and merge
+    let existingConfig = {};
+    if (fs.existsSync(CONFIG_FILE)) {
+      try {
+        const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+        existingConfig = JSON.parse(configData);
+      } catch (error) {
+        console.warn('Failed to read existing config, creating new:', error);
+      }
+    }
+    
+    const mergedConfig = { ...existingConfig, ...config };
+    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2));
+    console.log('Config saved successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to save config:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
 app.whenReady().then(async () => {
-  await createWindow();
+  // Only create browser window in local development mode
+  const isLocalMode = process.env.NODE_ENV === 'development' || process.env.LOCAL_MODE === 'true';
+  
+  if (isLocalMode) {
+    console.log('[MAIN-PROCESS] Local mode detected, creating browser window');
+    await createWindow();
+  } else {
+    console.log('[MAIN-PROCESS] Production mode, running headless (no browser window)');
+  }
+  
   // Defer heavy initialization so the UI can appear immediately
   setTimeout(() => {
     initializeMediaAPI().catch((e) => console.warn('[MAIN-PROCESS] MediaAPI init failed:', e));

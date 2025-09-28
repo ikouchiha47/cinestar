@@ -69,6 +69,17 @@ export class MainMediaAPI {
     
     this.initialized = true;
     console.log(`[MainMediaAPI] initialized with backend=${this.backendType} path=${this.dbPathInfo}`);
+  
+  // Auto-detect and queue unindexed images for background processing
+  setTimeout(() => {
+    this.indexUnprocessedImages().then(result => {
+      if (result.success && result.unindexedCount && result.unindexedCount > 0) {
+        console.log(`[MainMediaAPI] Auto-recovery: Found ${result.unindexedCount} unindexed images, started background processing`);
+      }
+    }).catch(error => {
+      console.warn('[MainMediaAPI] Auto-recovery failed:', error);
+    });
+  }, 5000); // Wait 5 seconds after initialization
   }
 
   private static async ensureInitialized(): Promise<void> {
@@ -244,8 +255,44 @@ export class MainMediaAPI {
    * Useful for external pipelines (e.g., Video RAG) to reflect files in the unified UI without running full indexing.
    */
   static async addItemForFile(sourceId: string, filePath: string, description?: string, metadata?: Record<string, any>): Promise<{ success: boolean; id?: string; error?: string }> {
+    let actualSourceId = sourceId; // Declare in function scope
     try {
       await this.ensureInitialized();
+      
+      // Ensure the single_files source exists or find existing one
+      if (sourceId === 'single_files') {
+        const sources = await this.db.getSources();
+        
+        // First try to find by ID
+        let singleFilesSource = sources.find((s: any) => s.id === 'single_files');
+        
+        // If not found by ID, try to find by name or path
+        if (!singleFilesSource) {
+          singleFilesSource = sources.find((s: any) => 
+            s.name === 'Single File Uploads' || 
+            s.path === 'various'
+          );
+        }
+        
+        if (singleFilesSource) {
+          // Use the existing source ID
+          actualSourceId = singleFilesSource.id;
+          console.log(`[ADD-ITEM-FOR-FILE] Using existing single files source: ${actualSourceId}`);
+        } else {
+          // Create new source with unique path
+          console.log('[ADD-ITEM-FOR-FILE] Creating single_files source');
+          const newSourceId = await this.db.addSource({
+            name: 'Single File Uploads',
+            type: 'local',
+            path: `single_files_${Date.now()}`, // Use unique path to avoid conflicts
+            enabled: true,
+            config: { singleFileUploads: true },
+            createdAt: new Date()
+          });
+          actualSourceId = newSourceId;
+        }
+      }
+      
       const stats = await fs.stat(filePath);
       const name = path.basename(filePath);
       const mime = getMimeType(filePath);
@@ -255,7 +302,7 @@ export class MainMediaAPI {
       else if (lower.startsWith('audio/')) type = 'audio';
 
       console.log(`[ADD-ITEM-FOR-FILE-DEBUG] Adding media item:`, {
-        sourceId: sourceId,
+        sourceId: actualSourceId,
         name: name,
         path: filePath,
         type: type,
@@ -280,7 +327,7 @@ export class MainMediaAPI {
       }
 
       const id = await this.db.addMediaItem({
-        sourceId,
+        sourceId: actualSourceId,
         name,
         path: filePath,
         size: Number(stats.size || 0),
@@ -298,11 +345,28 @@ export class MainMediaAPI {
         type: type
       });
       
+      // Fast processing for images: generate thumbnail immediately, queue captioning for background
+      if (type === 'image') {
+        console.log(`[ADD-ITEM-FOR-FILE] Starting fast processing for image: ${name}`);
+        try {
+          // Stage 1: Fast thumbnail generation (immediate)
+          await this.generateFastThumbnail(id, filePath, name);
+          
+          // Stage 2: Queue for background captioning job
+          if (this.vecDb && this.llm) {
+            await this.queueImageForCaptioning(id, filePath, name, actualSourceId);
+          }
+        } catch (processingError) {
+          console.warn(`[ADD-ITEM-FOR-FILE] Fast processing failed for ${name}:`, processingError);
+          // Don't fail the upload if processing fails
+        }
+      }
+      
       return { success: true, id };
     } catch (error) {
       console.error('[MainMediaAPI] addItemForFile failed:', error);
       console.error('[ADD-ITEM-FOR-FILE-ERROR] Failed to add item:', {
-        sourceId: sourceId,
+        sourceId: actualSourceId,
         filePath: filePath,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -340,7 +404,13 @@ export class MainMediaAPI {
         return { success: false, error: 'Source not found' };
       }
 
-      const jobId = await this.db.createJob({ sourceId });
+      const jobId = await this.db.createJob({ 
+        sourceId,
+        title: 'Scanning Media Files',
+        description: `Scanning ${source.name} for new media files`,
+        operationType: 'media_scan',
+        targetFile: source.path
+      });
       
       // Start indexing in background (simplified version)
       this.performIndexing(jobId, sourceId, false).catch(error => {
@@ -381,7 +451,13 @@ export class MainMediaAPI {
         return { success: false, error: 'Source not found' };
       }
 
-      const jobId = await this.db.createJob({ sourceId });
+      const jobId = await this.db.createJob({ 
+        sourceId,
+        title: 'Force Re-indexing',
+        description: `Force re-indexing ${source.name} (regenerating all captions and embeddings)`,
+        operationType: 'force_reindex',
+        targetFile: source.path
+      });
       
       // Start force re-indexing in background
       this.performIndexing(jobId, sourceId, true).catch(error => {
@@ -393,6 +469,402 @@ export class MainMediaAPI {
     } catch (error) {
       console.error('Failed to start force re-indexing:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Detect and queue unindexed images for background processing
+   */
+  static async indexUnprocessedImages(): Promise<{ success: boolean; jobId?: string; unindexedCount?: number; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      if (!this.vecDb || !this.llm) {
+        return { success: false, error: 'Vector database or LLM not available' };
+      }
+
+      // Get all image items from the database
+      const allItems = await this.db.getMediaItems();
+      const imageItems = allItems.filter((item: any) => item.type === 'image');
+      
+      console.log(`[UNINDEXED-RECOVERY] Found ${imageItems.length} image items to check`);
+      
+      // Check which images don't have captions/embeddings
+      const unindexedImages: any[] = [];
+      
+      for (const item of imageItems) {
+        try {
+          // Check if image has been indexed by looking at the vector database
+          const mediaItem = this.vecDb.getMediaItem(item.id);
+          const needsIndexing = !mediaItem || 
+                                mediaItem.captionStatus !== 'completed' || 
+                                mediaItem.embeddingStatus !== 'completed';
+          
+          if (needsIndexing) {
+            unindexedImages.push(item);
+            console.log(`[UNINDEXED-RECOVERY] Found unindexed image: ${item.name} (${item.id}) - Status: caption=${mediaItem?.captionStatus || 'missing'}, embedding=${mediaItem?.embeddingStatus || 'missing'}`);
+          }
+        } catch (e) {
+          // If we can't check, assume it needs indexing
+          unindexedImages.push(item);
+          console.log(`[UNINDEXED-RECOVERY] Cannot check status for ${item.name}, adding to queue`);
+        }
+      }
+      
+      if (unindexedImages.length === 0) {
+        console.log(`[UNINDEXED-RECOVERY] No unindexed images found`);
+        return { success: true, unindexedCount: 0 };
+      }
+      
+      console.log(`[UNINDEXED-RECOVERY] Found ${unindexedImages.length} unindexed images, starting background processing`);
+      
+      // Find the actual single_files sourceId
+      const sources = await this.db.getSources();
+      const singleFilesSource = sources.find((s: any) => 
+        s.name === 'Single File Uploads' || 
+        s.path === 'various' ||
+        s.id === 'single_files'
+      );
+      
+      const actualSourceId = singleFilesSource ? singleFilesSource.id : 'single_files';
+      
+      // Create a proper indexing job that shows up in the UI
+      const jobId = await this.db.createJob({ 
+        sourceId: actualSourceId,
+        title: 'Processing Unindexed Images',
+        description: `Generating captions and embeddings for ${unindexedImages.length} unindexed images`,
+        operationType: 'image_recovery',
+        totalItems: unindexedImages.length,
+        processedItems: 0
+      });
+      
+      // Process unindexed images in background with job tracking
+      this.processUnindexedImagesWithJobTracking(jobId, unindexedImages).catch(error => {
+        console.error('[UNINDEXED-RECOVERY] Background processing failed:', error);
+        this.db.updateJobStatus(jobId, 'failed', 0);
+      });
+      
+      return { success: true, jobId, unindexedCount: unindexedImages.length };
+      
+    } catch (error) {
+      console.error('[UNINDEXED-RECOVERY] Failed to detect unindexed images:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Generate fast thumbnail for immediate UI display
+   */
+  private static async generateFastThumbnail(id: string, filePath: string, name: string): Promise<void> {
+    console.log(`[FAST-THUMBNAIL] Generating thumbnail for: ${name}`);
+    
+    try {
+      // For now, we'll use the image itself as thumbnail (fast)
+      // In the future, this could generate a smaller thumbnail using sharp or similar
+      
+      // Update metadata with thumbnail path
+      if (this.vecDb) {
+        // Store thumbnail path in metadata (for now, just log - could be stored in metadata field)
+        const mediaItem = this.vecDb.getMediaItem(id);
+        if (mediaItem) {
+          // In the future, this could store thumbnail path in a metadata field
+          console.log(`[FAST-THUMBNAIL] Thumbnail ready for ${name} (using original image: ${filePath})`);
+        }
+      }
+    } catch (error) {
+      console.error(`[FAST-THUMBNAIL] Failed to generate thumbnail for ${name}:`, error);
+    }
+  }
+
+  /**
+   * Queue image for background captioning job
+   */
+  private static async queueImageForCaptioning(id: string, filePath: string, name: string, sourceId: string): Promise<void> {
+    console.log(`[CAPTION-QUEUE] Queuing image for background captioning: ${name}`);
+    
+    try {
+      // Set status to pending for captioning
+      this.vecDb!.updateStatus(id, 'pending', 'pending');
+      
+      // Start background captioning job with tracking (delayed)
+      setTimeout(() => {
+        // Create job only when we're about to start processing
+        this.db.createJob({ 
+          sourceId: sourceId,
+          title: 'Generating Caption',
+          description: `Generating caption for ${name}`,
+          operationType: 'image_caption',
+          targetFile: filePath,
+          totalItems: 1,
+          processedItems: 0
+        }).then((jobId: string) => {
+          this.processSingleImageCaptioningWithJob(jobId, id, filePath, name).catch((error: any) => {
+            console.error(`[CAPTION-QUEUE] Background captioning failed for ${name}:`, error);
+            this.db.updateJobStatus(jobId, 'failed', 0);
+          });
+        }).catch((error: any) => {
+          console.error(`[CAPTION-QUEUE] Failed to create job for ${name}:`, error);
+        });
+      }, 2000); // Start after 2 seconds to avoid blocking upload
+      
+      console.log(`[CAPTION-QUEUE] Queued ${name} for background captioning (will start in 2s)`);
+    } catch (error) {
+      console.error(`[CAPTION-QUEUE] Failed to queue ${name} for captioning:`, error);
+    }
+  }
+
+  /**
+   * Process single image captioning in background with job tracking
+   */
+  private static async processSingleImageCaptioningWithJob(jobId: string, id: string, filePath: string, name: string): Promise<void> {
+    console.log(`[BACKGROUND-CAPTION] Starting captioning for: ${name} (Job: ${jobId})`);
+    
+    try {
+      // Update job to running
+      await this.db.updateJobStatus(jobId, 'running', 0);
+      
+      // Generate caption
+      const caption = await this.llm!.generateImageDescription(filePath);
+      if (caption) {
+        await this.vecDb!.updateCaption(id, caption, 'completed');
+        console.log(`[BACKGROUND-CAPTION] Generated caption for ${name}: "${caption.substring(0, 80)}..."`);
+        
+        // Update progress
+        await this.db.updateJobStatus(jobId, 'running', 50);
+        
+        // Generate embedding from caption
+        const embedding = await this.llm!.generateEmbedding(caption);
+        if (embedding) {
+          await this.vecDb!.updateEmbedding(id, embedding, 'completed');
+          console.log(`[BACKGROUND-CAPTION] Generated embedding for ${name}`);
+        }
+      }
+      
+      // Mark job as completed
+      await this.db.updateJobStatus(jobId, 'completed', 100);
+      
+    } catch (error) {
+      console.error(`[BACKGROUND-CAPTION] Failed to caption ${name}:`, error);
+      // Mark as failed
+      await this.vecDb!.updateCaption(id, '', 'failed');
+      await this.vecDb!.updateEmbedding(id, new Float32Array([]), 'failed');
+      await this.db.updateJobStatus(jobId, 'failed', 0);
+    }
+  }
+
+  /**
+   * Process single image captioning in background (legacy method for recovery)
+   */
+  private static async processSingleImageCaptioning(id: string, filePath: string, name: string): Promise<void> {
+    console.log(`[BACKGROUND-CAPTION] Starting captioning for: ${name}`);
+    
+    try {
+      // Generate caption
+      const caption = await this.llm!.generateImageDescription(filePath);
+      if (caption) {
+        await this.vecDb!.updateCaption(id, caption, 'completed');
+        console.log(`[BACKGROUND-CAPTION] Generated caption for ${name}: "${caption.substring(0, 80)}..."`);
+        
+        // Generate embedding from caption
+        const embedding = await this.llm!.generateEmbedding(caption);
+        if (embedding) {
+          await this.vecDb!.updateEmbedding(id, embedding, 'completed');
+          console.log(`[BACKGROUND-CAPTION] Generated embedding for ${name}`);
+        }
+      }
+    } catch (error) {
+      console.error(`[BACKGROUND-CAPTION] Failed to caption ${name}:`, error);
+      // Mark as failed
+      await this.vecDb!.updateCaption(id, '', 'failed');
+      await this.vecDb!.updateEmbedding(id, new Float32Array([]), 'failed');
+    }
+  }
+
+  /**
+   * Process unindexed images in background with job tracking for UI
+   */
+  private static async processUnindexedImagesWithJobTracking(jobId: string, unindexedImages: any[]): Promise<void> {
+    console.log(`[UNINDEXED-RECOVERY] Starting background processing of ${unindexedImages.length} images (Job: ${jobId})`);
+    
+    // Update job status to running
+    await this.db.updateJobStatus(jobId, 'running', 0);
+    
+    let processedCount = 0;
+    
+    for (const item of unindexedImages) {
+      try {
+        console.log(`[UNINDEXED-RECOVERY] Processing image ${processedCount + 1}/${unindexedImages.length}: ${item.name}`);
+        
+        // Use the same background captioning process
+        await this.processSingleImageCaptioning(item.id, item.path, item.name);
+        
+        processedCount++;
+        
+        // Update job progress for UI
+        const progress = Math.round((processedCount / unindexedImages.length) * 100);
+        await this.db.updateJobStatus(jobId, 'running', progress);
+        
+        // Small delay to avoid overwhelming the system
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      } catch (error) {
+        console.error(`[UNINDEXED-RECOVERY] Failed to process ${item.name}:`, error);
+        // Continue with next image even if one fails
+      }
+    }
+    
+    // Mark job as completed
+    await this.db.updateJobStatus(jobId, 'completed', 100);
+    console.log(`[UNINDEXED-RECOVERY] Completed background processing of ${unindexedImages.length} images (Job: ${jobId})`);
+  }
+
+  /**
+   * Delete a media item from the library (database only)
+   */
+  static async deleteMediaItem(itemId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      // Get the item details before deletion
+      const items = await this.db.getMediaItems();
+      const item = items.find((i: any) => i.id === itemId);
+      
+      if (!item) {
+        return { success: false, error: 'Media item not found' };
+      }
+      
+      console.log(`[MEDIA-DELETE] Removing media item from library: ${item.name} (${itemId})`);
+      
+      // Remove from main database only - let triggers handle FTS cleanup
+      await this.db.removeMediaItem(itemId);
+      
+      // Remove from vector database (this has sqlite-vec loaded and can handle vec_embeddings)
+      if (this.vecDb) {
+        try {
+          this.vecDb.removeMediaItem(itemId);
+          console.log(`[MEDIA-DELETE] Removed from vector database: ${itemId}`);
+        } catch (error) {
+          console.warn(`[MEDIA-DELETE] Failed to remove from vector DB (non-critical):`, error);
+        }
+      }
+      
+      console.log(`[MEDIA-DELETE] Successfully removed ${item.name} from library`);
+      return { success: true };
+      
+    } catch (error) {
+      console.error('[MEDIA-DELETE] Failed to delete media item:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Start background cleanup job to remove orphaned files and database entries
+   */
+  static async startCleanupJob(): Promise<{ success: boolean; jobId?: string; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      
+      console.log(`[CLEANUP-JOB] Starting background cleanup job`);
+      
+      // Create a cleanup job
+      const jobId = `cleanup_${Date.now()}`;
+      
+      // Start cleanup in background
+      this.performCleanup(jobId).catch(error => {
+        console.error('[CLEANUP-JOB] Background cleanup failed:', error);
+      });
+      
+      return { success: true, jobId };
+      
+    } catch (error) {
+      console.error('[CLEANUP-JOB] Failed to start cleanup job:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Perform background cleanup operations
+   */
+  private static async performCleanup(jobId: string): Promise<void> {
+    console.log(`[CLEANUP-JOB] Starting cleanup job ${jobId}`);
+    
+    try {
+      // 1. Find orphaned database entries (files that no longer exist)
+      const items = await this.db.getMediaItems();
+      const orphanedItems: any[] = [];
+      
+      console.log(`[CLEANUP-JOB] Checking ${items.length} items for orphaned files`);
+      
+      for (const item of items) {
+        try {
+          const fs = await import('fs');
+          if (item.path && !fs.existsSync(item.path)) {
+            orphanedItems.push(item);
+            console.log(`[CLEANUP-JOB] Found orphaned item: ${item.name} (file missing: ${item.path})`);
+          }
+        } catch (e) {
+          // If we can't check the file, skip it
+          console.warn(`[CLEANUP-JOB] Cannot check file existence for ${item.name}:`, e);
+        }
+      }
+      
+      // 2. Remove orphaned database entries
+      if (orphanedItems.length > 0) {
+        console.log(`[CLEANUP-JOB] Removing ${orphanedItems.length} orphaned database entries`);
+        
+        for (const item of orphanedItems) {
+          try {
+            await this.db.removeMediaItem(item.id);
+            
+            // Also remove from vector database
+            if (this.vecDb) {
+              try {
+                await this.vecDb.removeMediaItem(item.id);
+              } catch (e) {
+                console.warn(`[CLEANUP-JOB] Failed to remove from vector db: ${item.id}`, e);
+              }
+            }
+            
+            console.log(`[CLEANUP-JOB] Removed orphaned entry: ${item.name} (${item.id})`);
+            
+            // Small delay to avoid overwhelming the system
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+          } catch (error) {
+            console.error(`[CLEANUP-JOB] Failed to remove orphaned entry ${item.id}:`, error);
+          }
+        }
+      }
+      
+      // 3. Clean up empty sources (sources with no items)
+      console.log(`[CLEANUP-JOB] Checking for empty sources`);
+      const sources = await this.db.getSources();
+      const emptySources: any[] = [];
+      
+      for (const source of sources) {
+        const sourceItems = await this.db.getMediaItems(source.id);
+        if (sourceItems.length === 0 && source.id !== 'single_files') { // Don't remove single_files source
+          emptySources.push(source);
+        }
+      }
+      
+      if (emptySources.length > 0) {
+        console.log(`[CLEANUP-JOB] Removing ${emptySources.length} empty sources`);
+        for (const source of emptySources) {
+          try {
+            await this.db.removeSource(source.id);
+            console.log(`[CLEANUP-JOB] Removed empty source: ${source.name} (${source.id})`);
+          } catch (error) {
+            console.error(`[CLEANUP-JOB] Failed to remove empty source ${source.id}:`, error);
+          }
+        }
+      }
+      
+      console.log(`[CLEANUP-JOB] Cleanup job ${jobId} completed successfully`);
+      console.log(`[CLEANUP-JOB] Summary: Removed ${orphanedItems.length} orphaned items, ${emptySources.length} empty sources`);
+      
+    } catch (error) {
+      console.error(`[CLEANUP-JOB] Cleanup job ${jobId} failed:`, error);
     }
   }
 
@@ -433,51 +905,141 @@ export class MainMediaAPI {
       
       // Get media indexing jobs
       const mediaJobs = await this.db.getActiveJobs();
+      console.log(`[INDEXING-STATUS-DEBUG] Media jobs from DB:`, mediaJobs.map((j: any) => ({ id: j.id, status: j.status, sourceId: j.sourceId })));
       
-      // Get video processing jobs
+      // Get video processing jobs using singleton VideoMediaAPI
       let videoJobs: any[] = [];
       try {
-        const { VideoDatabase } = await import('../core/video-database');
-        const videoDb = new VideoDatabase();
-        await videoDb.initialize();
+        const { VideoMediaAPI } = await import('./video-media-api');
+        const videoApi = VideoMediaAPI.getInstance();
         
-        const activeVideoJobs = await videoDb.getJobs('processing');
-        const pendingVideoJobs = await videoDb.getJobs('pending');
+        // Use the singleton instance instead of creating new connections
+        const activeVideoJobs = await videoApi.getActiveJobs();
+        // VideoMediaAPI doesn't have getPendingJobs, so we get all active jobs
+        const pendingVideoJobs: any[] = [];
+
+        // Merge and de-duplicate by job id
+        const byId: Record<string, any> = {};
+        for (const j of [...activeVideoJobs, ...pendingVideoJobs]) {
+          if (!byId[j.id]) byId[j.id] = j;
+        }
+        videoJobs = Object.values(byId);
+        console.log(`[INDEXING-STATUS-DEBUG] Video jobs:`, videoJobs.map((j: any) => ({ id: j.id, status: j.status })));
         
-        videoJobs = [...activeVideoJobs, ...pendingVideoJobs].map((job: any) => ({
-          id: job.id,
-          sourceId: job.videoPath, // Use video path as source identifier
-          status: job.status === 'processing' ? 'running' : job.status,
-          progress: job.progress || 0,
-          totalItems: job.totalSegments || 1,
-          processedItems: job.segmentCount || 0,
-          startedAt: job.startTime,
-          completedAt: job.endTime,
-          type: 'video', // Mark as video processing job
-          refinementPass: job.refinementPass || 1,
-          threshold: job.threshold || 0.8
-        }));
-      } catch (error) {
-        console.warn('[INDEXING-STATUS] Failed to get video jobs:', error);
+        // [DEBUG] Log actual video job structure
+        if (videoJobs.length > 0) {
+          console.log(`[VIDEO-JOB-STRUCTURE-DEBUG] First video job fields:`, Object.keys(videoJobs[0]));
+          console.log(`[VIDEO-JOB-STRUCTURE-DEBUG] First video job data:`, videoJobs[0]);
+        }
+      } catch (e) {
+        console.error('[MainMediaAPI] Failed to get video jobs:', e);
+        console.error('[MainMediaAPI] Video job error stack:', e instanceof Error ? e.stack : e);
       }
       
       // Combine all jobs
       const allJobs = [...mediaJobs, ...videoJobs];
-      const activeJobs = allJobs.map((job: any) => job.id);
+      // Only treat running (media) and processing (video) as active/in-progress
+      const activeJobs = allJobs
+        .filter((j: any) => j.status === 'running' || j.status === 'processing')
+        .map((j: any) => j.id);
+      console.log(`[INDEXING-STATUS-DEBUG] Active jobs (running/processing):`, activeJobs);
       
-      const jobDetails = allJobs.map((j: any) => ({
-        id: j.id,
-        sourceId: j.sourceId,
-        status: j.status,
-        progress: j.progress,
-        totalItems: j.totalItems,
-        processedItems: j.processedItems,
-        startedAt: j.startedAt,
-        completedAt: j.completedAt,
-        type: j.type || 'media', // Distinguish job types
-        refinementPass: j.refinementPass,
-        threshold: j.threshold
-      }));
+      // Get detailed job info for UI display (only active/pending jobs)
+      const relevantJobs = [...mediaJobs, ...videoJobs].filter(j => 
+        j.status === 'running' || j.status === 'processing' || j.status === 'pending' || j.status === 'scheduled'
+      );
+      const jobDetails = relevantJobs.map(j => {
+        // Determine if this is a video job (from VideoDatabase)
+        const isVideoJob = !j.sourceId && (j.videoPath || j.video_path); // Video jobs have video_path but no sourceId
+        
+        // Generate appropriate title and description for video jobs
+        let jobTitle = j.title;
+        let jobDescription = j.description;
+        let operationType = j.operationType;
+        let targetFile = j.targetFile;
+        
+        if (isVideoJob) {
+          // Extract filename from video path (handle both field names)
+          const videoPath = j.videoPath || j.video_path;
+          const fileName = videoPath ? videoPath.split('/').pop() : (j.file_name || j.fileName || 'video');
+          
+          // [DEBUG] Log video job mapping
+          console.log(`[VIDEO-JOB-MAPPING-DEBUG] Processing video job ${j.id}:`, {
+            isVideoJob,
+            videoPath,
+            fileName,
+            status: j.status,
+            progress: j.progress
+          });
+          
+          // Set descriptive titles based on video job status/progress
+          if (j.status === 'scheduled' || j.status === 'pending') {
+            // Explicitly show queued state, not processing
+            jobTitle = 'Queued';
+            jobDescription = `Queued for video processing: ${fileName}`;
+            operationType = 'video_queue';
+          } else if (j.status === 'running' || j.status === 'processing') {
+            if (j.progress < 30) {
+              jobTitle = 'Extracting Video Segments';
+              jobDescription = `Extracting segments from ${fileName}`;
+              operationType = 'video_segmentation';
+            } else if (j.progress < 70) {
+              jobTitle = 'Generating Transcriptions';
+              jobDescription = `Creating transcriptions for ${fileName}`;
+              operationType = 'video_transcription';
+            } else {
+              jobTitle = 'Creating Keyframes';
+              jobDescription = `Generating keyframes for ${fileName}`;
+              operationType = 'video_keyframes';
+            }
+          } else if (j.status === 'completed') {
+            jobTitle = 'Video Processing Complete';
+            jobDescription = `Completed processing ${fileName}`;
+            operationType = 'video_complete';
+          }
+          
+          targetFile = videoPath;
+        }
+        
+        const mappedJob = {
+          id: j.id,
+          sourceId: j.sourceId,
+          status: j.status,
+          progress: j.progress,
+          totalItems: j.totalItems,
+          processedItems: j.processedItems,
+          startedAt: j.startedAt,
+          completedAt: j.completedAt,
+          type: isVideoJob ? 'video' : (j.type || 'media'), // Properly mark video jobs
+          refinementPass: j.refinementPass,
+          threshold: j.threshold,
+          title: jobTitle,
+          description: jobDescription,
+          operationType: operationType,
+          targetFile: targetFile
+        };
+        
+        // [DEBUG] Log final mapped job
+        if (isVideoJob) {
+          console.log(`[VIDEO-JOB-FINAL-DEBUG] Final mapped job for ${j.id}:`, mappedJob);
+        }
+        
+        return mappedJob;
+      });
+      
+      // [DEBUG] Log job details being sent to UI
+      console.log(`[INDEXING-API-DEBUG] Sending ${jobDetails.length} jobs to UI:`);
+      jobDetails.forEach((job, index) => {
+        console.log(`[INDEXING-API-DEBUG] Job ${index + 1}:`, {
+          id: job.id,
+          status: job.status,
+          type: job.type,
+          title: job.title,
+          description: job.description,
+          operationType: job.operationType,
+          targetFile: job.targetFile
+        });
+      });
       
       return { success: true, activeJobs, jobs: jobDetails };
     } catch (error) {
@@ -637,7 +1199,338 @@ export class MainMediaAPI {
   }
 
   /**
-   * Search functionality with pagination support
+   * Unified search across all media types with proper grouping
+   */
+  static async unifiedSearch(query: string, options: {
+    types?: ('image' | 'video' | 'audio')[];
+    limit?: number;
+    offset?: number;
+  } = {}): Promise<{
+    success: boolean;
+    results?: {
+      images: any[];
+      videos: any[];
+      audio: any[];
+      totals: { images: number; videos: number; audio: number };
+      hasMore: { images: boolean; videos: boolean; audio: boolean };
+      query: string;
+      executionTime: number;
+    };
+    error?: string;
+  }> {
+    try {
+      await this.ensureInitialized();
+      const q = String(query || '').trim();
+      const limit = options.limit || 20;
+      const offset = options.offset || 0;
+      const requestedTypes = options.types || ['image', 'video', 'audio'];
+      const started = Date.now();
+
+      // Initialize grouped results
+      const grouped = {
+        images: [] as any[],
+        videos: [] as any[],
+        audio: [] as any[],
+        totals: { images: 0, videos: 0, audio: 0 },
+        hasMore: { images: false, videos: false, audio: false }
+      };
+
+      // Try semantic search first if available
+      if (this.vecDb && this.llm && q) {
+        try {
+          // Get more results to ensure we have enough for each type after grouping
+          const searchLimit = limit * requestedTypes.length;
+          const textEmbedding = await this.llm.generateEmbedding(q);
+          const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, searchLimit, 0, q);
+          
+          // Transform and group results by media type
+          const allItems = paginatedResults.results.map(r => {
+            const mimeType = getMimeType(r.path);
+            const lower = (mimeType || '').toLowerCase();
+            let type: 'image' | 'video' | 'audio' = 'image';
+            
+            // First check database type for video segments
+            if (r.type === 'video_segment' || r.type === 'video') {
+              type = 'video';
+            } else if (r.type === 'audio') {
+              type = 'audio';
+            } else if (lower.startsWith('video/')) {
+              type = 'video';
+            } else if (lower.startsWith('audio/')) {
+              type = 'audio';
+            }
+            
+            return {
+              id: r.id,
+              name: r.name,
+              path: r.path,
+              size: r.size,
+              type,
+              mimeType: mimeType || (type === 'video' ? 'video/mp4' : undefined),
+              sourceId: r.sourceId,
+              createdAt: new Date(),
+              score: r.similarity || 0,
+              metadata: (r as any).metadata ? (typeof (r as any).metadata === 'string' ? JSON.parse((r as any).metadata) : (r as any).metadata) : undefined,
+            };
+          });
+
+          // Group by type and apply pagination per type
+          const imageItems = allItems.filter(item => item.type === 'image');
+          const audioItems = allItems.filter(item => item.type === 'audio');
+          
+          // For videos, deduplicate parent videos and segments
+          const videoItems = allItems.filter(item => item.type === 'video');
+          const deduplicatedVideos = await this.deduplicateVideoResults(videoItems);
+          
+          const typeGroups = {
+            image: imageItems,
+            video: deduplicatedVideos,
+            audio: audioItems
+          };
+
+          // Apply pagination and limits per type
+          requestedTypes.forEach(type => {
+            const items = typeGroups[type] || [];
+            const total = items.length;
+            const paginatedItems = items.slice(offset, offset + limit);
+            
+            if (type === 'image') {
+              grouped.images = paginatedItems;
+              grouped.totals.images = total;
+              grouped.hasMore.images = (offset + limit) < total;
+            } else if (type === 'video') {
+              grouped.videos = paginatedItems;
+              grouped.totals.videos = total;
+              grouped.hasMore.videos = (offset + limit) < total;
+            } else if (type === 'audio') {
+              grouped.audio = paginatedItems;
+              grouped.totals.audio = total;
+              grouped.hasMore.audio = (offset + limit) < total;
+            }
+          });
+
+          const executionTime = Date.now() - started;
+          return { 
+            success: true, 
+            results: { 
+              ...grouped,
+              query: q, 
+              executionTime
+            } 
+          };
+        } catch (e) {
+          console.warn('[UNIFIED-SEARCH] Semantic search failed, falling back to basic search:', e);
+          // Fall through to fallback below
+        }
+      }
+
+      // Fallback: search main DB with text filtering
+      try {
+        const allItems = await this.db.getMediaItems();
+        let filteredItems = allItems as any[];
+
+        // Apply text filtering if query provided
+        if (q) {
+          const queryLower = q.toLowerCase();
+          filteredItems = allItems.filter((item: any) =>
+            (item.name || '').toLowerCase().includes(queryLower) ||
+            (item.description || '').toLowerCase().includes(queryLower) ||
+            (item.path || '').toLowerCase().includes(queryLower)
+          );
+        }
+
+        // Transform items with proper type detection
+        const transformedItems = filteredItems.map((it: any) => {
+          const mimeType = getMimeType(it.path);
+          const lower = (mimeType || '').toLowerCase();
+          let type: 'image' | 'video' | 'audio' = it.type || 'image';
+          
+          // First check database type for video segments
+          if (it.type === 'video_segment' || it.type === 'video') {
+            type = 'video';
+          } else if (it.type === 'audio') {
+            type = 'audio';
+          } else if (lower.startsWith('video/')) {
+            type = 'video';
+          } else if (lower.startsWith('audio/')) {
+            type = 'audio';
+          } else if (lower.startsWith('image/')) {
+            type = 'image';
+          }
+          
+          return {
+            id: it.id,
+            name: it.name,
+            path: it.path,
+            size: it.size,
+            type,
+            mimeType: mimeType || (type === 'video' ? 'video/mp4' : undefined),
+            sourceId: it.sourceId,
+            createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
+            metadata: it.metadata ? (typeof it.metadata === 'string' ? JSON.parse(it.metadata) : it.metadata) : undefined,
+          };
+        });
+
+        // Group by type  
+        const imageItems = transformedItems.filter(item => item.type === 'image');
+        const audioItems = transformedItems.filter(item => item.type === 'audio');
+        
+        // For videos, deduplicate parent videos and segments
+        const videoItems = transformedItems.filter(item => item.type === 'video');
+        const deduplicatedVideos = await this.deduplicateVideoResults(videoItems);
+        
+        const typeGroups = {
+          image: imageItems,
+          video: deduplicatedVideos,
+          audio: audioItems
+        };
+
+        // Apply pagination per type
+        requestedTypes.forEach(type => {
+          const items = typeGroups[type] || [];
+          
+          // Sort by createdAt desc
+          items.sort((a: any, b: any) => {
+            const aDate = new Date(a.createdAt || 0);
+            const bDate = new Date(b.createdAt || 0);
+            return bDate.getTime() - aDate.getTime();
+          });
+
+          const total = items.length;
+          const paginatedItems = items.slice(offset, offset + limit);
+          
+          if (type === 'image') {
+            grouped.images = paginatedItems;
+            grouped.totals.images = total;
+            grouped.hasMore.images = (offset + limit) < total;
+          } else if (type === 'video') {
+            grouped.videos = paginatedItems;
+            grouped.totals.videos = total;
+            grouped.hasMore.videos = (offset + limit) < total;
+          } else if (type === 'audio') {
+            grouped.audio = paginatedItems;
+            grouped.totals.audio = total;
+            grouped.hasMore.audio = (offset + limit) < total;
+          }
+        });
+
+        const executionTime = Date.now() - started;
+        return {
+          success: true,
+          results: {
+            ...grouped,
+            query: q,
+            executionTime
+          }
+        };
+      } catch (fallbackError) {
+        console.error('[UNIFIED-SEARCH] Fallback search failed:', fallbackError);
+        throw fallbackError;
+      }
+    } catch (error) {
+      console.error('[UNIFIED-SEARCH] Search failed:', error);
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Unknown search error' 
+      };
+    }
+  }
+
+  /**
+   * Deduplicate video results to avoid showing both parent video and segments
+   * Groups by video file path and shows parent video with segment count
+   */
+  private static async deduplicateVideoResults(videoItems: any[]): Promise<any[]> {
+    // Group by video file path (remove #t= fragments for segments)
+    const videoGroups = new Map<string, any[]>();
+    
+    videoItems.forEach(item => {
+      // Extract base video path (remove #t=start,end for segments)
+      const basePath = item.path.split('#t=')[0];
+      
+      if (!videoGroups.has(basePath)) {
+        videoGroups.set(basePath, []);
+      }
+      videoGroups.get(basePath)!.push(item);
+    });
+
+    // For each video group, return the best representation
+    const results = await Promise.all(
+      Array.from(videoGroups.entries()).map(async ([basePath, items]) => {
+        // Separate parent videos and segments
+        const parentVideos = items.filter(item => !item.path.includes('#t='));
+        const segments = items.filter(item => item.path.includes('#t='));
+        
+        // If we only have segments, try to fetch the parent video from database
+        if (parentVideos.length === 0 && segments.length > 0) {
+          try {
+            const allItems = await this.db.getMediaItems();
+            const parentVideo = allItems.find((item: any) => 
+              item.path === basePath && item.type === 'video'
+            );
+            
+            if (parentVideo) {
+              // Add metadata field with proper structure
+              const metadata = parentVideo.metadata ? 
+                (typeof parentVideo.metadata === 'string' ? JSON.parse(parentVideo.metadata) : parentVideo.metadata) 
+                : undefined;
+              
+              return {
+                ...parentVideo,
+                metadata,
+                name: `${parentVideo.name} (${segments.length} segments match)`,
+                matchingSegments: segments.length,
+                hasSegments: true,
+                type: 'video',
+                mimeType: 'video/mp4',
+                segments: segments.map(seg => ({
+                  id: seg.id,
+                  name: seg.name,
+                  path: seg.path,
+                  startTime: seg.path.match(/#t=([^,]+),/)?.[1],
+                  endTime: seg.path.match(/#t=[^,]+,([^&]+)/)?.[1],
+                  score: seg.score
+                }))
+              };
+            }
+          } catch (error) {
+            console.error('[DEDUP-ERROR] Failed to fetch parent video:', error);
+          }
+        }
+        
+        // Prefer parent video if it exists, otherwise use best segment
+        const primaryItem = parentVideos.length > 0 ? parentVideos[0] : segments[0];
+        
+        if (!primaryItem) return null;
+        
+        // If we have both parent and segments, show parent with segment info
+        if (parentVideos.length > 0 && segments.length > 0) {
+          const parentVideo = parentVideos[0];
+          return {
+            ...parentVideo, // Use parent video (which has thumbnail metadata)
+            name: `${parentVideo.name} (${segments.length} segments match)`,
+            matchingSegments: segments.length,
+            hasSegments: true,
+            segments: segments.map(seg => ({
+              id: seg.id,
+              name: seg.name,
+              path: seg.path,
+              startTime: seg.path.match(/#t=([^,]+),/)?.[1],
+              endTime: seg.path.match(/#t=[^,]+,([^&]+)/)?.[1],
+              score: seg.score
+            })) // Store segment info for future chapter-like functionality
+          };
+        }
+        
+        return primaryItem;
+      })
+    );
+    
+    return results.filter(Boolean);
+  }
+
+  /**
+   * Legacy search functionality - now wraps unifiedSearch for backward compatibility
    */
   static async search(query: any): Promise<{ success: boolean; results?: any; error?: string }> {
     try {
@@ -652,16 +1545,24 @@ export class MainMediaAPI {
         try {
           const textEmbedding = await this.llm.generateEmbedding(q);
           const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, limit, offset, q);
-          const items = paginatedResults.results.map(r => ({
-            id: r.id,
-            name: r.name,
-            path: r.path,
-            size: r.size,
-            type: 'image',
-            mimeType: getMimeType(r.path),
-            sourceId: r.sourceId,
-            createdAt: new Date(),
-          }));
+          const items = paginatedResults.results.map(r => {
+            const mimeType = getMimeType(r.path);
+            const lower = (mimeType || '').toLowerCase();
+            let type: 'image' | 'video' | 'audio' = 'image';
+            if (lower.startsWith('video/')) type = 'video';
+            else if (lower.startsWith('audio/')) type = 'audio';
+            
+            return {
+              id: r.id,
+              name: r.name,
+              path: r.path,
+              size: r.size,
+              type,
+              mimeType,
+              sourceId: r.sourceId,
+              createdAt: new Date(),
+            };
+          });
           const executionTime = Date.now() - started;
           return { 
             success: true, 
@@ -702,16 +1603,27 @@ export class MainMediaAPI {
         });
 
         const total = filteredItems.length;
-        const items = filteredItems.slice(offset, offset + limit).map((it: any) => ({
-          id: it.id,
-          name: it.name,
-          path: it.path,
-          size: it.size,
-          type: it.type || 'image',
-          mimeType: getMimeType(it.path),
-          sourceId: it.sourceId,
-          createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
-        }));
+        const items = filteredItems.slice(offset, offset + limit).map((it: any) => {
+          const mimeType = getMimeType(it.path);
+          const lower = (mimeType || '').toLowerCase();
+          let type: 'image' | 'video' | 'audio' = it.type || 'image';
+          
+          // Override type based on MIME type if database type is wrong or missing
+          if (lower.startsWith('video/')) type = 'video';
+          else if (lower.startsWith('audio/')) type = 'audio';
+          else if (lower.startsWith('image/')) type = 'image';
+          
+          return {
+            id: it.id,
+            name: it.name,
+            path: it.path,
+            size: it.size,
+            type,
+            mimeType,
+            sourceId: it.sourceId,
+            createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
+          };
+        });
         const hasMore = (offset + limit) < total;
 
         const executionTime = Date.now() - started;

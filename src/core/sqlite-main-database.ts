@@ -113,6 +113,11 @@ export class SqliteMainDatabase {
     this.db.prepare(`DELETE FROM media_sources WHERE id=?`).run(sourceId);
   }
 
+  async removeMediaItem(itemId: string): Promise<void> {
+    this.db.prepare(`DELETE FROM media_items WHERE id=?`).run(itemId);
+    console.log(`[SqliteMainDatabase] Removed media item: ${itemId}`);
+  }
+
   // Items
   async addMediaItem(item: Omit<MediaItem, 'id'>): Promise<string> {
     const existing = this.db.prepare(`SELECT id FROM media_items WHERE source_id=? AND path=?`).get(item.sourceId, item.path) as any;
@@ -170,9 +175,32 @@ export class SqliteMainDatabase {
   }
 
   // Jobs
-  async createJob(job: { sourceId: string; config?: Record<string, any> }): Promise<string> {
+  async createJob(job: { 
+    sourceId: string; 
+    config?: Record<string, any>;
+    title?: string;
+    description?: string;
+    operationType?: string;
+    targetFile?: string;
+    totalItems?: number;
+    processedItems?: number;
+  }): Promise<string> {
     const id = crypto.randomUUID();
-    this.db.prepare(`INSERT INTO indexing_jobs(id,source_id,status,progress,started_at) VALUES(?,?,?,?,NULL)`).run(id, job.sourceId, 'pending', 0);
+    this.db.prepare(`
+      INSERT INTO indexing_jobs(
+        id, source_id, status, progress, started_at, 
+        job_title, job_description, operation_type, target_file,
+        total_items, processed_items
+      ) VALUES(?,?,?,?,NULL,?,?,?,?,?,?)
+    `).run(
+      id, job.sourceId, 'pending', 0,
+      job.title || 'Processing',
+      job.description || 'Processing media files',
+      job.operationType || 'media_scan',
+      job.targetFile || null,
+      job.totalItems || null,
+      job.processedItems || 0
+    );
     return id;
   }
   async updateJobStatus(jobId: string, status: IndexingJob['status'], progress?: number): Promise<void> {
@@ -188,12 +216,52 @@ export class SqliteMainDatabase {
     }
   }
   async getActiveJobs(): Promise<IndexingJob[]> {
-    const rows = this.db.prepare(`SELECT * FROM indexing_jobs WHERE status='running' ORDER BY datetime(started_at) DESC`).all() as any[];
-    return rows.map(r => ({ id: r.id, sourceId: r.sourceId, status: r.status, progress: r.progress, totalItems: r.totalItems || undefined, processedItems: r.processedItems || undefined, startedAt: r.startedAt ? new Date(r.startedAt) : undefined, completedAt: r.completedAt ? new Date(r.completedAt) : undefined }));
+    const rows = this.db.prepare(`SELECT * FROM indexing_jobs WHERE status IN ('running') ORDER BY datetime(started_at) DESC`).all() as any[];
+    
+    // [DEBUG] Log raw database rows
+    console.log(`[DB-ACTIVE-JOBS-DEBUG] Found ${rows.length} active jobs in database:`);
+    rows.forEach((row, index) => {
+      console.log(`[DB-ACTIVE-JOBS-DEBUG] Row ${index + 1}:`, {
+        id: row.id,
+        status: row.status,
+        job_title: row.job_title,
+        job_description: row.job_description,
+        operation_type: row.operation_type,
+        target_file: row.target_file
+      });
+    });
+    
+    return rows.map(r => ({ 
+      id: r.id, 
+      sourceId: r.source_id, 
+      status: r.status, 
+      progress: r.progress, 
+      totalItems: r.total_items || undefined, 
+      processedItems: r.processed_items || undefined, 
+      startedAt: r.started_at ? new Date(r.started_at) : undefined, 
+      completedAt: r.completed_at ? new Date(r.completed_at) : undefined,
+      title: r.job_title || 'Processing',
+      description: r.job_description || 'Processing media files',
+      operationType: r.operation_type || 'media_scan',
+      targetFile: r.target_file || undefined
+    }));
   }
   async getJobs(sourceId?: string): Promise<IndexingJob[]> {
     const rows = sourceId ? (this.db.prepare(`SELECT * FROM indexing_jobs WHERE source_id=?`).all(sourceId) as any[]) : (this.db.prepare(`SELECT * FROM indexing_jobs`).all() as any[]);
-    return rows.map(r => ({ id: r.id, sourceId: r.sourceId, status: r.status, progress: r.progress, totalItems: r.totalItems || undefined, processedItems: r.processedItems || undefined, startedAt: r.startedAt ? new Date(r.startedAt) : undefined, completedAt: r.completedAt ? new Date(r.completedAt) : undefined }));
+    return rows.map(r => ({ 
+      id: r.id, 
+      sourceId: r.source_id, 
+      status: r.status, 
+      progress: r.progress, 
+      totalItems: r.total_items || undefined, 
+      processedItems: r.processed_items || undefined, 
+      startedAt: r.started_at ? new Date(r.started_at) : undefined, 
+      completedAt: r.completed_at ? new Date(r.completed_at) : undefined,
+      title: r.job_title || 'Processing',
+      description: r.job_description || 'Processing media files',
+      operationType: r.operation_type || 'media_scan',
+      targetFile: r.target_file || undefined
+    }));
   }
   async removeJob(jobId: string): Promise<void> {
     this.db.prepare(`DELETE FROM indexing_jobs WHERE id=?`).run(jobId);

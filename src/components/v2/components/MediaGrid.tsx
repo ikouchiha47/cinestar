@@ -13,9 +13,10 @@ interface MediaGroupProps {
   places: Place[];
   maxVisible?: number;
   onShowMore?: () => void;
+  onItemDeleted?: (itemId: string) => void;
 }
 
-export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowMore }: MediaGroupProps) {
+export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowMore, onItemDeleted }: MediaGroupProps) {
   const visibleItems = maxVisible ? items.slice(0, maxVisible) : items;
   const hasMore = maxVisible && items.length > maxVisible;
 
@@ -41,7 +42,7 @@ export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowM
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
         {visibleItems.map((item) => (
-          <MediaCard key={item.id} item={item} places={places} />
+          <MediaCard key={item.id} item={item} places={places} onDeleted={onItemDeleted} />
         ))}
       </div>
     </section>
@@ -52,23 +53,27 @@ interface MediaCardProps {
   item: MediaT;
   places?: Place[];
   placeLabel?: string;
+  onDeleted?: (itemId: string) => void;
 }
 
-export function MediaCard({ item, places, placeLabel }: MediaCardProps) {
+export function MediaCard({ item, places, placeLabel, onDeleted }: MediaCardProps) {
   const place = places?.find(p => p.id === item.placeId);
   const displayLabel = placeLabel || place?.label || '—';
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [deleting, setDeleting] = useState<boolean>(false);
   
   // Load thumbnail if available
   useEffect(() => {
     let cancelled = false;
     const loadThumbnail = async () => {
-      if (!item.thumb) return;
+      // For images, use the image file itself as thumbnail if no thumb is set
+      const thumbnailPath = item.thumb || (item.type === 'image' ? item.path : null);
+      if (!thumbnailPath) return;
       
       setLoading(true);
       try {
-        const res = await window.mediaAPI.getImageThumbnail(item.thumb);
+        const res = await window.mediaAPI.getImageThumbnail(thumbnailPath);
         if (!cancelled && res.success && res.dataUrl) {
           setThumbUrl(res.dataUrl);
         }
@@ -86,6 +91,33 @@ export function MediaCard({ item, places, placeLabel }: MediaCardProps) {
   const handleClick = () => {
     // Open media item (could be implemented later)
     console.log('Opening media item:', item);
+  };
+
+  const handleDelete = async () => {
+    if (deleting) return;
+    
+    if (!confirm(`Remove "${item.name}" from library?`)) {
+      return;
+    }
+    
+    setDeleting(true);
+    
+    try {
+      const result = await (window.mediaAPI as any).deleteMediaItem?.(item.id);
+      if (result?.success) {
+        console.log(`Removed media item from library: ${item.name}`);
+        // Optimistically remove from UI
+        onDeleted?.(item.id);
+      } else {
+        console.error('Failed to remove media item:', result?.error);
+        alert(`Failed to remove ${item.name}: ${result?.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error removing media item:', error);
+      alert(`Error removing ${item.name}: ${error}`);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const getMediaIcon = () => {
@@ -135,6 +167,25 @@ export function MediaCard({ item, places, placeLabel }: MediaCardProps) {
       {/* Type indicator */}
       <div className="absolute top-2 right-2 bg-black/70 rounded-md px-1.5 py-0.5 text-xs text-white">
         {item.type}
+      </div>
+
+      {/* Delete button */}
+      <div className="absolute top-2 left-2">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleDelete();
+          }}
+          disabled={deleting}
+          className="bg-black/70 hover:bg-red-600/70 rounded-full p-1.5 text-white transition-colors disabled:opacity-50"
+          title="Remove from library"
+        >
+          {deleting ? (
+            <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <Icon.Trash className="w-3 h-3" />
+          )}
+        </button>
       </div>
     </div>
   );

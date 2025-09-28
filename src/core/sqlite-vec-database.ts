@@ -719,6 +719,21 @@ export class SqliteVecDatabase {
   }
 
   /**
+   * Remove media item and its embedding
+   */
+  removeMediaItem(id: string): void {
+    // Remove from media_items table
+    const deleteItemStmt = this.db.prepare(`DELETE FROM media_items WHERE id = ?`);
+    deleteItemStmt.run(id);
+    
+    // Remove from vec_embeddings table
+    const deleteEmbeddingStmt = this.db.prepare(`DELETE FROM vec_embeddings WHERE item_id = ?`);
+    deleteEmbeddingStmt.run(id);
+    
+    console.log(`[SQLITE-VEC] Removed media item and embedding: ${id}`);
+  }
+
+  /**
    * Close database connection
    */
   close(): void {

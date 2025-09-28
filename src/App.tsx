@@ -24,7 +24,24 @@ function App() {
   // Track whether the indexing drawer is open to avoid log spam when closed
   const indexOpenRef = useRef<boolean>(false);
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
-  type JobInfo = { id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: string | Date; completedAt?: string | Date };
+  type JobInfo = { 
+  id: string; 
+  sourceId: string; 
+  status: string; 
+  progress: number; 
+  totalItems?: number; 
+  processedItems?: number; 
+  startedAt?: string | Date; 
+  completedAt?: string | Date;
+  // New fields for enhanced job descriptions
+  title?: string;
+  description?: string;
+  operationType?: string;
+  targetFile?: string;
+  type?: string;
+  refinementPass?: number;
+  threshold?: string;
+};
   const [jobDetails, setJobDetails] = useState<JobInfo[]>([]);
   const [overallProgress, setOverallProgress] = useState<number>(-1); // percent 0-100, -1 hidden
 
@@ -52,20 +69,27 @@ function App() {
         const res = await window.mediaAPI.getIndexingStatus();
         if (!mounted) return;
         if (res.success && Array.isArray(res.activeJobs)) {
+          // Dedupe active jobs by id
+          const uniqueActiveJobs: string[] = Array.from(new Set(res.activeJobs));
           // Diff jobs to emit start/stop events and avoid redundant state updates
-          const started: string[] = res.activeJobs.filter((j: string) => !prevJobs.includes(j));
-          const finished: string[] = prevJobs.filter((j: string) => !res.activeJobs.includes(j));
+          const started: string[] = uniqueActiveJobs.filter((j: string) => !prevJobs.includes(j));
+          const finished: string[] = prevJobs.filter((j: string) => !uniqueActiveJobs.includes(j));
 
           if (started.length > 0 || finished.length > 0) {
-            setActiveJobs(res.activeJobs);
-            started.forEach((j: string) => appendLog(`▶︎ Job started: ${j}`));
-            finished.forEach((j: string) => appendLog(`✓ Job finished: ${j}`));
-            prevJobs = res.activeJobs;
+            setActiveJobs(uniqueActiveJobs);
+            // Removed noisy lifecycle logs from Indexing Center UI
+            prevJobs = uniqueActiveJobs;
           }
 
           // Update job details if changed
           if (Array.isArray(res.jobs)) {
-            const nextJobs: JobInfo[] = res.jobs.map((j: any) => ({
+            // Dedupe jobs by id and include enhanced fields from backend
+            const byId = new Map<string, any>();
+            for (const j of res.jobs) {
+              if (!byId.has(j.id)) byId.set(j.id, j);
+            }
+            const dedupJobs = Array.from(byId.values());
+            const nextJobs: JobInfo[] = dedupJobs.map((j: any) => ({
               id: j.id,
               sourceId: j.sourceId,
               status: j.status,
@@ -74,20 +98,28 @@ function App() {
               processedItems: j.processedItems,
               startedAt: j.startedAt,
               completedAt: j.completedAt,
+              // Enhanced fields
+              title: j.title,
+              description: j.description,
+              operationType: j.operationType,
+              targetFile: j.targetFile,
+              type: j.type,
+              refinementPass: j.refinementPass,
+              threshold: j.threshold,
             }));
             const changed = (
               nextJobs.length !== jobDetails.length ||
               nextJobs.some((nj, i) => {
                 const pj = jobDetails[i];
                 if (!pj) return true;
-                return nj.id !== pj.id || nj.progress !== pj.progress || nj.status !== pj.status || (nj.processedItems||0) !== (pj.processedItems||0) || (nj.totalItems||0)!==(pj.totalItems||0);
+                return nj.id !== pj.id || nj.progress !== pj.progress || nj.status !== pj.status || (nj.processedItems||0) !== (pj.processedItems||0) || (nj.totalItems||0)!==(pj.totalItems||0) || nj.title !== pj.title || nj.type !== pj.type;
               })
             );
             if (changed) setJobDetails(nextJobs);
           }
 
           // If there are no active jobs, clear any stale job details so UI doesn't show stuck progress bars
-          if (res.activeJobs.length === 0) {
+          if (uniqueActiveJobs.length === 0) {
             setJobDetails([]);
           }
         }
@@ -108,12 +140,10 @@ function App() {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [indexLogs.length, indexDrawerOpen]);
 
-  // Compute overall progress across active jobs and reflect in OS title bar (taskbar/dock) and a top bar
+  // Compute overall progress across in-progress jobs (running/processing only)
   useEffect(() => {
-    // Only when there are active jobs
-    if (activeJobs.length > 0 && jobDetails.length > 0) {
-      const activeSet = new Set(activeJobs);
-      const activeOnly = jobDetails.filter(j => activeSet.has(j.id) || j.status === 'running' || j.status === 'pending');
+    const inProgress = jobDetails.filter(j => j.status === 'running' || (j as any).status === 'processing');
+    if (inProgress.length > 0) {
       const pct = (j: typeof jobDetails[number]) => {
         if (j.status === 'completed') return 100;
         if (typeof j.totalItems === 'number' && typeof j.processedItems === 'number' && j.totalItems > 0) {
@@ -121,11 +151,8 @@ function App() {
         }
         return Math.round(j.progress || 0);
       };
-      const avg = activeOnly.length > 0
-        ? activeOnly.reduce((sum, j) => sum + pct(j), 0) / activeOnly.length
-        : 0;
+      const avg = inProgress.reduce((sum, j) => sum + pct(j), 0) / inProgress.length;
       setOverallProgress(Math.max(0, Math.min(100, Math.round(avg))));
-      // Also set OS-level progress bar (0..1); clear when none
       try {
         // @ts-ignore - exposed by preload
         window.ipcRenderer?.invoke('app:setProgress', avg / 100);
@@ -137,7 +164,7 @@ function App() {
         window.ipcRenderer?.invoke('app:setProgress', -1);
       } catch {}
     }
-  }, [activeJobs.join(','), jobDetails.length, jobDetails.map(j => j.progress).join(',')]);
+  }, [jobDetails.length, jobDetails.map(j => `${j.id}:${j.status}:${j.progress}`).join(',')]);
 
   // removed old browse/search handlers; DrillerV2 owns main UI now
 
@@ -197,11 +224,23 @@ function App() {
               {/* Active jobs summary + dev tools */}
               <div className="px-4 py-2 border-b border-neutral-800 text-xs text-neutral-400 flex items-center justify-between">
                 <div>
-                  {activeJobs.length === 0 ? (
-                    <span>No active jobs</span>
-                  ) : (
-                    <span>{activeJobs.length} active job(s): {activeJobs.map(j => j.slice(0,8)).join(', ')}</span>
-                  )}
+                  {(() => {
+                    const visibleJobs = jobDetails.filter(job => 
+                      activeJobs.includes(job.id) || job.status === 'running' || (job as any).status === 'processing' || job.status === 'scheduled'
+                    );
+                    const activeCount = visibleJobs.filter(job => job.status === 'running' || (job as any).status === 'processing').length;
+                    const scheduledCount = visibleJobs.filter(job => job.status === 'scheduled').length;
+                    
+                    if (visibleJobs.length === 0) {
+                      return <span>No jobs</span>;
+                    }
+                    
+                    const parts = [];
+                    if (activeCount > 0) parts.push(`${activeCount} active`);
+                    if (scheduledCount > 0) parts.push(`${scheduledCount} queued`);
+                    
+                    return <span>{parts.join(', ')}</span>;
+                  })()}
                 </div>
               </div>
 
@@ -209,7 +248,7 @@ function App() {
               {jobDetails.length > 0 && (
                 <div className="px-4 py-3 border-b border-neutral-800 space-y-2">
                   {jobDetails
-                    .filter(job => activeJobs.includes(job.id) || job.status === 'running' || job.status === 'pending')
+                    .filter(job => activeJobs.includes(job.id) || job.status === 'running' || (job as any).status === 'processing' || job.status === 'scheduled')
                     .map(job => {
                     const calcPercent = () => {
                       if (job.status === 'completed') return 100;
@@ -224,25 +263,64 @@ function App() {
                     const threshold = (job as any).threshold;
                     
                     const getPhase = () => {
-                      if (job.status === 'pending') return 'Queued';
-                      if (job.status === 'completed') return 'Completed';
+                      if (job.status === 'pending') return 'Queued for processing';
+                      if (job.status === 'completed') return 'Processing completed';
                       if (isVideo) {
-                        if (refinementPass === 1) return 'Video Processing (Pass 1)';
-                        if (refinementPass === 2) return `Refinement (Pass 2, ${threshold})`;
-                        if (refinementPass === 3) return `Refinement (Pass 3, ${threshold})`;
-                        return `Video Processing (Pass ${refinementPass})`;
+                        if (refinementPass === 1) return 'Extracting video segments';
+                        if (refinementPass === 2) return `Generating transcriptions (${threshold})`;
+                        if (refinementPass === 3) return `Creating keyframes (${threshold})`;
+                        return `Processing video (Pass ${refinementPass})`;
                       }
-                      return percent < 50 ? 'Scanning' : 'Processing';
+                      // Media/image processing phases
+                      if (percent < 30) return 'Scanning media files';
+                      if (percent < 70) return 'Generating captions';
+                      return 'Creating embeddings';
                     };
                     
                     const phase = getPhase();
                     const barColor = isVideo ? 'bg-purple-500' : 'bg-blue-500';
                     
+                    // Extract filename from job data
+                    const getFileName = () => {
+                      // Use targetFile from job if available
+                      if ((job as any).targetFile) {
+                        const path = (job as any).targetFile;
+                        return path.split('/').pop() || path;
+                      }
+                      // Fallback to metadata for video jobs
+                      const metadata = (job as any).metadata;
+                      if (metadata?.fileName) return metadata.fileName;
+                      if (metadata?.videoPath) {
+                        const path = metadata.videoPath;
+                        return path.split('/').pop() || path;
+                      }
+                      return null;
+                    };
+                    
+                    const fileName = getFileName();
+                    const jobTitle = (job as any).title || phase;
+                    
+                    // [DEBUG] Log actual job data structure
+                    console.log(`[INDEXING-UI-DEBUG] Job data for ${job.id}:`, {
+                      id: job.id,
+                      status: job.status,
+                      progress: job.progress,
+                      title: (job as any).title,
+                      description: (job as any).description,
+                      operationType: (job as any).operationType,
+                      targetFile: (job as any).targetFile,
+                      type: (job as any).type,
+                      isVideo: isVideo,
+                      phase: phase,
+                      jobTitle: jobTitle,
+                      fileName: fileName
+                    });
+                    
                     return (
                       <div key={job.id} className="text-xs">
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
-                            <div className="font-mono">{job.id.slice(0,8)}…</div>
+                            <div className="font-medium text-neutral-200">{jobTitle}</div>
                             {isVideo && (
                               <div className="px-1.5 py-0.5 bg-purple-900/50 text-purple-300 rounded text-[10px]">
                                 VIDEO
@@ -251,8 +329,15 @@ function App() {
                           </div>
                           <div className="text-neutral-400">{percent}%</div>
                         </div>
-                        <div className="text-[10px] text-neutral-500 mb-1 truncate" title={phase}>
-                          {phase}
+                        <div className="text-[10px] text-neutral-500 mb-1 flex items-center gap-2">
+                          {fileName && (
+                            <span className="truncate flex-1" title={fileName}>
+                              📄 {fileName}
+                            </span>
+                          )}
+                          <span className="font-mono text-neutral-600 shrink-0">
+                            {job.id.slice(0,8)}…
+                          </span>
                         </div>
                         <div className="h-2 w-full bg-neutral-800 rounded">
                           <div className={`h-2 rounded ${barColor}`} style={{ width: `${percent}%` }} />

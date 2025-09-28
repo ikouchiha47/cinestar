@@ -1,5 +1,5 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
-// import { DockerWhisperService } from './docker-whisper-service';
+import { DockerWhisperService } from './docker-whisper-service';
 // import { WhisperCppService } from './whisper-cpp-service';
 // import { WhisperCliService } from './whisper-cli-service';
 import path from 'path';
@@ -23,20 +23,29 @@ export class HttpTranscriptionService implements TranscriptionService {
   public name = 'http-transcription';
   private endpoint: string;
 
-  constructor(endpoint: string = 'http://localhost:8002/transcribe') {
+  constructor(endpoint: string = 'http://localhost:9000/asr') {
     this.endpoint = endpoint;
   }
 
   async transcribe(audioPath: string, options: any = {}) {
     const audioBuffer = await fs.readFile(audioPath);
     const formData = new FormData();
-    formData.append('audio', new Blob([new Uint8Array(audioBuffer.buffer as ArrayBuffer)]));
     
-    if (options.language) {
-      formData.append('language', options.language);
+    // Create a proper file blob with filename
+    const audioBlob = new Blob([new Uint8Array(audioBuffer.buffer as ArrayBuffer)], { type: 'audio/wav' });
+    formData.append('audio_file', audioBlob, path.basename(audioPath));
+    
+    // Build query parameters
+    const params = new URLSearchParams();
+    params.append('output', 'json');
+    params.append('word_timestamps', 'true');
+    
+    if (options.language && options.language !== 'auto') {
+      params.append('language', options.language);
     }
 
-    const response = await fetch(this.endpoint, {
+    const url = `${this.endpoint}?${params.toString()}`;
+    const response = await fetch(url, {
       method: 'POST',
       body: formData
     });
@@ -45,12 +54,21 @@ export class HttpTranscriptionService implements TranscriptionService {
       throw new Error(`Transcription service error: ${response.statusText}`);
     }
 
-    return await response.json();
+    const result = await response.json();
+    
+    // Transform the result to match expected format
+    return {
+      text: result.text || '',
+      segments: result.segments || [],
+      language: result.language || 'unknown'
+    };
   }
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.endpoint}/health`, { method: 'GET' });
+      // Check if the base service is available (Whisper ASR webservice)
+      const baseUrl = this.endpoint.replace('/asr', '');
+      const response = await fetch(`${baseUrl}/docs`, { method: 'GET' });
       return response.ok;
     } catch {
       return false;
@@ -68,6 +86,8 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
     language?: string;
     extractAudio?: boolean;
     services?: TranscriptionService[];
+    baseUrl?: string;
+    enabled?: boolean;
   } = {}) {
     super();
     this.setConfig({
@@ -77,9 +97,16 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
     });
 
     // Register default services (can be extended)
-    this.services = config.services || [
-      new HttpTranscriptionService()
-    ];
+    if (config.services) {
+      this.services = config.services;
+    } else {
+      // Use DockerWhisperService with configurable baseUrl
+      const baseUrl = config.baseUrl || 'http://localhost:9000';
+      this.services = [
+        new DockerWhisperService(baseUrl), // Use the working Docker Whisper service
+        new HttpTranscriptionService() // Keep as fallback
+      ];
+    }
   }
 
   // Add a new transcription service

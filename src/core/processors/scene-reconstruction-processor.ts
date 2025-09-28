@@ -45,31 +45,66 @@ export class SceneReconstructionProcessor extends BaseVideoProcessor {
         };
       }
 
-      const { segment } = context;
-      const transcription = context.data.transcription?.text || '';
-      const captions = context.data.captions || [];
-      const ocrText = context.data.ocrText || '';
+      // This is a VIDEO-LEVEL processor - process all segments from processedSegments
+      const processedSegments = context.data.processedSegments || [];
+      const batchCaptions = context.data.batchCaptions || {};
+      
+      this.log('info', `Processing scene reconstruction for ${processedSegments.length} segments`);
+      this.log('debug', `Available batch caption keys: ${Object.keys(batchCaptions).join(', ')}`);
+      
+      if (processedSegments.length === 0) {
+        this.log('warn', 'No processed segments available for scene reconstruction');
+        return {
+          success: true,
+          data: { reconstructedScene: 'No segments available for reconstruction' }
+        };
+      }
 
-      // Get the main visual description (first caption or combined)
-      const visualDescription = captions.length > 0 
-        ? (typeof captions[0] === 'string' ? captions[0] : captions[0]?.caption || 'no caption text')
-        : 'no visual description available';
+      // Combine all segment content to create a comprehensive scene description
+      const allContent = [];
+      
+      for (const segmentContext of processedSegments) {
+        const segment = segmentContext.segment;
+        const segmentData = segmentContext.data;
+        
+        // Get transcription
+        const transcription = segmentData.transcription?.text || segmentData.transcription || '';
+        
+        // Get captions for this segment
+        const segmentCaptions = batchCaptions[segment.id] || [];
+        let visualDescription = 'no visual description available';
+        
+        if (segmentCaptions.length > 0) {
+          const firstCaption = segmentCaptions[0];
+          if (typeof firstCaption === 'string') {
+            visualDescription = firstCaption;
+          } else if (firstCaption?.caption) {
+            visualDescription = firstCaption.caption;
+          } else if (firstCaption?.text) {
+            visualDescription = firstCaption.text;
+          }
+        }
+        
+        // Get OCR text
+        const ocrText = segmentData.ocrText || '';
+        
+        allContent.push({
+          timestamp: `${segment.startTime}s - ${segment.endTime}s`,
+          audio: transcription || 'no audio',
+          visual: visualDescription,
+          ocr: ocrText
+        });
+        
+        this.log('debug', `Segment ${segment.id}: Audio=${transcription.length}chars, Visual=${visualDescription.length}chars, OCR=${ocrText.length}chars`);
+      }
 
-      // Get previous scene context if available
-      const previousScene = config.includeTemporalContext 
-        ? context.data.previousScene || 'beginning of video'
-        : 'none';
-
-      this.log('info', `Reconstructing scene for segment: ${segment.id}`);
-      this.log('debug', `Audio: ${transcription.substring(0, 100)}...`);
-      this.log('debug', `Visual: ${visualDescription.substring(0, 100)}...`);
-
+      // Generate comprehensive scene description using all content
       const reconstructedScene = await this.generateSceneDescription({
-        timestamp: `${segment.startTime}s - ${segment.endTime}s`,
-        audio: transcription || 'no audio',
-        visual: visualDescription,
-        previous: previousScene,
-        ocr: ocrText
+        timestamp: `0s - ${context.segment.endTime || 'end'}s`,
+        audio: allContent.map(c => c.audio).filter(a => a !== 'no audio').join(' '),
+        visual: allContent.map(c => c.visual).filter(v => v !== 'no visual description available').join(' '),
+        previous: 'beginning of video',
+        ocr: allContent.map(c => c.ocr).filter(o => o).join(' ')
       });
 
       this.log('info', `Scene reconstructed: ${reconstructedScene.substring(0, 100)}...`);
@@ -78,13 +113,14 @@ export class SceneReconstructionProcessor extends BaseVideoProcessor {
         success: true,
         data: { 
           reconstructedScene,
-          originalTranscription: transcription,
-          originalCaptions: captions,
-          originalOcr: ocrText
+          originalTranscription: allContent.map(c => c.audio).join(' '),
+          originalCaptions: Object.values(batchCaptions).flat(),
+          originalOcr: allContent.map(c => c.ocr).join(' ')
         },
         metadata: {
           model: this.model,
-          processingTime: Date.now()
+          processingTime: Date.now(),
+          segmentsProcessed: processedSegments.length
         }
       };
 

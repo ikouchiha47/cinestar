@@ -6,6 +6,7 @@ import { ConfigManager } from './config';
 import { RefinementJobScheduler } from './refinement-job-scheduler';
 import { IncrementalSegmentProcessor } from './incremental-segment-processor';
 import { ConcurrencyLimiter } from './concurrency-limiter.js';
+import { getMimeType } from './utils';
 
 /**
  * Background job processor for video processing tasks
@@ -36,7 +37,10 @@ export class VideoJobProcessor {
     
     // Only setup pipeline if we created our own (not shared)
     if (!sharedPipeline) {
-      this.setupPipeline();
+      // Setup pipeline asynchronously
+      this.setupPipeline().catch(error => {
+        console.error('[VIDEO-JOB-PROCESSOR] Failed to setup pipeline:', error);
+      });
     }
   }
 
@@ -251,17 +255,17 @@ export class VideoJobProcessor {
     console.log(`[VIDEO-JOB-PROCESSOR] Processing results for job ${job.id}`);
     console.log(`[VIDEO-JOB-PROCESSOR] Available result keys: ${Object.keys(result || {})}`);
     
-    // The pipeline returns nested data: { segment, data: { processedSegments, reconstructedScenes, ... } }
+    // The pipeline returns nested data: { segment, data: { processedSegments, reconstructedScene, ... } }
     // Extract from the actual nested structure
     const pipelineData = result.data || {};
     const processedSegments = pipelineData.processedSegments || [];
-    const reconstructedScenes = pipelineData.reconstructedScenes || {};
+    const reconstructedScene = pipelineData.reconstructedScene || '';
     const batchCaptions = pipelineData.batchCaptions || {};
     
     console.log(`[VIDEO-JOB-PROCESSOR] Pipeline data analysis:`);
     console.log(`[VIDEO-JOB-PROCESSOR] - Pipeline data keys: ${Object.keys(pipelineData)}`);
     console.log(`[VIDEO-JOB-PROCESSOR] - Processed segments: ${processedSegments.length}`);
-    console.log(`[VIDEO-JOB-PROCESSOR] - Reconstructed scenes: ${Object.keys(reconstructedScenes).length}`);
+    console.log(`[VIDEO-JOB-PROCESSOR] - Reconstructed scene: ${reconstructedScene.length} chars`);
     console.log(`[VIDEO-JOB-PROCESSOR] - Batch captions keys: ${Object.keys(batchCaptions)}`);
     
     // Build enriched segments from the processed segments
@@ -279,10 +283,10 @@ export class VideoJobProcessor {
         console.log(`[VIDEO-JOB-PROCESSOR] - Transcription length: ${segmentData.transcription?.text?.length || 0} chars`);
         console.log(`[VIDEO-JOB-PROCESSOR] - Has keyframes: ${segmentData.keyframes?.length || 0}`);
         
-        // Extract reconstructed scene for this segment
-        const reconstructedScene = reconstructedScenes[segment.id] || '';
-        console.log(`[VIDEO-JOB-PROCESSOR] - Has reconstructed scene: ${!!reconstructedScene}`);
-        console.log(`[VIDEO-JOB-PROCESSOR] - Reconstructed scene length: ${reconstructedScene.length} chars`);
+        // Use the reconstructed scene from pipeline data (applies to all segments)
+        const segmentReconstructedScene = reconstructedScene || '';
+        console.log(`[VIDEO-JOB-PROCESSOR] - Has reconstructed scene: ${!!segmentReconstructedScene}`);
+        console.log(`[VIDEO-JOB-PROCESSOR] - Reconstructed scene length: ${segmentReconstructedScene.length} chars`);
         
         // Extract captions for this segment
         let primaryCaption = '';
@@ -323,7 +327,7 @@ export class VideoJobProcessor {
           // Visual content (caption)
           caption: primaryCaption,
           // Narrative content (reconstructed scene)
-          reconstructedScene: reconstructedScene,
+          reconstructedScene: segmentReconstructedScene,
           // Additional metadata
           keyframes: segmentData.keyframes || [],
           audioPath: segmentData.audioPath || '',
@@ -747,6 +751,7 @@ export class VideoJobProcessor {
             name: segmentName,
             path: `${videoPath}#t=${segment.startTime},${segment.endTime}`,
             type: 'video_segment' as const,
+            mimeType: getMimeType(videoPath) || 'video/mp4', // Inherit MIME type from parent video
             size: 0,
             sourceId: parentVideo.sourceId, // Use parent video's sourceId (references media_sources.id)
             createdAt: new Date(),
@@ -815,10 +820,10 @@ export class VideoJobProcessor {
         enriched.caption = batchCaptions[segment.id][0].caption;
       }
       
-      // Merge reconstructed scenes
-      const reconstructedScenes = pipelineData.reconstructedScenes || {};
-      if (reconstructedScenes[segment.id]) {
-        enriched.reconstructedScene = reconstructedScenes[segment.id];
+      // Merge reconstructed scene (single scene for all segments)
+      const reconstructedScene = pipelineData.reconstructedScene || '';
+      if (reconstructedScene) {
+        enriched.reconstructedScene = reconstructedScene;
       }
       
       return enriched;
@@ -830,9 +835,43 @@ export class VideoJobProcessor {
   /**
    * Setup video pipeline with processors
    */
-  private setupPipeline(): void {
-    // Pipeline setup would be similar to VideoMediaAPI
-    // For now, we'll assume it's already configured
-    console.log(`[VIDEO-JOB-PROCESSOR] Video pipeline setup completed`);
+  private async setupPipeline(): Promise<void> {
+    console.log(`[VIDEO-JOB-PROCESSOR] Setting up video pipeline with processors...`);
+    
+    try {
+      // Import all processor classes using ES modules
+      const { SegmentationProcessor } = await import('./processors/segmentation-processor');
+      const { AudioExtractionProcessor } = await import('./processors/audio-extraction-processor');
+      const { VisualProcessor } = await import('./processors/visual-processor');
+      const { TranscriptionProcessor } = await import('./processors/transcription-processor');
+      const { BatchCaptioningProcessor } = await import('./processors/batch-captioning-processor');
+      const { OCRProcessor } = await import('./processors/ocr-processor');
+      const { SceneReconstructionProcessor } = await import('./processors/scene-reconstruction-processor');
+      
+      // Create processor instances with basic config
+      const segmentationProcessor = new SegmentationProcessor();
+      const audioExtractionProcessor = new AudioExtractionProcessor();
+      const visualProcessor = new VisualProcessor();
+      const transcriptionProcessor = new TranscriptionProcessor();
+      const batchCaptioningProcessor = new BatchCaptioningProcessor();
+      const ocrProcessor = new OCRProcessor();
+      const sceneReconstructionProcessor = new SceneReconstructionProcessor();
+
+      // Register processors into pipeline
+      this.videoPipeline.addProcessor('segmentation', segmentationProcessor);
+      this.videoPipeline.addProcessor('audio-extraction', audioExtractionProcessor);
+      this.videoPipeline.addProcessor('visual', visualProcessor);
+      this.videoPipeline.addProcessor('transcription', transcriptionProcessor);
+      this.videoPipeline.addProcessor('batch-captioning', batchCaptioningProcessor);
+      this.videoPipeline.addProcessor('ocr', ocrProcessor);
+      this.videoPipeline.addProcessor('scene-reconstruction', sceneReconstructionProcessor);
+
+      console.log(`[VIDEO-JOB-PROCESSOR] ✅ Registered 7 processors: segmentation, audio-extraction, visual, transcription, batch-captioning, ocr, scene-reconstruction`);
+      console.log(`[VIDEO-JOB-PROCESSOR] Video pipeline setup completed`);
+      
+    } catch (error) {
+      console.error(`[VIDEO-JOB-PROCESSOR] ❌ Failed to setup pipeline:`, error);
+      console.error(`[VIDEO-JOB-PROCESSOR] Pipeline will run without processors - no content will be generated`);
+    }
   }
 }

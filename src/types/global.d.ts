@@ -31,6 +31,19 @@ declare global {
       getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
       search: (query: SearchQuery) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       searchText: (text: string, limit?: number) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
+      unifiedSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number; offset?: number }) => Promise<{
+        success: boolean;
+        results?: {
+          images: any[];
+          videos: any[];
+          audio: any[];
+          totals: { images: number; videos: number; audio: number };
+          hasMore: { images: boolean; videos: boolean; audio: boolean };
+          query: string;
+          executionTime: number;
+        };
+        error?: string;
+      }>;
       getSuggestions: (query: string, limit?: number) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>;
       getStats: () => Promise<{ success: boolean; stats?: { totalSources: number; totalItems: number; activeJobs: number }; error?: string }>;
       isOllamaAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>;

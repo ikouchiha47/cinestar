@@ -393,27 +393,49 @@ export class VideoDatabase {
 
   // Search operations
   async textSearch(query: string, limit = 10, offset = 0): Promise<SearchResult[]> {
-    const stmt = this.db.prepare(`
-      SELECT 
-        s.*,
-        v.*,
-        fts.rank
-      FROM segments_fts fts
-      JOIN video_segments s ON s.id = fts.segment_id
-      JOIN video_files v ON v.id = s.video_id
-      WHERE segments_fts MATCH ?
-      ORDER BY fts.rank
-      LIMIT ? OFFSET ?
-    `);
+    // Validate and sanitize query for FTS5
+    if (!query || query.trim().length === 0) {
+      console.warn('[TEXT-SEARCH] Empty query provided, returning empty results');
+      return [];
+    }
+    
+    // Escape FTS5 special characters and handle quotes
+    const sanitizedQuery = query.trim()
+      .replace(/['"]/g, '') // Remove quotes that cause syntax errors
+      .replace(/[()]/g, '') // Remove parentheses
+      .replace(/\s+/g, ' '); // Normalize whitespace
+    
+    if (sanitizedQuery.length === 0) {
+      console.warn('[TEXT-SEARCH] Query became empty after sanitization, returning empty results');
+      return [];
+    }
 
-    const rows = stmt.all(query, limit, offset) as any[];
-    return rows.map(row => ({
-      segment: this.mapSegmentRow(row),
-      video: this.mapVideoFileRow(row),
-      score: row.rank || 0,
-      matchType: 'text' as const,
-      snippet: this.extractSnippet(row, query)
-    }));
+    try {
+      const stmt = this.db.prepare(`
+        SELECT 
+          s.*,
+          v.*,
+          fts.rank
+        FROM segments_fts fts
+        JOIN video_segments s ON s.id = fts.segment_id
+        JOIN video_files v ON v.id = s.video_id
+        WHERE segments_fts MATCH ?
+        ORDER BY fts.rank
+        LIMIT ? OFFSET ?
+      `);
+
+      const rows = stmt.all(sanitizedQuery, limit, offset) as any[];
+      return rows.map(row => ({
+        segment: this.mapSegmentRow(row),
+        video: this.mapVideoFileRow(row),
+        score: row.rank || 0,
+        matchType: 'text' as const,
+        snippet: this.extractSnippet(row, query)
+      }));
+    } catch (error) {
+      console.error('[TEXT-SEARCH] FTS5 query failed:', error, 'Query:', sanitizedQuery);
+      return [];
+    }
   }
 
   async vectorSearch(embedding: Float32Array, limit = 10, offset = 0): Promise<SearchResult[]> {
@@ -637,7 +659,14 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
   }
 
   async getActiveJobs(): Promise<VideoProcessingJob[]> {
-    return this.getJobs('processing');
+    // Get all active jobs (processing, running, scheduled)
+    const stmt = this.db.prepare(`
+      SELECT * FROM video_processing_jobs 
+      WHERE status IN ('processing', 'running', 'scheduled') 
+      ORDER BY created_at DESC
+    `);
+    const rows = stmt.all() as any[];
+    return rows.map(row => this.mapJobRow(row));
   }
 
   async getPendingJobs(limit: number = 5): Promise<VideoProcessingJob[]> {
@@ -703,6 +732,7 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
   async close(): Promise<void> {
     this.db.close();
   }
+
 
   // Batch operations for performance
   async addVideoSegmentsBatch(segments: Omit<VideoSegment, 'id' | 'createdAt'>[]): Promise<string[]> {

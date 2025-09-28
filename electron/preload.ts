@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   getSources: () => ipcRenderer.invoke('media:getSources'),
   addSource: (name: string, type: string, path: string, config?: any) => 
     ipcRenderer.invoke('media:addSource', name, type, path, config),
+  addItemForFile: (sourceId: string, filePath: string, description?: string, metadata?: Record<string, any>) =>
+    ipcRenderer.invoke('media:addItemForFile', sourceId, filePath, description, metadata),
+  indexUnprocessedImages: () => ipcRenderer.invoke('media:indexUnprocessedImages'),
+  deleteMediaItem: (itemId: string, deleteFile?: boolean) => ipcRenderer.invoke('media:deleteMediaItem', itemId, deleteFile),
+  startCleanupJob: () => ipcRenderer.invoke('media:startCleanupJob'),
   removeSource: (sourceId: string) => ipcRenderer.invoke('media:removeSource', sourceId),
   startIndexing: (sourceId: string) => ipcRenderer.invoke('media:startIndexing', sourceId),
   forceReindex: (sourceId: string) => ipcRenderer.invoke('media:forceReindex', sourceId),
@@ -43,13 +48,14 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   getIndexingStatus: () => ipcRenderer.invoke('media:getIndexingStatus'),
   search: (query: any) => ipcRenderer.invoke('media:search', query),
   searchText: (text: string, limit?: number) => ipcRenderer.invoke('media:searchText', text, limit),
+  unifiedSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number; offset?: number }) => 
+    ipcRenderer.invoke('search:unified', { query, ...options }),
   getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
   getStats: () => ipcRenderer.invoke('media:getStats'),
   getRecentItems: (params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }) => ipcRenderer.invoke('media:getRecentItems', params),
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),
-  unifiedSearch: (query: { query: string; limit?: number; offset?: number }) => ipcRenderer.invoke('search:unified', query),
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
 })
 
@@ -65,4 +71,6 @@ contextBridge.exposeInMainWorld('videoAPI', {
   isVideoFile: (filePath: string) => ipcRenderer.invoke('video:isVideoFile', filePath),
   isAudioFile: (filePath: string) => ipcRenderer.invoke('video:isAudioFile', filePath),
   selectVideoFile: () => ipcRenderer.invoke('dialog:selectVideoFile'),
+  selectImageFile: () => ipcRenderer.invoke('dialog:selectImageFile'),
+  selectAudioFile: () => ipcRenderer.invoke('dialog:selectAudioFile'),
 })

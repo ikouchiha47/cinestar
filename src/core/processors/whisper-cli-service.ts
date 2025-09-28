@@ -1,4 +1,8 @@
-import { TranscriptionService } from './transcription-processor';
+//NOTE: Remove this - Unused transcription service
+//NOTE: The main implementation uses DockerWhisperService in docker-whisper-service.ts
+//NOTE: This CLI-based service is not being used in the current pipeline
+
+import { TranscriptionService } from './transcription-processor.js';
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';

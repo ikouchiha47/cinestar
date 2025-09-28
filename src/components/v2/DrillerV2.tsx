@@ -1,13 +1,14 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AutoSizer, List } from 'react-virtualized';
-import VideoSelection from '../VideoSelection';
+import MediaUpload from '../MediaUpload';
 
 // Import decomposed components
 import { Icon } from './components/Icons';
 import { PlacesGrid } from './components/PlacesGrid';
 import { MediaGroup, MediaCard } from './components/MediaGrid';
 import { ConnectModal } from './components/ConnectModal';
+import { SettingsModal } from './components/SettingsModal';
 import { useMediaLibrary } from './hooks/useMediaLibrary';
 import { useDebounce } from './hooks/useDebounce';
 import { Scope, Place, MediaT } from './types';
@@ -21,6 +22,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [scope, setScope] = useState<Scope>('all');
   const [selectedPlace, setSelectedPlace] = useState<string | undefined>();
   const [connectOpen, setConnectOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [places, setPlaces] = useState<Place[]>([]);
   const [searchResults, setSearchResults] = useState<MediaT[]>([]);
   const [videoSearchResults, setVideoSearchResults] = useState<MediaT[]>([]);
@@ -255,7 +257,12 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       try {
         setSearching(true);
         // Unified search across media (images via vec) and videos (segments FTS)
-        const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: 0 });
+        console.log('[SEARCH-DEBUG] Calling unifiedSearch with query:', query);
+        const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
+        console.log('[SEARCH-DEBUG] unifiedSearch response:', res);
+        console.log('[SEARCH-DEBUG] Images array:', res?.results?.images);
+        console.log('[SEARCH-DEBUG] Videos array:', res?.results?.videos);
+        
         if (!alive) return;
 
         // Map images (media/vector)
@@ -280,12 +287,12 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         // Map videos (video DB segments -> flattened video files)
         const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
         const videoItems: MediaT[] = videos.map((r: any) => ({
-          id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
-          placeId: '',
+          id: String(r.id || Math.random().toString(36).slice(2)),
+          placeId: String(r.sourceId || ''),
           type: 'video',
-          name: String(r.video?.fileName || 'video'),
-          path: String(r.video?.filePath || ''),
-          thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+          name: String(r.name || 'video'),
+          path: String(r.path || ''),
+          thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
         } as MediaT));
 
         // Set results
@@ -293,7 +300,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         setVideoSearchResults(videoItems);
         setVideoHasMore(!!res?.results?.hasMore?.videos);
         setVideoOffset(videoItems.length);
-      } catch {
+      } catch (error) {
+        console.error('[SEARCH-ERROR]', error);
         setSearchResults([]);
         setVideoSearchResults([]);
       } finally {
@@ -322,15 +330,15 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     if (!query || !videoHasMore) return;
     try {
       setSearching(true);
-      const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: videoOffset });
+      const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: videoOffset });
       const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
       const more: MediaT[] = videos.map((r: any) => ({
-        id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
-        placeId: '',
+        id: String(r.id || Math.random().toString(36).slice(2)),
+        placeId: String(r.sourceId || ''),
         type: 'video',
-        name: String(r.video?.fileName || 'video'),
-        path: String(r.video?.filePath || ''),
-        thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+        name: String(r.name || 'video'),
+        path: String(r.path || ''),
+        thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
       } as MediaT));
       setVideoSearchResults((prev) => [...prev, ...more]);
       setVideoOffset((prev) => prev + more.length);
@@ -378,6 +386,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     }
   };
 
+  // Handle item deletion - optimistically remove from UI
+  const handleItemDeleted = (itemId: string) => {
+    setLibrary(prev => prev.filter(item => item.id !== itemId));
+    setSearchResults(prev => prev.filter(item => item.id !== itemId));
+    setVideoSearchResults(prev => prev.filter(item => item.id !== itemId));
+  };
+
   return (
     <div className="min-h-screen tokyo-bg text-neutral-100">
       {/* Header */}
@@ -392,15 +407,18 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             </button>
           </div>
           <div className="text-center">
-            <div className="text-lg font-semibold tracking-tight">Distillery</div>
+            <div className="text-lg font-semibold tracking-tight">Clipwise</div>
             <div className="text-[11px] text-neutral-400">Media Search</div>
           </div>
           <div className="flex items-center justify-end gap-2">
             {overallProgress >= 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs">
-                <Icon.Bolt className="text-emerald-400" /> Indexing {Math.round(overallProgress)}%
+              <span className="inline-flex items-center rounded-full border border-emerald-800 bg-emerald-950/50 p-2 animate-pulse">
+                <Icon.Bolt className="text-emerald-400 w-4 h-4" />
               </span>
             )}
+            <button onClick={() => setSettingsOpen(true)} className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
+              <Icon.Settings className="w-4 h-4" />
+            </button>
             <button onClick={onOpenIndexing} className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
               Open Indexing
             </button>
@@ -412,9 +430,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             <Icon.Search className="text-neutral-400" />
             <input
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              onChange={(e) => {
+                console.log('[INPUT-DEBUG] Search input changed:', e.target.value);
+                setQ(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
+                  alert(`⏎ ENTER DEBUG: Enter pressed with query "${(e.target as HTMLInputElement).value}"`);
                   // Cancel pending debounce and run search immediately
                   if (debounceRef.current) {
                     clearTimeout(debounceRef.current);
@@ -423,15 +445,20 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                   // Trigger the effect's performSearch by transiently changing scope
                   // Simpler: temporarily setSearching and invoke mediaAPI directly here
                   (async () => {
+                    alert(`🚀 ENTER-SEARCH DEBUG: Starting search function with q="${q}", scope="${scope}"`);
                     const query = q.trim();
                     if (!query || scope === 'folders') {
+                      alert(`❌ ENTER-SEARCH DEBUG: Exiting early - query="${query}", scope="${scope}"`);
                       setSearchResults([]);
                       setVideoSearchResults([]);
                       return;
                     }
                     try {
+                      alert(`🔧 SEARCH DEBUG: About to setSearching(true)`);
                       setSearching(true);
-                      const res: any = await window.mediaAPI.unifiedSearch({ query, limit: 40, offset: 0 });
+                      alert(`🔍 SEARCH DEBUG: Calling unifiedSearch with query: "${query}"`);
+                      const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
+                      alert(`✅ SEARCH DEBUG: Got response with ${res?.results?.images?.length || 0} images, ${res?.results?.videos?.length || 0} videos`);
                       const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
                       const mediaItems: MediaT[] = images.map((it: any) => {
                         const mime = (it.mimeType || '').toLowerCase();
@@ -453,12 +480,12 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       });
                       const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
                       const videoItems: MediaT[] = videos.map((r: any) => ({
-                        id: String(r.segment?.id || r.video?.id || Math.random().toString(36).slice(2)),
-                        placeId: '',
+                        id: String(r.id || Math.random().toString(36).slice(2)),
+                        placeId: String(r.sourceId || ''),
                         type: 'video',
-                        name: String(r.video?.fileName || 'video'),
-                        path: String(r.video?.filePath || ''),
-                        thumb: String(r.segment?.thumbnailPath || r.segment?.keyframePath || ''),
+                        name: String(r.name || 'video'),
+                        path: String(r.path || ''),
+                        thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
                       } as MediaT));
                       // Set results
                       setSearchResults(mediaItems);
@@ -574,6 +601,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     places={places}
                     maxVisible={6}
                     onShowMore={() => setExpandedType('image')}
+                    onItemDeleted={handleItemDeleted}
                   />
                   <MediaGroup
                     title="Videos"
@@ -582,6 +610,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     places={places}
                     maxVisible={6}
                     onShowMore={() => setExpandedType('video')}
+                    onItemDeleted={handleItemDeleted}
                   />
                   <MediaGroup
                     title="Audio"
@@ -590,15 +619,17 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     places={places}
                     maxVisible={6}
                     onShowMore={() => setExpandedType('audio')}
+                    onItemDeleted={handleItemDeleted}
                   />
                   {q.trim().length > 0 && videoSearchResults.length > 0 && (
                     <MediaGroup
-                      title="Videos (segments)"
+                      title="Videos"
                       icon={<Icon.Video />}
                       items={videoSearchResults}
                       places={places}
                       maxVisible={6}
                       onShowMore={() => loadMoreVideos()}
+                      onItemDeleted={handleItemDeleted}
                     />
                   )}
                 </>
@@ -664,8 +695,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               </button>
             </div>
             <div className="flex-1 overflow-y-auto">
-              <VideoSelection 
-                onVideoAdded={async () => {
+              <MediaUpload 
+                onMediaAdded={async () => {
                   // Refresh sources when video is added
                   try {
                     const res = await window.mediaAPI.getSources();
@@ -726,6 +757,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           </div>
         </div>
       )}
+
+      {/* Settings Modal */}
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       <footer className="fixed bottom-3 right-4 z-10 text-xs text-neutral-500">© Driller — v2 UI</footer>
     </div>
@@ -867,7 +901,7 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
                     <div key={key} style={style}>
                       <div className="grid" style={{ gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))`, gap: `${gap}px` }}>
                         {rowItems.map((m) => (
-                          <MediaCard key={m.id} item={m} placeLabel={''} />
+                          <MediaCard key={m.id} item={m} placeLabel={''} onDeleted={(itemId) => setItems(prev => prev.filter(item => item.id !== itemId))} />
                         ))}
                       </div>
                     </div>
