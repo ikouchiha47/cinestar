@@ -1,9 +1,9 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import os from 'os';
-import { EmbeddingService, RRFFusion } from './embedding-service';
-import { DatabaseMigrator } from './database-migrator';
+import { EmbeddingService } from './embedding-service';
+import { getDataDir } from './utils/data-dir';
+import { UnifiedMigrator } from './unified-migrator';
 
 export interface VideoSegment {
   id: string;
@@ -60,6 +60,9 @@ export interface VideoProcessingJob {
   parentJobId?: string;
   triggerCondition?: 'immediate' | 'delayed' | 'conditional';
   scheduledAt?: Date;
+  // Batch processing notification fields
+  metadata?: string;        // JSON string for batch processing metadata
+  statusMessage?: string;   // User-friendly status message for notifications
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,11 +84,17 @@ export class VideoDatabase {
   private static globalInitPromises: Map<string, Promise<void>> = new Map();
   private static globallyInitialized: Set<string> = new Set();
 
+  /**
+   * Get the underlying database instance for advanced operations
+   * Used by BatchProcessor and other components that need direct SQL access
+   */
+  get database(): Database.Database {
+    return this.db;
+  }
+
   constructor(_embeddingService?: EmbeddingService) {
-    // Choose database directory similar to Media Search
-    const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
-    const defaultDir = isDev ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.driller');
-    const baseDir = process.env.VIDEO_DB_DIR || process.env.MAIN_DB_DIR || defaultDir;
+    // Use the same data directory as the main app
+    const baseDir = getDataDir();
     this.dbPath = path.join(baseDir, 'video-rag.db');
 
     // Ensure base directory exists
@@ -200,11 +209,10 @@ export class VideoDatabase {
     // Create a shared initialization promise so concurrent callers don't duplicate work
     const initPromise = (async () => {
       try {
-        // Use migration system for schema management with video-specific migrations
-        const videoMigrationsDir = path.join(process.cwd(), 'migrations', 'video');
-        const migrator = new DatabaseMigrator(this.dbPath, videoMigrationsDir);
+        // Use unified migration system for schema management
+        const migrator = new UnifiedMigrator(path.dirname(this.dbPath));
 
-        console.log('VideoDatabase: Running video-specific migrations...');
+        console.log('VideoDatabase: Running unified migrations...');
         const result = await migrator.migrate();
 
         if (!result.success) {
@@ -571,6 +579,14 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
   const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
   
+  console.log(`[VIDEO-DB-CREATE] 🚀 Creating new video job:`, {
+    id,
+    videoPath: job.videoPath,
+    fileName: job.fileName,
+    status: job.status,
+    triggerCondition: job.triggerCondition
+  });
+  
   const stmt = this.db.prepare(`
     INSERT INTO video_processing_jobs (
       id, video_path, file_name, status, progress, error,
@@ -580,28 +596,40 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   
-  stmt.run(
-    id,
-    job.videoPath,
-    job.fileName,
-    job.status,
-    job.progress,
-    job.error || null,
-    job.startTime?.toISOString() || null,
-    job.endTime?.toISOString() || null,
-    job.segmentCount || 0,
-    job.totalSegments || null,
-    job.currentStage || null,
-    job.refinementPass || 1,
-    job.threshold || 0.8,
-    job.parentJobId || null,
-    job.triggerCondition || 'immediate',
-    job.scheduledAt?.toISOString() || null,
-    now,
-    now
-  );
-  
-  return id;
+  try {
+    stmt.run(
+      id,
+      job.videoPath,
+      job.fileName,
+      job.status,
+      job.progress,
+      job.error || null,
+      job.startTime?.toISOString() || null,
+      job.endTime?.toISOString() || null,
+      job.segmentCount || 0,
+      job.totalSegments || null,
+      job.currentStage || null,
+      job.refinementPass || 1,
+      job.threshold || 0.8,
+      job.parentJobId || null,
+      job.triggerCondition || 'immediate',
+      job.scheduledAt?.toISOString() || null,
+      now,
+      now
+    );
+    
+    console.log(`[VIDEO-DB-CREATE] ✅ Successfully created job ${id} in database`);
+    
+    // Verify the job was actually inserted
+    const verifyStmt = this.db.prepare(`SELECT id, status FROM video_processing_jobs WHERE id = ?`);
+    const inserted = verifyStmt.get(id);
+    console.log(`[VIDEO-DB-CREATE] 🔍 Verification - Job exists in DB:`, !!inserted, inserted);
+    
+    return id;
+  } catch (error) {
+    console.error(`[VIDEO-DB-CREATE] ❌ Failed to create job ${id}:`, error);
+    throw error;
+  }
 }
 
   async updateJob(id: string, updates: Partial<Omit<VideoProcessingJob, 'id' | 'createdAt'>>): Promise<void> {
@@ -660,20 +688,32 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
 
   async getActiveJobs(): Promise<VideoProcessingJob[]> {
     // Get all active jobs (processing, running, scheduled)
+    console.log(`[VIDEO-DB-ACTIVE] 🔍 Querying for active jobs...`);
+    
     const stmt = this.db.prepare(`
       SELECT * FROM video_processing_jobs 
       WHERE status IN ('processing', 'running', 'scheduled') 
       ORDER BY created_at DESC
     `);
     const rows = stmt.all() as any[];
-    return rows.map(row => this.mapJobRow(row));
+    
+    console.log(`[VIDEO-DB-ACTIVE] 📊 Found ${rows.length} active jobs in database:`, 
+      rows.map(r => ({ id: r.id, status: r.status, video_path: r.video_path })));
+    
+    const jobs = rows.map(row => this.mapJobRow(row));
+    console.log(`[VIDEO-DB-ACTIVE] 🎯 Mapped jobs:`, 
+      jobs.map(j => ({ id: j.id, status: j.status, videoPath: j.videoPath })));
+    
+    return jobs;
   }
 
   async getPendingJobs(limit: number = 5): Promise<VideoProcessingJob[]> {
     // Get pending jobs in batches with priority ordering
+    console.log(`[VIDEO-DB-PENDING] 🔍 Querying for pending jobs (limit: ${limit})...`);
+    
     const stmt = this.db.prepare(`
       SELECT * FROM video_processing_jobs 
-      WHERE status = 'pending' 
+      WHERE status IN ('pending', 'scheduled') 
       ORDER BY 
         CASE WHEN refinement_pass = 1 THEN 1 ELSE 2 END, -- Prioritize initial processing
         created_at ASC -- FIFO within same priority
@@ -681,7 +721,14 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
     `);
     
     const rows = stmt.all(limit) as any[];
-    return rows.map(row => this.mapJobRow(row));
+    console.log(`[VIDEO-DB-PENDING] 📊 Found ${rows.length} pending/scheduled jobs:`, 
+      rows.map(r => ({ id: r.id, status: r.status, video_path: r.video_path, created_at: r.created_at })));
+    
+    const jobs = rows.map(row => this.mapJobRow(row));
+    console.log(`[VIDEO-DB-PENDING] 🎯 Mapped pending/scheduled jobs:`, 
+      jobs.map(j => ({ id: j.id, status: j.status, videoPath: j.videoPath, createdAt: j.createdAt })));
+    
+    return jobs;
   }
 
   private mapJobRow(row: any): VideoProcessingJob {

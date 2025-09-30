@@ -1,14 +1,10 @@
 import { spawn } from 'child_process';
-import ffmpegPath from 'ffmpeg-static';
 import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import fs from 'fs/promises';
-import { ConfigManager } from './config.js';
-
-// Configure fluent-ffmpeg to use the static binary
-if (ffmpegPath) {
-  ffmpeg.setFfmpegPath(ffmpegPath);
-}
+import os from 'os';
+import { ConfigManager } from './config';
+// FFmpeg/FFprobe paths are configured centrally in electron/main.ts via ffmpeg-bootstrap
 
 export interface VideoSegment {
   id: string;
@@ -58,17 +54,12 @@ export async function detectScenes(videoFile: string, threshold = 0.4, passNumbe
 export async function detectScenesBasic(videoFile: string, threshold = 0.4): Promise<number[]> {
   return new Promise<number[]>((resolve, reject) => {
     const cuts: number[] = [];
-    
-    if (!ffmpegPath) {
-      reject(new Error('ffmpeg-static not available'));
-      return;
-    }
-
     // Use configured threads and platform-specific hwaccel
     const threads = String(ConfigManager.getConfig().video?.pipeline?.threadsPerProcess ?? 1);
     const hwaccelArgs = process.platform === 'darwin' ? ['-hwaccel', 'videotoolbox'] : [];
 
-    const proc = spawn(ffmpegPath, [
+    const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+    const proc = spawn(ffmpegBin, [
       '-hide_banner',
       '-nostats',
       ...hwaccelArgs,
@@ -267,7 +258,14 @@ export async function createVideoSegments(
 export function getCacheDir(videoFile: string): string {
   const basename = path.basename(videoFile, path.extname(videoFile));
   const hash = Buffer.from(videoFile).toString('base64').replace(/[/+=]/g, '');
-  return path.join(process.cwd(), '.cache', 'video', `${basename}_${hash.slice(0, 8)}`);
+  
+  // Use user data directory in production, project directory in development
+  const isProduction = process.env.NODE_ENV === 'production' || process.resourcesPath;
+  const baseDir = isProduction 
+    ? path.join(os.homedir(), '.clipwise', 'cache')
+    : path.join(process.cwd(), '.cache');
+    
+  return path.join(baseDir, 'video', `${basename}_${hash.slice(0, 8)}`);
 }
 
 /**

@@ -315,7 +315,8 @@ export class VisualProcessor extends BaseVideoProcessor {
     await fs.mkdir(outputDir, { recursive: true });
     
     return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
+      const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+      const ffmpeg = spawn(ffmpegBin, [
         '-ss', timestamp.toString(),
         '-i', videoPath,
         '-vframes', '1',

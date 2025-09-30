@@ -207,7 +207,152 @@ export const SPEED_SCENE_DETECTION_CONFIG: SceneDetectionConfig = {
 };
 
 /**
- * Get scene detection config based on video characteristics
+ * Short video configuration (< 5 minutes) - Social media, clips, trailers
+ */
+export const SHORT_VIDEO_CONFIG: SceneDetectionConfig = {
+  passes: {
+    1: {
+      name: 'Short Content Detection',
+      threshold: 0.7,
+      techniques: ['basic_scene', 'motion_analysis', 'time_fallback'],
+      minSegmentDuration: 2,
+      maxSegmentDuration: 30
+    },
+    2: {
+      name: 'Short Content Refinement',
+      threshold: 0.5,
+      techniques: ['motion_analysis', 'histogram_analysis'],
+      minSegmentDuration: 1,
+      maxSegmentDuration: 15
+    }
+  },
+  techniques: {
+    basic_scene: { enabled: true, priority: 7, config: { adaptiveThreshold: true } },
+    motion_analysis: { enabled: true, priority: 8, config: { motionThreshold: 0.25, peakDetection: true, windowSize: 0.5 } },
+    histogram_analysis: { enabled: true, priority: 6, config: { correlationThreshold: 0.65, windowSize: 0.3 } },
+    edge_detection: { enabled: true, priority: 7, config: { edgeThreshold: 40, changeThreshold: 0.35 } },
+    time_fallback: { enabled: true, priority: 2, config: { intervalSeconds: 8, jitterPercent: 0.15 } }
+  }
+};
+
+/**
+ * Medium video configuration (5-30 minutes) - Music videos, tutorials, short films
+ */
+export const MEDIUM_VIDEO_CONFIG: SceneDetectionConfig = {
+  passes: {
+    1: {
+      name: 'Episode Scene Detection',
+      threshold: 0.65,
+      techniques: ['basic_scene', 'edge_detection', 'time_fallback'],
+      minSegmentDuration: 8,
+      maxSegmentDuration: 45
+    },
+    2: {
+      name: 'Episode Refinement',
+      threshold: 0.6,
+      techniques: ['basic_scene', 'edge_detection'],
+      minSegmentDuration: 5,
+      maxSegmentDuration: 30
+    }
+  },
+  techniques: {
+    basic_scene: { enabled: true, priority: 6, config: { adaptiveThreshold: true } },
+    motion_analysis: { 
+      enabled: true, 
+      priority: 8, 
+      config: { 
+        motionThreshold: 0.55,
+        peakDetection: true, 
+        windowSize: 1.2
+      } 
+    },
+    histogram_analysis: { 
+      enabled: true, 
+      priority: 6, 
+      config: { 
+        correlationThreshold: 0.65,
+        windowSize: 0.8 
+      } 
+    },
+    edge_detection: { 
+      enabled: true, 
+      priority: 7, 
+      config: { 
+        edgeThreshold: 45,
+        changeThreshold: 0.5 
+      } 
+    },
+    time_fallback: { 
+      enabled: true, 
+      priority: 1, 
+      config: { 
+        intervalSeconds: 30,
+        jitterPercent: 0.1 
+      } 
+    }
+  }
+};
+
+/**
+ * Movie/TV configuration (30+ minutes) - Films, TV episodes, long documentaries
+ */
+export const MOVIE_TV_CONFIG: SceneDetectionConfig = {
+  passes: {
+    1: {
+      name: 'Movie Scene Detection',
+      threshold: 0.85,
+      techniques: ['basic_scene', 'time_fallback'],
+      minSegmentDuration: 30,
+      maxSegmentDuration: 180
+    },
+    2: {
+      name: 'Movie Refinement',
+      threshold: 0.8,
+      techniques: ['basic_scene', 'edge_detection'],
+      minSegmentDuration: 20,
+      maxSegmentDuration: 120
+    }
+  },
+  techniques: {
+    basic_scene: { enabled: true, priority: 5, config: { adaptiveThreshold: true } },
+    motion_analysis: { enabled: true, priority: 7, config: { motionThreshold: 0.35, peakDetection: true, windowSize: 1.2 } },
+    histogram_analysis: { enabled: true, priority: 6, config: { correlationThreshold: 0.75, windowSize: 0.8 } },
+    edge_detection: { enabled: true, priority: 6, config: { edgeThreshold: 60, changeThreshold: 0.45 } },
+    time_fallback: { enabled: true, priority: 1, config: { intervalSeconds: 45, jitterPercent: 0.08 } }
+  }
+};
+
+/**
+ * Documentary configuration - Educational, interview-heavy content
+ */
+export const DOCUMENTARY_CONFIG: SceneDetectionConfig = {
+  passes: {
+    1: {
+      name: 'Documentary Scene Detection',
+      threshold: 0.9,
+      techniques: ['basic_scene', 'time_fallback'],
+      minSegmentDuration: 15,
+      maxSegmentDuration: 180
+    },
+    2: {
+      name: 'Topic Refinement',
+      threshold: 0.7,
+      techniques: ['basic_scene', 'histogram_analysis'],
+      minSegmentDuration: 8,
+      maxSegmentDuration: 90
+    }
+  },
+  techniques: {
+    basic_scene: { enabled: true, priority: 5, config: { adaptiveThreshold: false } },
+    motion_analysis: { enabled: false, priority: 0, config: {} }, // Less motion in documentaries
+    histogram_analysis: { enabled: true, priority: 6, config: { correlationThreshold: 0.8, windowSize: 1.0 } },
+    edge_detection: { enabled: false, priority: 0, config: {} },
+    time_fallback: { enabled: true, priority: 3, config: { intervalSeconds: 60, jitterPercent: 0.05 } }
+  }
+};
+
+/**
+ * Get scene detection config based on video characteristics and content type
  */
 export function getSceneDetectionConfig(videoMetadata?: {
   duration: number;
@@ -215,22 +360,54 @@ export function getSceneDetectionConfig(videoMetadata?: {
   motionLevel?: 'low' | 'medium' | 'high';
 }): SceneDetectionConfig {
   
+  const timestamp = new Date().toISOString();
+  console.error(`💥💥💥 SCENE CONFIG FUNCTION ENTRY POINT @ ${timestamp} 💥💥💥`);
+  console.log(`🔥🔥🔥 [SCENE-CONFIG-DEBUG] FUNCTION CALLED WITH:`, JSON.stringify(videoMetadata, null, 2));
+  console.log(`[SCENE-CONFIG-DEBUG] Input videoMetadata type:`, typeof videoMetadata);
+  console.log(`[SCENE-CONFIG-DEBUG] videoMetadata === undefined:`, videoMetadata === undefined);
+  console.log(`[SCENE-CONFIG-DEBUG] videoMetadata === null:`, videoMetadata === null);
+  console.log(`[SCENE-CONFIG-DEBUG] !videoMetadata:`, !videoMetadata);
+  
   if (!videoMetadata) {
+    console.error('🚨🚨🚨 [SCENE-CONFIG] Using default configuration (no metadata provided)');
+    console.log(`[SCENE-CONFIG-DEBUG] Returning DEFAULT_SCENE_DETECTION_CONFIG at ${timestamp}`);
     return DEFAULT_SCENE_DETECTION_CONFIG;
   }
   
-  // Use action config for high motion or short videos (likely action clips)
-  if (videoMetadata.motionLevel === 'high' || videoMetadata.duration < 120) {
-    console.log('[SCENE-CONFIG] Using action-optimized configuration');
-    return ACTION_SCENE_DETECTION_CONFIG;
+  const duration = videoMetadata.duration;
+  const contentType = videoMetadata.contentType?.toLowerCase();
+  const motionLevel = videoMetadata.motionLevel;
+  
+  console.log(`[SCENE-CONFIG-DEBUG] ===== PARAMETER ANALYSIS =====`);
+  console.log(`[SCENE-CONFIG-DEBUG] Duration: ${duration}s (${Math.round(duration/60)}m)`);
+  console.log(`[SCENE-CONFIG-DEBUG] ContentType: "${contentType}"`);
+  console.log(`[SCENE-CONFIG-DEBUG] MotionLevel: "${motionLevel}"`);
+  console.log(`[SCENE-CONFIG-DEBUG] Duration < 300 (5min): ${duration < 300}`);
+  console.log(`[SCENE-CONFIG-DEBUG] Duration < 1800 (30min): ${duration < 1800}`);
+  console.log(`[SCENE-CONFIG-DEBUG] ===== DECISION LOGIC =====`);
+  
+  // Content-based detection first
+  if (contentType === 'documentary' || contentType === 'interview' || contentType === 'educational') {
+    console.log('[SCENE-CONFIG] Using documentary configuration for educational content');
+    return DOCUMENTARY_CONFIG;
   }
   
-  // Use speed config for very long videos
-  if (videoMetadata.duration > 1800) { // 30+ minutes
-    console.log('[SCENE-CONFIG] Using speed-optimized configuration');
-    return SPEED_SCENE_DETECTION_CONFIG;
+  // Duration-based detection
+  if (duration < 300) { // < 5 minutes - Shorts, clips, trailers
+    console.error(`🎯 [SCENE-CONFIG] ✅ SELECTED: SHORT_VIDEO_CONFIG for ${Math.round(duration/60)}m video`);
+    console.log(`[SCENE-CONFIG-DEBUG] Config: SHORT_VIDEO_CONFIG, Duration: ${duration}s`);
+    return SHORT_VIDEO_CONFIG;
   }
   
-  console.log('[SCENE-CONFIG] Using default configuration');
-  return DEFAULT_SCENE_DETECTION_CONFIG;
+  if (duration < 1800) { // 5-30 minutes - Medium content
+    console.error(`🎯 [SCENE-CONFIG] ✅ SELECTED: MEDIUM_VIDEO_CONFIG for ${Math.round(duration/60)}m video`);
+    console.log(`[SCENE-CONFIG-DEBUG] Config: MEDIUM_VIDEO_CONFIG, Duration: ${duration}s`);
+    console.log(`[SCENE-CONFIG-DEBUG] MEDIUM_VIDEO_CONFIG passes:`, Object.keys(MEDIUM_VIDEO_CONFIG.passes));
+    return MEDIUM_VIDEO_CONFIG;
+  }
+  
+  // 30+ minutes - Movies, TV shows, long documentaries
+  console.error(`🎯 [SCENE-CONFIG] ✅ SELECTED: MOVIE_TV_CONFIG for ${Math.round(duration/60)}m video`);
+  console.log(`[SCENE-CONFIG-DEBUG] Config: MOVIE_TV_CONFIG, Duration: ${duration}s`);
+  return MOVIE_TV_CONFIG;
 }

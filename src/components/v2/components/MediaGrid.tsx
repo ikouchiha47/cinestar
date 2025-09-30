@@ -14,9 +14,10 @@ interface MediaGroupProps {
   maxVisible?: number;
   onShowMore?: () => void;
   onItemDeleted?: (itemId: string) => void;
+  onVideoClick?: (item: MediaT) => void;
 }
 
-export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowMore, onItemDeleted }: MediaGroupProps) {
+export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowMore, onItemDeleted, onVideoClick }: MediaGroupProps) {
   const visibleItems = maxVisible ? items.slice(0, maxVisible) : items;
   const hasMore = maxVisible && items.length > maxVisible;
 
@@ -42,7 +43,7 @@ export function MediaGroup({ title, icon, items, places, maxVisible = 6, onShowM
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
         {visibleItems.map((item) => (
-          <MediaCard key={item.id} item={item} places={places} onDeleted={onItemDeleted} />
+          <MediaCard key={item.id} item={item} places={places} onDeleted={onItemDeleted} onVideoClick={onVideoClick} />
         ))}
       </div>
     </section>
@@ -54,9 +55,10 @@ interface MediaCardProps {
   places?: Place[];
   placeLabel?: string;
   onDeleted?: (itemId: string) => void;
+  onVideoClick?: (item: MediaT) => void;
 }
 
-export function MediaCard({ item, places, placeLabel, onDeleted }: MediaCardProps) {
+export function MediaCard({ item, places, placeLabel, onDeleted, onVideoClick }: MediaCardProps) {
   const place = places?.find(p => p.id === item.placeId);
   const displayLabel = placeLabel || place?.label || '—';
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
@@ -89,8 +91,12 @@ export function MediaCard({ item, places, placeLabel, onDeleted }: MediaCardProp
   }, [item.thumb]);
   
   const handleClick = () => {
-    // Open media item (could be implemented later)
-    console.log('Opening media item:', item);
+    if (item.type === 'video' && onVideoClick) {
+      onVideoClick(item);
+    } else {
+      // For non-video items, just log for now
+      console.log('Opening media item:', item);
+    }
   };
 
   const handleDelete = async () => {

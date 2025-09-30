@@ -50,6 +50,13 @@ export class VideoMediaAPI {
     this.setupPipeline();
     this.initialized = true;
     console.log('[VIDEO-MEDIA-API] Initialized successfully');
+    
+    // Recover stalled video processing jobs after initialization
+    setTimeout(() => {
+      this.recoverStalledVideoJobs().catch((error: any) => {
+        console.warn('[VIDEO-MEDIA-API] Video job recovery failed:', error);
+      });
+    }, 4000); // Wait 4 seconds after initialization
   }
 
   /**
@@ -162,6 +169,18 @@ export class VideoMediaAPI {
         console.log(`[VIDEO-API] Using sourceId: ${sourceId} for video: ${fileName}`);
         const addResult = await MainMediaAPI.addItemForFile(sourceId, videoPath, `Video file: ${fileName}`, metadata);
         console.log(`[VIDEO-API] Parent video created:`, addResult);
+        
+        // Also create corresponding entry in video database (video_files table)
+        if (addResult.success && addResult.id) {
+          try {
+            console.log(`[VIDEO-API] Creating video_files entry for: ${addResult.id}`);
+            await this.createVideoFileEntry(addResult.id, videoPath, fileName, fs.statSync(videoPath).size);
+            console.log(`[VIDEO-API] ✅ Video_files entry created for: ${addResult.id}`);
+          } catch (videoFileError) {
+            console.warn(`[VIDEO-API] Failed to create video_files entry:`, videoFileError);
+            // Continue anyway - compensation will handle it
+          }
+        }
       } catch (error) {
         console.warn(`[VIDEO-API] Failed to create parent video entry:`, error);
         // Continue anyway - background processing will handle it
@@ -302,10 +321,76 @@ export class VideoMediaAPI {
   }
 
   /**
+   * Recover stalled video processing jobs on startup
+   */
+  async recoverStalledVideoJobs(): Promise<{ success: boolean; recoveredCount: number; error?: string }> {
+    try {
+      console.log('[VIDEO-JOB-RECOVERY] Checking for stalled video processing jobs...');
+      
+      // Get all jobs and find stalled ones using multiple criteria
+      const jobs = await this.videoDb.getJobs();
+      const now = new Date();
+      const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+      const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
+      const twentyMinutesAgo = new Date(now.getTime() - 20 * 60 * 1000);
+      
+      const stalledJobs = jobs.filter(job => {
+        // Case 1: Pending jobs that never started (>5 min old)
+        if (job.status === 'pending' && job.createdAt && new Date(job.createdAt) < fiveMinutesAgo) {
+          return true;
+        }
+        
+        // Case 2: Processing jobs running too long (>20 min)
+        if (job.status === 'processing' && job.startTime && new Date(job.startTime) < twentyMinutesAgo) {
+          return true;
+        }
+        
+        // Case 3: Scheduled jobs that never got picked up (>10 min)
+        if (job.status === 'scheduled' && job.createdAt && new Date(job.createdAt) < tenMinutesAgo) {
+          return true;
+        }
+        
+        return false;
+      });
+      
+      console.log(`[VIDEO-JOB-RECOVERY] Found ${stalledJobs.length} stalled video jobs`);
+      
+      if (stalledJobs.length > 0) {
+        for (const job of stalledJobs) {
+          console.log(`[VIDEO-JOB-RECOVERY] Resetting stalled video job: ${job.id} for video: ${job.videoPath}`);
+          
+          // Reset job to pending status
+          await this.videoDb.updateJob(job.id, { status: 'pending', progress: 0 });
+          
+          // Restart the job
+          try {
+            const newJobId = await this.processVideo(job.videoPath);
+            console.log(`[VIDEO-JOB-RECOVERY] Restarted video job: ${newJobId} for ${job.videoPath}`);
+          } catch (error) {
+            console.error(`[VIDEO-JOB-RECOVERY] Failed to restart video job for ${job.videoPath}:`, error);
+            await this.videoDb.updateJob(job.id, { status: 'failed', error: String(error) });
+          }
+        }
+      } else {
+        console.log('[VIDEO-JOB-RECOVERY] No stalled video jobs found');
+      }
+      
+      return { success: true, jobId: stalledJobs.length > 0 ? stalledJobs[0].id : null, recoveredCount: stalledJobs.length };
+    } catch (error) {
+      console.error('[VIDEO-JOB-RECOVERY] Failed to recover stalled video jobs:', error);
+      return { success: false, recoveredCount: 0, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
    * Get all active processing jobs
    */
   async getActiveJobs(): Promise<VideoProcessingJob[]> {
-    return await this.videoDb.getActiveJobs();
+    console.log(`[VIDEO-API-ACTIVE] 🔍 VideoMediaAPI.getActiveJobs() called`);
+    const jobs = await this.videoDb.getActiveJobs();
+    console.log(`[VIDEO-API-ACTIVE] 📋 VideoMediaAPI returning ${jobs.length} jobs:`, 
+      jobs.map(j => ({ id: j.id, status: j.status, videoPath: j.videoPath })));
+    return jobs;
   }
 
   /**
@@ -338,6 +423,43 @@ export class VideoMediaAPI {
     const audioExtensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'];
     const ext = path.extname(filePath).toLowerCase();
     return audioExtensions.includes(ext);
+  }
+
+  /**
+   * Create video_files entry in video database to maintain referential integrity
+   * This ensures both main database and video database have the parent video record
+   */
+  private async createVideoFileEntry(videoId: string, videoPath: string, fileName: string, fileSize: number): Promise<void> {
+    try {
+      // Direct SQL insert to use the specific ID from main database
+      const stmt = (this.videoDb as any).db.prepare(`
+        INSERT INTO video_files (
+          id, file_path, file_name, file_size, duration, width, height,
+          frame_rate, bitrate, codec, total_segments, processing_status, processing_error,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      const now = new Date().toISOString();
+      stmt.run(
+        videoId, // Use the exact ID from main database
+        videoPath,
+        fileName,
+        fileSize,
+        0, // duration - will be updated during processing
+        null, null, null, null, null, // width, height, frameRate, bitrate, codec
+        0, // totalSegments
+        'pending', // processingStatus
+        null, // processingError
+        now, // createdAt
+        now  // updatedAt
+      );
+      
+      console.log(`[VIDEO-FILES-SYNC] ✅ Created video_files entry with ID: ${videoId}`);
+    } catch (error) {
+      console.error(`[VIDEO-FILES-SYNC] ❌ Failed to create video_files entry:`, error);
+      throw error;
+    }
   }
 
   /**

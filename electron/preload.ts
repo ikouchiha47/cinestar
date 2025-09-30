@@ -73,4 +73,7 @@ contextBridge.exposeInMainWorld('videoAPI', {
   selectVideoFile: () => ipcRenderer.invoke('dialog:selectVideoFile'),
   selectImageFile: () => ipcRenderer.invoke('dialog:selectImageFile'),
   selectAudioFile: () => ipcRenderer.invoke('dialog:selectAudioFile'),
+  // Video player methods
+  getMetadata: (videoPath: string) => ipcRenderer.invoke('video:getMetadata', videoPath),
+  getSegmentsForPlayer: (videoPath: string, searchQuery?: string) => ipcRenderer.invoke('video:getSegmentsForPlayer', videoPath, searchQuery),
 })

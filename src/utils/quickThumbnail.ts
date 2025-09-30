@@ -76,7 +76,9 @@ export async function generateQuickThumbnail(
  */
 async function getVideoDuration(videoPath: string): Promise<number | null> {
   return new Promise((resolve) => {
-    const ffprobe = spawn('ffprobe', [
+    const ffprobeBin = process.env.FFPROBE_PATH || 'ffprobe';
+    
+    const ffprobe = spawn(ffprobeBin, [
       '-v', 'quiet',
       '-show_entries', 'format=duration',
       '-of', 'csv=p=0',
@@ -89,18 +91,22 @@ async function getVideoDuration(videoPath: string): Promise<number | null> {
       output += data.toString();
     });
     
+    ffprobe.stderr.on('data', (data) => {
+      console.error(`[FFPROBE-STDERR] ${data.toString()}`);
+    });
+
     ffprobe.on('close', (code) => {
       if (code === 0) {
         const duration = parseFloat(output.trim());
         resolve(isNaN(duration) ? null : duration);
       } else {
-        console.warn(`[QUICK-THUMB] FFprobe failed with code: ${code}`);
+        console.error(`[FFPROBE-ERROR] FFprobe failed with code: ${code} for ${videoPath}`);
         resolve(null);
       }
     });
-    
+
     ffprobe.on('error', (error) => {
-      console.warn(`[QUICK-THUMB] FFprobe error:`, error);
+      console.error(`[FFPROBE-ERROR] Spawn error:`, error);
       resolve(null);
     });
   });
@@ -115,7 +121,15 @@ async function extractThumbnailWithFFmpeg(
   seekTime: number
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const ffmpeg = spawn('ffmpeg', [
+    const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+    
+    console.log(`[FFMPEG-DEBUG] Using binary: ${ffmpegBin}`);
+    console.log(`[FFMPEG-DEBUG] Input: ${videoPath}`);
+    console.log(`[FFMPEG-DEBUG] Output: ${outputPath}`);
+    console.log(`[FFMPEG-DEBUG] Seek time: ${seekTime}s`);
+    console.log(`[FFMPEG-DEBUG] Command: ${ffmpegBin} -i "${videoPath}" -ss ${seekTime} -vframes 1 -q:v 2 -vf scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2 -y "${outputPath}"`);
+    
+    const ffmpeg = spawn(ffmpegBin, [
       '-i', videoPath,
       '-ss', seekTime.toString(),
       '-vframes', '1',
@@ -127,23 +141,31 @@ async function extractThumbnailWithFFmpeg(
     
     let errorOutput = '';
     
-    ffmpeg.stderr.on('data', (data) => {
-      errorOutput += data.toString();
+    ffmpeg.stdout.on('data', (data) => {
+      console.log(`[FFMPEG-STDOUT] ${data.toString()}`);
     });
     
+    ffmpeg.stderr.on('data', (data) => {
+      const output = data.toString();
+      errorOutput += output;
+      console.log(`[FFMPEG-STDERR] ${output}`);
+    });
+
     ffmpeg.on('close', (code) => {
+      console.log(`[FFMPEG-DEBUG] Process exited with code: ${code}`);
       if (code === 0) {
-        console.log(`[QUICK-THUMB] FFmpeg extraction successful`);
+        console.log(`[FFMPEG-SUCCESS] ✅ Thumbnail extraction successful`);
+        console.log(`[FFMPEG-SUCCESS] Output file: ${outputPath}`);
         resolve(true);
       } else {
-        console.warn(`[QUICK-THUMB] FFmpeg failed with code: ${code}`);
-        console.warn(`[QUICK-THUMB] FFmpeg error:`, errorOutput);
+        console.error(`[FFMPEG-ERROR] ❌ FFmpeg failed with code ${code}`);
+        console.error(`[FFMPEG-ERROR] Error output: ${errorOutput}`);
         resolve(false);
       }
     });
-    
+
     ffmpeg.on('error', (error) => {
-      console.warn(`[QUICK-THUMB] FFmpeg spawn error:`, error);
+      console.error(`[FFMPEG-ERROR] Spawn error:`, error);
       resolve(false);
     });
   });

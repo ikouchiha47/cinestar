@@ -110,11 +110,12 @@ export class SimpleSceneDetection {
   private async executeBasicScene(
     videoPath: string,
     threshold: number,
-    config: Record<string, any>
+    _config: Record<string, any> // Unused but kept for interface compatibility
   ): Promise<number[]> {
     return new Promise((resolve, reject) => {
       const cuts: number[] = [];
-      const adjustedThreshold = config.adaptiveThreshold ? threshold : 0.4;
+      // ALWAYS use the passed threshold - no hardcoded bullshit!
+      const adjustedThreshold = threshold;
       
       const ffmpegArgs = [
         '-i', videoPath,
@@ -154,11 +155,11 @@ export class SimpleSceneDetection {
   private async executeMotionAnalysis(
     videoPath: string,
     threshold: number,
-    config: Record<string, any>
+    _config: Record<string, any> // Unused but kept for interface compatibility
   ): Promise<number[]> {
-    // For now, use a more sensitive scene detection as motion proxy
+    // Use a more sensitive scene detection as motion proxy
     const motionThreshold = threshold * 0.7; // More sensitive
-    return this.executeBasicScene(videoPath, motionThreshold, { adaptiveThreshold: false });
+    return this.executeBasicScene(videoPath, motionThreshold, { adaptiveThreshold: true });
   }
   
   /**
@@ -167,7 +168,7 @@ export class SimpleSceneDetection {
   private async executeHistogramAnalysis(
     videoPath: string,
     threshold: number,
-    config: Record<string, any>
+    _config: Record<string, any> // Unused but kept for interface compatibility
   ): Promise<number[]> {
     // NOTE: The previous approach attempted to use `select='lt(psnr,...)'` which is invalid.
     // PSNR/SSIM require two inputs and are not exposed as scalar variables in a single-stream
@@ -177,7 +178,7 @@ export class SimpleSceneDetection {
     console.warn('[SIMPLE-SCENE-DETECTION] histogram_analysis uses fallback to scene metric');
     // Make this pass a bit more sensitive than basic_scene by scaling threshold down.
     const adjusted = Math.max(0.05, threshold * 0.75);
-    return this.executeBasicScene(videoPath, adjusted, { adaptiveThreshold: false });
+    return this.executeBasicScene(videoPath, adjusted, { adaptiveThreshold: true });
   }
   
   /**
@@ -186,17 +187,17 @@ export class SimpleSceneDetection {
   private async executeEdgeDetection(
     videoPath: string,
     threshold: number,
-    config: Record<string, any>
+    _config: Record<string, any> // Unused but kept for interface compatibility
   ): Promise<number[]> {
     const edgeThreshold = threshold * 0.8; // Slightly more sensitive
-    return this.executeBasicScene(videoPath, edgeThreshold, { adaptiveThreshold: false });
+    return this.executeBasicScene(videoPath, edgeThreshold, { adaptiveThreshold: true });
   }
   
   /**
    * Time-based fallback segmentation
    */
   private async executeTimeFallback(
-    videoPath: string,
+    _videoPath: string, // Unused but kept for interface compatibility
     config: Record<string, any>,
     videoMetadata?: any
   ): Promise<number[]> {

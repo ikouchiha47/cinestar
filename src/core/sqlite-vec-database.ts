@@ -68,20 +68,31 @@ export class SqliteVecDatabase {
       const platform = process.platform;
       const arch = process.arch;
       
+      // Determine base path for extensions
+      const isProduction = process.env.NODE_ENV === 'production' && process.resourcesPath && !process.env.VITE_DEV_SERVER_URL;
+      const basePath = isProduction 
+        ? path.join(process.resourcesPath || path.dirname(process.execPath), 'app.asar.unpacked')
+        : '.';
+      
+      console.log(`[SQLITE-VEC-DEBUG] isProduction: ${isProduction}, basePath: ${basePath}`);
+      
       let extensionPath: string;
       if (platform === 'darwin' && arch === 'arm64') {
-        extensionPath = path.resolve('./node_modules/sqlite-vec-darwin-arm64/vec0.dylib');
+        extensionPath = path.resolve(basePath, 'node_modules/sqlite-vec-darwin-arm64/vec0.dylib');
       } else if (platform === 'darwin' && arch === 'x64') {
-        extensionPath = path.resolve('./node_modules/sqlite-vec-darwin-x64/vec0.dylib');
+        extensionPath = path.resolve(basePath, 'node_modules/sqlite-vec-darwin-x64/vec0.dylib');
       } else if (platform === 'linux' && arch === 'x64') {
-        extensionPath = path.resolve('./node_modules/sqlite-vec-linux-x64/vec0.so');
+        extensionPath = path.resolve(basePath, 'node_modules/sqlite-vec-linux-x64/vec0.so');
       } else if (platform === 'linux' && arch === 'arm64') {
-        extensionPath = path.resolve('./node_modules/sqlite-vec-linux-arm64/vec0.so');
+        extensionPath = path.resolve(basePath, 'node_modules/sqlite-vec-linux-arm64/vec0.so');
       } else if (platform === 'win32' && arch === 'x64') {
-        extensionPath = path.resolve('./node_modules/sqlite-vec-windows-x64/vec0.dll');
+        extensionPath = path.resolve(basePath, 'node_modules/sqlite-vec-windows-x64/vec0.dll');
       } else {
         throw new Error(`Unsupported platform: ${platform}-${arch}`);
       }
+      
+      console.log(`[SQLITE-VEC-DEBUG] Attempting to load extension from: ${extensionPath}`);
+      console.log(`[SQLITE-VEC-DEBUG] Extension file exists: ${fs.existsSync(extensionPath)}`);
       
       this.db.loadExtension(extensionPath);
       console.log(`✅ sqlite-vec extension loaded successfully from ${extensionPath}`);

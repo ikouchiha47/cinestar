@@ -2,6 +2,7 @@ import Database, { Database as DatabaseType } from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { UnifiedMigrator } from './unified-migrator';
 
 export interface MigrationResult {
   success: boolean;
@@ -16,9 +17,29 @@ export class DatabaseMigrator {
 
   constructor(dbPath: string, migrationsDir?: string) {
     this.dbPath = dbPath;
-    // Use project root relative path that works in both dev and production
-    const projectRoot = process.cwd();
-    this.migrationsDir = migrationsDir || path.join(projectRoot, 'migrations');
+    
+    if (migrationsDir) {
+      this.migrationsDir = migrationsDir;
+    } else {
+      // Detect if we're in packaged app or development
+      const isPackaged = process.env.NODE_ENV === 'production' || process.resourcesPath;
+      
+      if (isPackaged) {
+        // In packaged app, migrations are in the app bundle
+        const appPath = process.resourcesPath || path.dirname(process.execPath);
+        this.migrationsDir = path.join(appPath, 'app.asar.unpacked', 'src', 'core', 'migrations');
+      } else {
+        // In development, use project root
+        const projectRoot = process.cwd();
+        this.migrationsDir = path.join(projectRoot, 'src', 'core', 'migrations');
+      }
+    }
+    
+    try {
+      console.log(`[Migration] Using migrations directory: ${this.migrationsDir}`);
+    } catch (e) {
+      // Ignore EPIPE errors from console.log
+    }
   }
 
   /**
@@ -45,11 +66,15 @@ export class DatabaseMigrator {
 
       // Get current schema version
       const currentVersion = this.getCurrentVersion(db);
-      console.log(`[Migration] Current schema version: ${currentVersion}`);
+      try {
+        console.log(`[Migration] Current schema version: ${currentVersion}`);
+      } catch (e) { /* ignore EPIPE */ }
 
       // Find all migration files
       const migrationFiles = this.getMigrationFiles();
-      console.log(`[Migration] Found ${migrationFiles.length} migration files`);
+      try {
+        console.log(`[Migration] Found ${migrationFiles.length} migration files`);
+      } catch (e) { /* ignore EPIPE */ }
 
       const migrationsRun: string[] = [];
       let newVersion = currentVersion;
@@ -208,35 +233,22 @@ export class DatabaseMigrator {
 }
 
 /**
- * Initialize databases with migrations for fresh installs
+ * Initialize databases with unified migrations for fresh installs
  */
 export async function initializeDatabases(dataDir: string): Promise<{
-  videoDb: MigrationResult;
-  mediaDb: MigrationResult;
+  success: boolean;
+  videoDB: { path: string; migrationsApplied: number };
+  mediaDB: { path: string; migrationsApplied: number };
+  migrationsRun: string[];
+  error?: string;
 }> {
-  console.log(`[Init] Initializing databases in: ${dataDir}`);
+  console.log(`[Init] Initializing databases with unified migrations in: ${dataDir}`);
 
-  // Ensure data directory exists
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+  // Use unified migrator for both databases
+  const migrator = new UnifiedMigrator(dataDir);
+  const result = await migrator.migrate();
 
-  // Initialize video database
-  const videoDbPath = path.join(dataDir, 'video-rag.db');
-  const videoMigrationsDir = path.join(process.cwd(), 'migrations', 'video');
-  const videoMigrator = new DatabaseMigrator(videoDbPath, videoMigrationsDir);
-  const videoResult = await videoMigrator.migrate();
-
-  // Initialize media database  
-  const mediaDbPath = path.join(dataDir, 'vector.db');
-  const mediaMigrationsDir = path.join(process.cwd(), 'migrations', 'media');
-  const mediaMigrator = new DatabaseMigrator(mediaDbPath, mediaMigrationsDir);
-  const mediaResult = await mediaMigrator.migrate();
-
-  return {
-    videoDb: videoResult,
-    mediaDb: mediaResult
-  };
+  return result;
 }
 
 /**
@@ -249,7 +261,7 @@ export function getDefaultDataDir(): string {
     // Development: use project-relative path
     return path.resolve('./data');
   } else {
-    // Production: use user data directory
-    return path.join(os.homedir(), '.driller');
+    // Production: use the same directory as main app
+    return path.join(os.homedir(), '.clipwise');
   }
 }

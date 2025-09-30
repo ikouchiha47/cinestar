@@ -194,8 +194,11 @@ export class VideoPipeline extends EventEmitter {
     // After all segments are processed, run video-level processors
     await this.processVideoLevelStages(context);
 
+    // Emit segment completion with zero-copy data reference
     this.emit('segment:complete', { 
-      segmentId: segment.id, 
+      segmentId: segment.id,
+      segmentData: context.segment, // Zero-copy: pass reference to segment object
+      processedData: context.data,  // Zero-copy: pass reference to processed data
       duration: Date.now() - overallStart 
     });
 
@@ -232,9 +235,11 @@ export class VideoPipeline extends EventEmitter {
           }
         }
 
+        // Emit stage completion with zero-copy processed data
         this.emit('stage:complete', { 
           stage, 
           videoPath: context.segment.videoPath,
+          processedData: context.data, // Zero-copy: pass reference to processed data
           duration: Date.now() - stageStart 
         });
 
@@ -303,9 +308,12 @@ export class VideoPipeline extends EventEmitter {
           }
         }
 
+        // Emit stage completion with zero-copy processed data
         this.emit('stage:complete', { 
           stage, 
-          segmentId: segment.id, 
+          segmentId: segment.id,
+          segmentData: segmentContext.segment, // Zero-copy: direct reference to segment
+          processedData: segmentContext.data,  // Zero-copy: direct reference to processed data
           duration: Date.now() - stageStart 
         });
 
@@ -323,6 +331,15 @@ export class VideoPipeline extends EventEmitter {
         throw error;
       }
     }
+
+    // Emit individual segment completion with zero-copy data
+    this.emit('segment:complete', {
+      segmentId: segment.id,
+      segmentData: segmentContext.segment, // Zero-copy: direct reference to segment
+      processedData: segmentContext.data,  // Zero-copy: direct reference to processed data
+      completedStages: completedStages,
+      totalStages: totalStages
+    });
 
     // Merge segment results back into global context
     if (!globalContext.data.processedSegments) {

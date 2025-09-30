@@ -7,7 +7,7 @@ export class DockerWhisperService implements TranscriptionService {
   private baseUrl: string;
   private healthCheckUrl: string;
 
-  constructor(baseUrl = 'http://localhost:9000') {
+  constructor(baseUrl = 'http://localhost:9001') {
     this.baseUrl = baseUrl;
     this.healthCheckUrl = `${baseUrl}/`;
   }

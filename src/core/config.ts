@@ -83,7 +83,7 @@ import path from 'path';
 // Use project-relative path for development, system path for production
 const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
 const defaultDbPath = process.env.VECTOR_DB_PATH || 
-  (isDev ? './data/vector.db' : path.join(os.homedir(), '.driller', 'vector.db'));
+  (isDev ? './data/vector.db' : path.join(os.homedir(), '.clipwise', 'vector.db'));
 
 export const DEFAULT_CONFIG: AppConfig = {
   indexing: {

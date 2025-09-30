@@ -17,18 +17,20 @@ export async function autoTuneFFmpegThreads(options?: {
   size?: string;
   timestamps?: number[];
   skipIfEnvSet?: boolean;
-}): Promise<{ selected: number; measurements: Array<{ threads: number; ms: number; frames: number }>; } | null> {
+}): Promise<{ selected: number; measurements: Array<{ threads: number; ms: number; frames: number }>; isDefault?: boolean; }> {
   const cfg = ConfigManager.getConfig();
+  const defaultThreads = 2; // Default fallback value - test change 1
 
-  // If explicitly set via env or config, optionally skip auto-tune
-  if (options?.skipIfEnvSet !== false) {
-    const envThreads = process.env.VIDEO_FFMPEG_THREADS;
-    if (envThreads && !isNaN(parseInt(envThreads, 10))) {
-      return null;
-    }
-    if (typeof cfg.video?.pipeline?.threadsPerProcess === 'number') {
-      return null;
-    }
+  // If explicitly set via env, use that value
+  const envThreads = process.env.VIDEO_FFMPEG_THREADS;
+  if (envThreads && !isNaN(parseInt(envThreads, 10))) {
+    const selected = parseInt(envThreads, 10);
+    return { selected, measurements: [], isDefault: false };
+  }
+  
+  // If already configured, use existing value
+  if (typeof cfg.video?.pipeline?.threadsPerProcess === 'number') {
+    return { selected: cfg.video.pipeline.threadsPerProcess, measurements: [], isDefault: false };
   }
 
   const candidates = options?.candidates || [1, 2, 4];
@@ -43,8 +45,15 @@ export async function autoTuneFFmpegThreads(options?: {
 
   const created = await createTestVideo(testVideo, durationSec, size);
   if (!created) {
-    // Could not create test video; keep existing settings
-    return null;
+    // Could not create test video; use default threads
+    ConfigManager.updateConfig({
+      video: {
+        pipeline: {
+          threadsPerProcess: defaultThreads
+        }
+      }
+    });
+    return { selected: defaultThreads, measurements: [], isDefault: true };
   }
 
   const measurements: Array<{ threads: number; ms: number; frames: number }> = [];
@@ -58,7 +67,11 @@ export async function autoTuneFFmpegThreads(options?: {
   // Pick the lowest time (or highest FPS), prefer lower threads on ties
   measurements.sort((a, b) => (a.ms - b.ms) || (a.threads - b.threads));
   const best = measurements[0];
-  const selected = best?.threads ?? 1;
+  const tunedThreads = best?.threads ?? defaultThreads;
+
+  // Only use tuned value if it's better than default (higher thread count = potentially better)
+  const selected = tunedThreads > defaultThreads ? tunedThreads : defaultThreads;
+  const isDefault = selected === defaultThreads;
 
   // Update runtime config
   ConfigManager.updateConfig({
@@ -72,7 +85,7 @@ export async function autoTuneFFmpegThreads(options?: {
   // Cleanup temp
   try { await fs.unlink(testVideo); } catch {}
 
-  return { selected, measurements };
+  return { selected, measurements, isDefault };
 }
 
 async function createTestVideo(outPath: string, durationSec: number, size: string): Promise<boolean> {

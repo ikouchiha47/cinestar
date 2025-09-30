@@ -1,3 +1,5 @@
+import '../src/core/logger'
+import '../src/core/ffmpeg-bootstrap'
 import { app, BrowserWindow, ipcMain, dialog, BrowserView } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -297,17 +299,19 @@ async function runAutoTune() {
     win.webContents.send('config:autoTune:started', { stage: 'ffmpeg_threads' });
     console.log('[AUTO-TUNE] Starting FFmpeg threads auto-tune...');
     const result = await autoTuneFFmpegThreads();
-    if (result) {
-      console.log(`[AUTO-TUNE] Selected threadsPerProcess=${result.selected}`);
-      win.webContents.send('config:autoTune:completed', {
-        stage: 'ffmpeg_threads',
-        selected: result.selected,
-        measurements: result.measurements
-      });
+    
+    if (result.isDefault) {
+      console.log(`[AUTO-TUNE] Using default threadsPerProcess=${result.selected} (test video unavailable or no improvement found)`);
     } else {
-      console.log('[AUTO-TUNE] Skipped (env/config already set or test video unavailable).');
-      win.webContents.send('config:autoTune:skipped', { stage: 'ffmpeg_threads' });
+      console.log(`[AUTO-TUNE] Selected threadsPerProcess=${result.selected} (${result.measurements.length > 0 ? 'tuned' : 'configured'})`);
     }
+    
+    win.webContents.send('config:autoTune:completed', {
+      stage: 'ffmpeg_threads',
+      selected: result.selected,
+      measurements: result.measurements,
+      isDefault: result.isDefault
+    });
   } catch (e) {
     console.warn('[AUTO-TUNE] Failed to auto-tune FFmpeg threads:', e);
     if (win) win.webContents.send('config:autoTune:failed', { stage: 'ffmpeg_threads', error: String(e) });
@@ -469,10 +473,16 @@ ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: nu
 
 // Video processing IPC handlers
 ipcMain.handle('video:processVideo', async (_, videoPath: string) => {
+  console.log(`[IPC-VIDEO-PROCESS] 🚀 Received video processing request for: ${videoPath}`);
+  
   if (!videoAPI) await initializeVideoAPI();
   try {
-    return { success: true, videoId: await videoAPI!.processVideo(videoPath) };
+    console.log(`[IPC-VIDEO-PROCESS] 📞 Calling videoAPI.processVideo(${videoPath})`);
+    const videoId = await videoAPI!.processVideo(videoPath);
+    console.log(`[IPC-VIDEO-PROCESS] ✅ Video processing initiated, videoId: ${videoId}`);
+    return { success: true, videoId };
   } catch (error) {
+    console.error(`[IPC-VIDEO-PROCESS] ❌ Video processing failed:`, error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });
@@ -580,6 +590,107 @@ ipcMain.handle('video:isVideoFile', (_, filePath: string) => {
 ipcMain.handle('video:isAudioFile', (_, filePath: string) => {
   return VideoMediaAPI.isAudioFile(filePath);
 });
+
+// Video player IPC handlers
+ipcMain.handle('video:getMetadata', async (_, videoPath: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  try {
+    const videoFile = await videoAPI!.getVideoFile(videoPath);
+    if (!videoFile) {
+      return { success: false, error: 'Video not found in database' };
+    }
+    
+    return {
+      success: true,
+      metadata: {
+        id: videoFile.id,
+        fileName: videoFile.fileName,
+        duration: videoFile.duration,
+        frameRate: videoFile.frameRate,
+        fileSize: videoFile.fileSize,
+        totalSegments: videoFile.totalSegments,
+        processingStatus: videoFile.processingStatus
+      }
+    };
+  } catch (error) {
+    console.error('[VIDEO-METADATA-ERROR]', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('video:getSegmentsForPlayer', async (_, videoPath: string, searchQuery?: string) => {
+  if (!videoAPI) await initializeVideoAPI();
+  try {
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Getting segments for: ${videoPath}`);
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Search query: ${searchQuery || 'none'}`);
+    
+    // Get video file from database
+    const videoFile = await videoAPI!.getVideoFile(videoPath);
+    if (!videoFile) {
+      console.log(`[VIDEO-SEGMENTS-DEBUG] Video file not found in database`);
+      return { success: true, segments: [] };
+    }
+    
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Found video file: ${videoFile.id}`);
+    
+    // Get all segments for this video
+    const segments = await videoAPI!.getVideoSegments(videoFile.id);
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Found ${segments.length} segments`);
+    
+    // If we have a search query, filter and score segments by relevance
+    let processedSegments = segments.map(segment => ({
+      id: segment.id,
+      startTime: segment.startTime,
+      endTime: segment.endTime,
+      transcription: segment.transcription || '',
+      caption: segment.caption || '',
+      reconstructedScene: segment.reconstructedScene || '',
+      relevanceScore: searchQuery ? calculateRelevanceScore(segment, searchQuery) : undefined
+    }));
+    
+    // If search query provided, sort by relevance and filter out low scores
+    if (searchQuery) {
+      processedSegments = processedSegments
+        .filter(segment => (segment.relevanceScore || 0) > 0.1)
+        .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+      
+      console.log(`[VIDEO-SEGMENTS-DEBUG] After filtering by search query: ${processedSegments.length} segments`);
+    }
+    
+    return {
+      success: true,
+      segments: processedSegments
+    };
+  } catch (error) {
+    console.error('[VIDEO-SEGMENTS-ERROR]', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// Helper function to calculate relevance score for search queries
+function calculateRelevanceScore(segment: any, searchQuery: string): number {
+  const query = searchQuery.toLowerCase();
+  const transcription = (segment.transcription || '').toLowerCase();
+  const caption = (segment.caption || '').toLowerCase();
+  const reconstructedScene = (segment.reconstructedScene || '').toLowerCase();
+  
+  let score = 0;
+  
+  // Exact matches get highest score
+  if (transcription.includes(query)) score += 0.8;
+  if (caption.includes(query)) score += 0.6;
+  if (reconstructedScene.includes(query)) score += 0.7;
+  
+  // Word matches get medium score
+  const queryWords = query.split(' ').filter(word => word.length > 2);
+  queryWords.forEach(word => {
+    if (transcription.includes(word)) score += 0.3;
+    if (caption.includes(word)) score += 0.2;
+    if (reconstructedScene.includes(word)) score += 0.25;
+  });
+  
+  return Math.min(score, 1.0); // Cap at 1.0
+}
 
 // Directory selection dialog
 ipcMain.handle('dialog:selectDirectory', async () => {
@@ -705,14 +816,14 @@ app.whenReady().then(async () => {
     console.warn('[MAIN-PROCESS] Data migration failed:', error);
   }
 
-  // Only create browser window in local development mode
-  const isLocalMode = process.env.NODE_ENV === 'development' || process.env.LOCAL_MODE === 'true';
+  // Create browser window (unless explicitly disabled)
+  const isHeadless = process.env.HEADLESS_MODE === 'true';
   
-  if (isLocalMode) {
-    console.log('[MAIN-PROCESS] Local mode detected, creating browser window');
+  if (!isHeadless) {
+    console.log('[MAIN-PROCESS] Creating browser window');
     await createWindow();
   } else {
-    console.log('[MAIN-PROCESS] Production mode, running headless (no browser window)');
+    console.log('[MAIN-PROCESS] Headless mode enabled, no browser window');
   }
   
   // Defer heavy initialization so the UI can appear immediately
@@ -727,6 +838,11 @@ app.whenReady().then(async () => {
 // Cleanup on app exit
 app.on('before-quit', async () => {
   try {
+    // Stop background reconciliation
+    const { MainMediaAPI } = await import('../src/api/main-media-api');
+    MainMediaAPI.stopBackgroundReconciliation();
+    
+    // Cleanup temporary files
     const { DataMigrator } = await import('../src/core/data-migrator');
     const { ConfigManager } = await import('../src/core/config');
     

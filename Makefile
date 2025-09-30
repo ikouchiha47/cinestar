@@ -56,6 +56,24 @@ install: ## Install dependencies
 	npm ci
 	@echo "✅ Dependencies installed"
 
+rebuild-sharp: ## Rebuild Sharp for current platform
+	@echo "🔧 Rebuilding Sharp for $(PLATFORM)-$(ARCH)..."
+ifeq ($(PLATFORM),mac)
+	npm rebuild sharp --platform=darwin --arch=$(ARCH)
+else ifeq ($(PLATFORM),win)
+	npm rebuild sharp --platform=win32 --arch=$(ARCH)
+else ifeq ($(PLATFORM),linux)
+	npm rebuild sharp --platform=linux --arch=$(ARCH)
+else
+	npm rebuild sharp --platform=darwin --arch=arm64
+endif
+	@echo "✅ Sharp rebuilt successfully"
+
+rebuild-native: rebuild-sharp ## Rebuild all native dependencies
+	@echo "🔧 Rebuilding native dependencies..."
+	npx electron-rebuild -f -w better-sqlite3
+	@echo "✅ Native dependencies rebuilt"
+
 setup-release-dir: ## Create release directory structure
 	@echo "📁 Setting up release directory..."
 	mkdir -p $(RELEASE_DIR)
@@ -66,7 +84,7 @@ setup-release-dir: ## Create release directory structure
 	mkdir -p $(RELEASE_DIR)/docs
 	@echo "✅ Release directory structure created"
 
-build: ## Build the application
+build: rebuild-sharp ## Build the application
 	@echo "🔨 Building application..."
 	@if [ -f $(ENV_PROD) ]; then \
 		echo "📄 Using production environment from $(ENV_PROD)"; \
@@ -77,7 +95,7 @@ build: ## Build the application
 	fi
 	@echo "✅ Build completed"
 
-build-dev: ## Build with development environment
+build-dev: rebuild-sharp ## Build with development environment
 	@echo "🔨 Building application (development)..."
 	@if [ -f $(ENV_DEV) ]; then \
 		echo "📄 Using development environment from $(ENV_DEV)"; \
@@ -231,25 +249,54 @@ dev-release: package-dev copy-assets create-docs create-scripts ## Create a deve
 	@echo "⚠️  This build includes development features and debug mode"
 
 # Platform-specific builds (for CI/CD)
-build-mac: build ## Build for macOS
+build-mac: ## Build for macOS
 	@echo "🍎 Building for macOS..."
+	$(MAKE) PLATFORM=mac ARCH=arm64 rebuild-sharp
+	@echo "🔨 Building application (skipping Sharp rebuild)..."
+	npm run build
 	npm run electron:build -- --mac
 	
-build-windows: build ## Build for Windows  
+build-windows: ## Build for Windows  
 	@echo "🪟 Building for Windows..."
+	$(MAKE) PLATFORM=win ARCH=x64 rebuild-sharp
+	@echo "🔨 Building application (skipping Sharp rebuild)..."
+	npm run build
 	npm run electron:build -- --win
 
-build-linux: build ## Build for Linux
+build-linux: ## Build for Linux
 	@echo "🐧 Building for Linux..."
+	$(MAKE) PLATFORM=linux ARCH=x64 rebuild-sharp
+	@echo "🔨 Building application (skipping Sharp rebuild)..."
+	npm run build
 	npm run electron:build -- --linux
 
-all-platforms: clean install build ## Build for all platforms (requires platform-specific tools)
+fix-sharp: clean install rebuild-sharp ## Fix Sharp native dependency issues
+	@echo "🔧 Fixing Sharp native dependency issues..."
+	@echo "✅ Sharp should now work correctly for $(PLATFORM)-$(ARCH)"
+
+all-platforms: clean install ## Build for all platforms (requires platform-specific tools)
 	@echo "🌍 Building for all platforms..."
+	@echo "⚠️  Note: Cross-platform builds require platform-specific tools"
+	@echo "🍎 Building for macOS..."
+	$(MAKE) build-mac
+	@echo "⏭️  Skipping Windows build"
+	@echo "🐧 Building for Linux..."
+	$(MAKE) build-linux
+	$(MAKE) copy-assets
+	$(MAKE) create-docs
+	$(MAKE) create-scripts
+	@echo "🎉 Multi-platform release completed (macOS + Linux)!"
+
+all-platforms-simple: clean install rebuild-sharp ## Build for all platforms (current host only - may have Sharp issues on other platforms)
+	@echo "🌍 Building for all platforms (simple mode)..."
+	@echo "⚠️  Warning: Sharp rebuilt for $(PLATFORM)-$(ARCH) only"
+	@echo "⚠️  Other platforms may have Sharp native dependency issues"
+	npm run build
 	npm run electron:build:all
 	$(MAKE) copy-assets
 	$(MAKE) create-docs
 	$(MAKE) create-scripts
-	@echo "🎉 Multi-platform release completed!"
+	@echo "🎉 Multi-platform release completed (with potential Sharp issues)!"
 
 # Development helpers
 dev: ## Start development server

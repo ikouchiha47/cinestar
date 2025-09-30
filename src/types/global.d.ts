@@ -62,6 +62,33 @@ declare global {
       isVideoFile: (filePath: string) => Promise<boolean>;
       isAudioFile: (filePath: string) => Promise<boolean>;
       selectVideoFile: () => Promise<{ canceled: boolean; path?: string }>;
+      // Video player methods
+      getMetadata: (videoPath: string) => Promise<{
+        success: boolean;
+        metadata?: {
+          id: string;
+          fileName: string;
+          duration: number;
+          frameRate: number;
+          fileSize: number;
+          totalSegments: number;
+          processingStatus: string;
+        };
+        error?: string;
+      }>;
+      getSegmentsForPlayer: (videoPath: string, searchQuery?: string) => Promise<{
+        success: boolean;
+        segments?: Array<{
+          id: string;
+          startTime: number;
+          endTime: number;
+          transcription: string;
+          caption: string;
+          reconstructedScene: string;
+          relevanceScore?: number;
+        }>;
+        error?: string;
+      }>;
     };
   }
 }

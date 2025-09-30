@@ -4,7 +4,7 @@ import { LLMProvider, LLMProviderFactory } from '../core/llm-provider';
 import { SqliteVecDatabase } from '../core/sqlite-vec-database';
 import { ImageCompressor } from '../core/image-compressor';
 import { ConfigManager } from '../core/config';
-import { DatabaseMigrator, getDefaultDataDir } from '../core/database-migrator';
+import { UnifiedMigrator, getDefaultDataDir } from '../core/unified-migrator';
 import { getMimeType } from '../core/utils';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -22,6 +22,7 @@ export class MainMediaAPI {
   private static dbPathInfo: string = '';
   private static llm: LLMProvider | null = null;
   private static vecDb: SqliteVecDatabase | null = null;
+  private static reconciliationInterval: NodeJS.Timeout | null = null;
 
   static async initialize(dbPath?: string): Promise<void> {
     if (this.initialized) return;
@@ -34,18 +35,19 @@ export class MainMediaAPI {
     const isFile = path.extname(dataDir).toLowerCase() === '.db';
     const filePath = isFile ? dataDir : path.join(dataDir, 'vector.db');
     
-    // Run database migrations for fresh installs
-    console.log('[MainMediaAPI] Checking database migrations...');
-    const mediaMigrationsDir = path.join(process.cwd(), 'migrations', 'media');
-    const migrator = new DatabaseMigrator(filePath, mediaMigrationsDir);
+    // Run unified database migrations for fresh installs
+    console.log('[MainMediaAPI] Checking unified database migrations...');
+    const migrator = new UnifiedMigrator(dataDir);
     const migrationResult = await migrator.migrate();
     
     if (!migrationResult.success) {
-      throw new Error(`Database migration failed: ${migrationResult.error}`);
+      throw new Error(`Unified migration failed: ${migrationResult.error}`);
     }
     
     if (migrationResult.migrationsRun.length > 0) {
       console.log(`[MainMediaAPI] Applied ${migrationResult.migrationsRun.length} migrations:`, migrationResult.migrationsRun);
+      console.log(`[MainMediaAPI] Video DB: ${migrationResult.videoDB.migrationsApplied} total migrations`);
+      console.log(`[MainMediaAPI] Media DB: ${migrationResult.mediaDB.migrationsApplied} total migrations`);
     }
     
     this.db = new SqliteMainDatabase(filePath);
@@ -70,16 +72,8 @@ export class MainMediaAPI {
     this.initialized = true;
     console.log(`[MainMediaAPI] initialized with backend=${this.backendType} path=${this.dbPathInfo}`);
   
-  // Auto-detect and queue unindexed images for background processing
-  setTimeout(() => {
-    this.indexUnprocessedImages().then(result => {
-      if (result.success && result.unindexedCount && result.unindexedCount > 0) {
-        console.log(`[MainMediaAPI] Auto-recovery: Found ${result.unindexedCount} unindexed images, started background processing`);
-      }
-    }).catch(error => {
-      console.warn('[MainMediaAPI] Auto-recovery failed:', error);
-    });
-  }, 5000); // Wait 5 seconds after initialization
+  // Start background reconciliation service
+  this.startBackgroundReconciliation();
   }
 
   private static async ensureInitialized(): Promise<void> {
@@ -204,7 +198,9 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
       console.log(`[MainMediaAPI] getItems(${sourceId ?? 'ALL'}) using backend=${this.backendType}`);
-      const items = await this.db.getMediaItems(sourceId);
+      // Fix: Don't pass 'ALL' as sourceId - pass undefined to get all items
+      const actualSourceId = sourceId === 'ALL' ? undefined : sourceId;
+      const items = await this.db.getMediaItems(actualSourceId);
       
       // [DEBUG] Log actual data structure and detect duplicates
       console.log(`[ITEMS-DEBUG] Retrieved ${items.length} items from database`);
@@ -879,6 +875,120 @@ export class MainMediaAPI {
     } catch (error) {
       console.error('Failed to stop indexing:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Start background reconciliation service
+   */
+  static startBackgroundReconciliation(): void {
+    // Run reconciliation every 30 minutes (infrequent)
+    const RECONCILIATION_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    
+    console.log('[JOB-RECONCILIATION] Starting background reconciliation service (every 30 minutes)');
+    
+    // Initial reconciliation after 2 minutes (let app settle)
+    setTimeout(() => {
+      this.runReconciliation().catch((error: any) => {
+        console.warn('[JOB-RECONCILIATION] Initial reconciliation failed:', error);
+      });
+    }, 2 * 60 * 1000); // 2 minutes
+    
+    // Then run periodically
+    this.reconciliationInterval = setInterval(() => {
+      this.runReconciliation().catch((error: any) => {
+        console.warn('[JOB-RECONCILIATION] Periodic reconciliation failed:', error);
+      });
+    }, RECONCILIATION_INTERVAL);
+  }
+
+  /**
+   * Stop background reconciliation service
+   */
+  static stopBackgroundReconciliation(): void {
+    if (this.reconciliationInterval) {
+      clearInterval(this.reconciliationInterval);
+      this.reconciliationInterval = null;
+      console.log('[JOB-RECONCILIATION] Background reconciliation service stopped');
+    }
+  }
+
+  /**
+   * Run a single reconciliation cycle
+   */
+  static async runReconciliation(): Promise<{ stalledJobs: number; unindexedImages: number }> {
+    console.log('[JOB-RECONCILIATION] Running reconciliation cycle...');
+    
+    let stalledJobsCount = 0;
+    let unindexedImagesCount = 0;
+    
+    try {
+      // 1. Check for stalled jobs (only if no active jobs to avoid conflicts)
+      const activeJobs = await this.db.getActiveJobs();
+      if (activeJobs.length === 0) {
+        console.log('[JOB-RECONCILIATION] No active jobs - checking for stalled jobs');
+        const stalledResult = await this.recoverStalledJobs();
+        stalledJobsCount = stalledResult.recoveredCount;
+      } else {
+        console.log(`[JOB-RECONCILIATION] ${activeJobs.length} active jobs running - skipping stalled job check`);
+      }
+      
+      // 2. Check for unindexed images (less aggressive)
+      const unindexedResult = await this.indexUnprocessedImages();
+      if (unindexedResult.success && unindexedResult.unindexedCount) {
+        unindexedImagesCount = unindexedResult.unindexedCount;
+        if (unindexedImagesCount > 0) {
+          console.log(`[JOB-RECONCILIATION] Found ${unindexedImagesCount} unindexed images - started background processing`);
+        }
+      }
+      
+      console.log(`[JOB-RECONCILIATION] Cycle complete - recovered ${stalledJobsCount} stalled jobs, ${unindexedImagesCount} unindexed images`);
+      
+    } catch (error) {
+      console.error('[JOB-RECONCILIATION] Reconciliation cycle failed:', error);
+    }
+    
+    return { stalledJobs: stalledJobsCount, unindexedImages: unindexedImagesCount };
+  }
+
+  /**
+   * Recover stalled jobs on startup
+   */
+  static async recoverStalledJobs(): Promise<{ success: boolean; recoveredCount: number; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      console.log('[JOB-RECOVERY] Checking for stalled indexing jobs...');
+      
+      const result = await this.db.resetStalledJobs();
+      
+      if (result.resetCount > 0) {
+        console.log(`[JOB-RECOVERY] Reset ${result.resetCount} stalled jobs to pending status`);
+        
+        // Restart the recovered jobs
+        for (const jobId of result.jobIds) {
+          try {
+            const jobs = await this.db.getJobs();
+            const job = jobs.find((j: any) => j.id === jobId);
+            if (job && job.status === 'pending') {
+              console.log(`[JOB-RECOVERY] Restarting recovered job: ${jobId} for source: ${job.sourceId}`);
+              // Restart the indexing for this source
+              this.performIndexing(jobId, job.sourceId, false).catch((error: any) => {
+                console.error(`[JOB-RECOVERY] Failed to restart job ${jobId}:`, error);
+                this.db.updateJobStatus(jobId, 'failed', 0);
+              });
+            }
+          } catch (error) {
+            console.error(`[JOB-RECOVERY] Failed to restart job ${jobId}:`, error);
+          }
+        }
+      } else {
+        console.log('[JOB-RECOVERY] No stalled jobs found');
+      }
+      
+      return { success: true, recoveredCount: result.resetCount };
+    } catch (error) {
+      console.error('[JOB-RECOVERY] Failed to recover stalled jobs:', error);
+      return { success: false, recoveredCount: 0, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 

@@ -6,7 +6,6 @@ import { TranscriptionService } from './transcription-processor.js';
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
-import ffmpegPath from 'ffmpeg-static';
 
 export class WhisperCliService implements TranscriptionService {
   public name = 'whisper-cli';
@@ -51,12 +50,8 @@ export class WhisperCliService implements TranscriptionService {
     const outputPath = audioPath.replace(path.extname(audioPath), '_converted.wav');
     
     return new Promise((resolve, reject) => {
-      if (!ffmpegPath) {
-        reject(new Error('ffmpeg-static not available'));
-        return;
-      }
-
-      const proc = spawn(ffmpegPath, [
+      const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
+      const proc = spawn(ffmpegBin, [
         '-i', audioPath,
         '-acodec', 'pcm_s16le',
         '-ac', '1',

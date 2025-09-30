@@ -1,15 +1,11 @@
 import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import { spawn } from 'child_process';
 import { ConfigManager } from '../config.js';
 import { PassThrough } from 'stream';
-
-// Configure fluent-ffmpeg to use the static binary
-if (ffmpegPath) {
-  ffmpeg.setFfmpegPath(ffmpegPath);
-}
+// FFmpeg/FFprobe paths are configured centrally in electron/main.ts via ffmpeg-bootstrap
 
 // Frame analysis results
 export interface FrameAnalysis {

@@ -30,6 +30,7 @@ export default defineConfig({
                 'sqlite-vec-darwin-arm64',
                 // media/tooling
                 'ffmpeg-static',
+                'ffprobe-static',
                 'fluent-ffmpeg',
                 'nodejs-whisper',
                 // networking/utils

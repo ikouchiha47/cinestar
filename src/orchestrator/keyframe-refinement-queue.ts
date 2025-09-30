@@ -2,6 +2,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import path from 'path';
 import { ConcurrencyLimiter } from '../core/concurrency-limiter';
 import { ConfigManager } from '../core/config';
+// FFmpeg/FFprobe paths are configured centrally in electron/main.ts via ffmpeg-bootstrap
 
 export type KeyframeCandidate = {
   timestamp: number;

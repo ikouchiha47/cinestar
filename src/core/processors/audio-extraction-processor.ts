@@ -1,6 +1,5 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
 import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
 import path from 'path';
 import fs from 'fs/promises';
 import { ExternalProcessPool } from '../process-pool';
@@ -25,10 +24,6 @@ export class AudioExtractionProcessor extends BaseVideoProcessor {
       outputDir: './tmp/audio',
       ...config
     });
-
-    if (ffmpegPath) {
-      ffmpeg.setFfmpegPath(ffmpegPath);
-    }
   }
 
   async process(context: ProcessingContext): Promise<ProcessingResult> {

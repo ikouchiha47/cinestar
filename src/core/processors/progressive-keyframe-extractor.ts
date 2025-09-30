@@ -3,6 +3,8 @@ import * as path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import { ConfigManager } from '../config';
 
+// FFmpeg/FFprobe paths are configured centrally in electron/main.ts via ffmpeg-bootstrap
+
 export interface ProgressivePass {
   passId: string;
   threshold: number;

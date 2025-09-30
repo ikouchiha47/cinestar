@@ -26,7 +26,7 @@ interface AIServiceConfig {
 
 const DEFAULT_CONFIG: AIServiceConfig = {
   transcription: {
-    baseUrl: 'http://localhost:9000',
+    baseUrl: 'http://localhost:9001',
     model: 'whisper-1',
     enabled: true
   },
@@ -166,7 +166,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                         type="url"
                         value={config.transcription.baseUrl}
                         onChange={(e) => updateService('transcription', 'baseUrl', e.target.value)}
-                        placeholder="http://localhost:9000"
+                        placeholder="http://localhost:9001"
                         className="w-full px-3 py-2 bg-neutral-700 border border-neutral-600 rounded text-white placeholder-neutral-400 focus:border-blue-500 focus:outline-none"
                       />
                     </div>

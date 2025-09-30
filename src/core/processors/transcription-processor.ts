@@ -2,6 +2,7 @@ import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../vide
 import { DockerWhisperService } from './docker-whisper-service';
 // import { WhisperCppService } from './whisper-cpp-service';
 // import { WhisperCliService } from './whisper-cli-service';
+import { ProcessingBatch } from './batch-processor';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -23,7 +24,7 @@ export class HttpTranscriptionService implements TranscriptionService {
   public name = 'http-transcription';
   private endpoint: string;
 
-  constructor(endpoint: string = 'http://localhost:9000/asr') {
+  constructor(endpoint: string = 'http://localhost:9001/asr') {
     this.endpoint = endpoint;
   }
 
@@ -101,9 +102,10 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
       this.services = config.services;
     } else {
       // Use DockerWhisperService with configurable baseUrl
-      const baseUrl = config.baseUrl || 'http://localhost:9000';
+      // Default to nginx proxy on port 9001 for single container + nginx benefits
+      const baseUrl = config.baseUrl || 'http://localhost:9001';
       this.services = [
-        new DockerWhisperService(baseUrl), // Use the working Docker Whisper service
+        new DockerWhisperService(baseUrl), // Use load balancer if available, otherwise single service
         new HttpTranscriptionService() // Keep as fallback
       ];
     }
@@ -221,5 +223,114 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
       });
     }
     return status;
+  }
+
+  /**
+   * Batch processing methods for immediate searchability
+   */
+
+  // Transcribe a single batch (for concurrent processing)
+  async transcribeBatch(batch: ProcessingBatch): Promise<{
+    text: string;
+    segments?: Array<{ start: number; end: number; text: string; confidence?: number }>;
+    language?: string;
+    confidence?: number;
+  }> {
+    if (!batch.audioPath) {
+      throw new Error(`Batch ${batch.id} has no audio path`);
+    }
+
+    // Find an available transcription service
+    if (!this.activeService) {
+      this.activeService = await this.findAvailableService();
+      if (!this.activeService) {
+        throw new Error('No transcription services available');
+      }
+      this.log('info', `Using transcription service for batch: ${this.activeService.name}`);
+    }
+
+    const config = this.getConfig();
+    
+    this.log('info', `Transcribing batch ${batch.batchIndex} (${batch.startTime}s-${batch.endTime}s)`);
+    
+    try {
+      const result = await this.activeService.transcribe(batch.audioPath, {
+        language: config.language
+      });
+
+      this.log('info', `Batch ${batch.batchIndex} transcription complete: ${result.text.length} chars, ${result.segments?.length || 0} segments`);
+      
+      return result;
+    } catch (error) {
+      this.log('error', `Batch ${batch.batchIndex} transcription failed: ${error}`);
+      
+      // Try next available service on failure
+      this.activeService = undefined;
+      throw error;
+    }
+  }
+
+  // Transcribe multiple batches concurrently
+  async transcribeBatchesConcurrent(batches: ProcessingBatch[]): Promise<Array<{
+    batchId: string;
+    batchIndex: number;
+    result?: {
+      text: string;
+      segments?: Array<{ start: number; end: number; text: string; confidence?: number }>;
+      language?: string;
+      confidence?: number;
+    };
+    error?: string;
+    duration: number;
+  }>> {
+    this.log('info', `Starting concurrent transcription of ${batches.length} batches`);
+    
+    const startTime = Date.now();
+    
+    // Create transcription promises for all batches
+    const transcriptionPromises = batches.map(async (batch) => {
+      const batchStartTime = Date.now();
+      
+      try {
+        const result = await this.transcribeBatch(batch);
+        const batchDuration = Date.now() - batchStartTime;
+        
+        return {
+          batchId: batch.id,
+          batchIndex: batch.batchIndex,
+          result,
+          duration: batchDuration
+        };
+      } catch (error) {
+        const batchDuration = Date.now() - batchStartTime;
+        
+        return {
+          batchId: batch.id,
+          batchIndex: batch.batchIndex,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          duration: batchDuration
+        };
+      }
+    });
+
+    // Wait for all transcriptions to complete
+    const results = await Promise.all(transcriptionPromises);
+    
+    const totalDuration = Date.now() - startTime;
+    const successCount = results.filter(r => !r.error).length;
+    
+    this.log('info', `Concurrent transcription complete: ${successCount}/${batches.length} successful in ${totalDuration}ms`);
+    
+    return results;
+  }
+
+  // Check if transcription service is ready for batch processing
+  async isReadyForBatchProcessing(): Promise<boolean> {
+    try {
+      const service = await this.findAvailableService();
+      return !!service;
+    } catch (error) {
+      return false;
+    }
   }
 }

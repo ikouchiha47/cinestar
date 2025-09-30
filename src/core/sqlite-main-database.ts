@@ -263,6 +263,61 @@ export class SqliteMainDatabase {
       targetFile: r.target_file || undefined
     }));
   }
+
+  async getStalledJobs(): Promise<IndexingJob[]> {
+    // Realistic stall detection based on available fields:
+    // 1. Jobs 'pending' created more than 5 minutes ago (never started)
+    // 2. Jobs 'running' for more than 20 minutes (likely stuck - no progress tracking available)
+    // Note: We can't track "no recent progress update" because there's no updated_at field
+    
+    const now = new Date();
+    const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+    const twentyMinutesAgo = new Date(now.getTime() - 20 * 60 * 1000).toISOString();
+    
+    const rows = this.db.prepare(`
+      SELECT * FROM indexing_jobs 
+      WHERE 
+        -- Case 1: Pending jobs that never started (>5 min old)
+        (status = 'pending' AND created_at < ?) OR
+        -- Case 2: Running jobs that have been active for >20 min (likely stuck)
+        (status = 'running' AND started_at IS NOT NULL AND started_at < ?)
+      ORDER BY created_at DESC
+    `).all(fiveMinutesAgo, twentyMinutesAgo) as any[];
+    
+    console.log(`[JOB-RECOVERY-DEBUG] Stall detection criteria:`);
+    console.log(`[JOB-RECOVERY-DEBUG] - Pending jobs older than 5 min (never started)`);
+    console.log(`[JOB-RECOVERY-DEBUG] - Running jobs active for >20 min (likely stuck)`);
+    console.log(`[JOB-RECOVERY-DEBUG] - Note: No progress update tracking available in schema`);
+    console.log(`[JOB-RECOVERY-DEBUG] Found ${rows.length} potentially stalled jobs`);
+    
+    return rows.map(r => ({ 
+      id: r.id, 
+      sourceId: r.source_id, 
+      status: r.status, 
+      progress: r.progress, 
+      totalItems: r.total_items || undefined, 
+      processedItems: r.processed_items || undefined, 
+      startedAt: r.started_at ? new Date(r.started_at) : undefined, 
+      completedAt: r.completed_at ? new Date(r.completed_at) : undefined,
+      title: r.job_title || 'Processing',
+      description: r.job_description || 'Processing media files',
+      operationType: r.operation_type || 'media_scan',
+      targetFile: r.target_file || undefined
+    }));
+  }
+
+  async resetStalledJobs(): Promise<{ resetCount: number; jobIds: string[] }> {
+    const stalledJobs = await this.getStalledJobs();
+    const jobIds: string[] = [];
+    
+    for (const job of stalledJobs) {
+      console.log(`[JOB-RECOVERY] Resetting stalled job: ${job.id} - was ${job.status}`);
+      await this.updateJobStatus(job.id, 'pending', 0);
+      jobIds.push(job.id);
+    }
+    
+    return { resetCount: stalledJobs.length, jobIds };
+  }
   async removeJob(jobId: string): Promise<void> {
     this.db.prepare(`DELETE FROM indexing_jobs WHERE id=?`).run(jobId);
   }

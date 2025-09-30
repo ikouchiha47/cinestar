@@ -2,6 +2,8 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AutoSizer, List } from 'react-virtualized';
 import MediaUpload from '../MediaUpload';
+import { VideoPlayerModal } from '../VideoPlayer/VideoPlayerModal';
+import { useVideoPlayer } from '../../hooks/useVideoPlayer';
 
 // Import decomposed components
 import { Icon } from './components/Icons';
@@ -16,6 +18,9 @@ import { Scope, Place, MediaT } from './types';
 
 export default function DrillerV2(props: { overallProgress?: number; onOpenIndexing: () => void }) {
   const { overallProgress = -1, onOpenIndexing } = props;
+
+  // Video player state
+  const { playerState, openVideoPlayer, closeVideoPlayer } = useVideoPlayer();
 
   const [q, setQ] = useState('');
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -393,6 +398,44 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     setVideoSearchResults(prev => prev.filter(item => item.id !== itemId));
   };
 
+  // Handle video item click - open video player
+  const handleVideoClick = async (item: MediaT) => {
+    console.log('[DRILLER-V2] Opening video player for:', item);
+    
+    if (item.type !== 'video') {
+      console.log('[DRILLER-V2] Item is not a video, ignoring click');
+      return;
+    }
+
+    try {
+      // Determine if this is from a search result (has search query context)
+      const isFromSearch = q.trim().length > 0;
+      const searchQuery = isFromSearch ? q.trim() : undefined;
+      
+      // Extract initial timestamp if this is a video segment
+      let initialTimestamp: number | undefined;
+      if (item.path.includes('#t=')) {
+        const timeMatch = item.path.match(/#t=(\d+(?:\.\d+)?)/);
+        if (timeMatch) {
+          initialTimestamp = parseFloat(timeMatch[1]);
+        }
+      }
+      
+      // Get the base video path (remove fragment if present)
+      const videoPath = item.path.split('#t=')[0];
+      
+      await openVideoPlayer({
+        videoPath,
+        videoName: item.name,
+        searchQuery,
+        initialTimestamp,
+      });
+    } catch (error) {
+      console.error('[DRILLER-V2] Failed to open video player:', error);
+      alert('Failed to open video player. Please try again.');
+    }
+  };
+
   return (
     <div className="min-h-screen text-neutral-100">
       {/* Header */}
@@ -611,6 +654,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     maxVisible={6}
                     onShowMore={() => setExpandedType('video')}
                     onItemDeleted={handleItemDeleted}
+                    onVideoClick={handleVideoClick}
                   />
                   <MediaGroup
                     title="Audio"
@@ -630,6 +674,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       maxVisible={6}
                       onShowMore={() => loadMoreVideos()}
                       onItemDeleted={handleItemDeleted}
+                      onVideoClick={handleVideoClick}
                     />
                   )}
                 </>
@@ -760,6 +805,17 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
       {/* Settings Modal */}
       <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Video Player Modal */}
+      <VideoPlayerModal
+        isOpen={playerState.isOpen}
+        onClose={closeVideoPlayer}
+        videoPath={playerState.videoPath}
+        videoName={playerState.videoName}
+        segments={playerState.segments}
+        initialTimestamp={playerState.initialTimestamp}
+        searchQuery={playerState.searchQuery}
+      />
 
       <footer className="fixed bottom-3 right-4 z-10 text-xs text-neutral-500">© Driller — v2 UI</footer>
     </div>
