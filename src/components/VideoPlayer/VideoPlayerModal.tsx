@@ -41,6 +41,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sortByRelevance, setSortByRelevance] = useState(true);
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -188,6 +189,28 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Get relevance badge color based on score
+  const getRelevanceBadgeColor = (score?: number): string => {
+    if (!score) return 'bg-gray-500/20 text-gray-300 border-gray-500/30';
+    if (score >= 0.7) return 'bg-green-500/20 text-green-300 border-green-500/30'; // High relevance
+    if (score >= 0.4) return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30'; // Medium relevance
+    return 'bg-orange-500/20 text-orange-300 border-orange-500/30'; // Low relevance
+  };
+
+  // Sort segments based on current sort mode
+  const sortedSegments = React.useMemo(() => {
+    if (!segments || segments.length === 0) return [];
+    
+    const segmentsCopy = [...segments];
+    if (sortByRelevance) {
+      // Sort by relevance score (already sorted from backend, but ensure it)
+      return segmentsCopy.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+    } else {
+      // Sort chronologically by start time
+      return segmentsCopy.sort((a, b) => a.startTime - b.startTime);
+    }
+  }, [segments, sortByRelevance]);
+
   const seekToTimestamp = (timestamp: number) => {
     if (!videoRef.current) return;
     videoRef.current.currentTime = timestamp;
@@ -211,8 +234,8 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           exit={{ scale: 0.9, opacity: 0 }}
-          className={`relative w-full max-w-6xl mx-4 bg-black/20 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden ${
-            isFullscreen ? 'max-w-none mx-0 rounded-none h-screen' : 'max-h-[90vh]'
+          className={`relative w-full max-w-6xl mx-4 bg-black/20 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col ${
+            isFullscreen ? 'max-w-none mx-0 rounded-none h-screen' : 'max-h-[95vh]'
           }`}
           onMouseMove={resetControlsTimeout}
         >
@@ -363,13 +386,37 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
           {/* Segment Navigation Panel */}
           {segments && segments.length > 0 && !isFullscreen && (
-            <div className="max-h-80 overflow-y-auto bg-black/10 backdrop-blur-sm border-t border-white/10">
-              <div className="p-4">
-                <h3 className="text-white text-lg font-semibold mb-4">
-                  Matching Segments ({segments.length})
-                </h3>
+            <div className="flex-1 overflow-y-auto bg-black/10 backdrop-blur-sm border-t border-white/10">
+              <div className="p-4 pb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-white text-lg font-semibold">
+                    Matching Segments ({segments.length})
+                  </h3>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setSortByRelevance(true)}
+                      className={`px-3 py-1 text-xs rounded-lg transition-colors ${
+                        sortByRelevance
+                          ? 'bg-blue-500/30 text-blue-200 border border-blue-500/50'
+                          : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'
+                      }`}
+                    >
+                      By Relevance
+                    </button>
+                    <button
+                      onClick={() => setSortByRelevance(false)}
+                      className={`px-3 py-1 text-xs rounded-lg transition-colors ${
+                        !sortByRelevance
+                          ? 'bg-blue-500/30 text-blue-200 border border-blue-500/50'
+                          : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'
+                      }`}
+                    >
+                      Chronological
+                    </button>
+                  </div>
+                </div>
                 <div className="space-y-2">
-                  {segments.map((segment) => (
+                  {sortedSegments.map((segment) => (
                     <button
                       key={segment.id}
                       onClick={() => seekToTimestamp(segment.startTime)}
@@ -377,24 +424,14 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
                     >
                       <div className="flex items-start space-x-3">
                         <div className="flex-shrink-0">
-                          <span className="inline-block px-2 py-1 bg-blue-500/20 text-blue-300 text-xs rounded font-mono">
-                            {formatTime(segment.startTime)}
+                          <span className={`inline-block px-2 py-1 text-xs rounded font-mono border ${getRelevanceBadgeColor(segment.relevanceScore)}`}>
+                            {formatTime(segment.startTime)} - {formatTime(segment.endTime)}
                           </span>
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-white text-sm line-clamp-2 group-hover:text-blue-200 transition-colors">
                             {segment.transcription || segment.caption || segment.reconstructedScene}
                           </p>
-                          {segment.relevanceScore && (
-                            <div className="mt-1">
-                              <div className="w-full bg-white/10 rounded-full h-1">
-                                <div
-                                  className="bg-blue-500 h-1 rounded-full"
-                                  style={{ width: `${segment.relevanceScore * 100}%` }}
-                                ></div>
-                              </div>
-                            </div>
-                          )}
                         </div>
                       </div>
                     </button>

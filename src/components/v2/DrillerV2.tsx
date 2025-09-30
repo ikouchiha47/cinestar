@@ -356,7 +356,11 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   };
 
   const scopedMedia = useMemo(() => {
-    const base = q.trim() ? searchResults : library;
+    // If search bar is empty, always show library
+    // If search bar has text AND results loaded, show search results
+    // If search bar has text BUT no results yet, keep showing library (prevents flicker)
+    const hasQuery = q.trim().length > 0;
+    const base = (hasQuery && searchResults.length > 0) ? searchResults : library;
     let data = base;
     if (scope === 's3') data = data.filter((m) => places.find((p) => p.id === m.placeId)?.kind === 's3');
     if (scope === 'drive') data = data.filter((m) => places.find((p) => p.id === m.placeId)?.kind === 'gdrive');
@@ -663,18 +667,6 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     onShowMore={() => setExpandedType('audio')}
                     onItemDeleted={handleItemDeleted}
                   />
-                  {q.trim().length > 0 && videoSearchResults.length > 0 && (
-                    <MediaGroup
-                      title="Videos"
-                      icon={<Icon.Video />}
-                      items={videoSearchResults}
-                      places={places}
-                      maxVisible={6}
-                      onShowMore={() => loadMoreVideos()}
-                      onItemDeleted={handleItemDeleted}
-                      onVideoClick={handleVideoClick}
-                    />
-                  )}
                 </>
               ) : null}
             </div>

@@ -1437,6 +1437,20 @@ export class MainMediaAPI {
           const executionTime = Date.now() - started;
           console.log(`[SEARCH-TIMING] ✅ Semantic search completed in ${executionTime}ms`);
           console.log(`[SEARCH-TIMING] 📊 Results: ${grouped.images.length} images, ${grouped.videos.length} videos, ${grouped.audio.length} audio`);
+          
+          // Debug: Log video segments details
+          if (grouped.videos.length > 0) {
+            grouped.videos.forEach((video, idx) => {
+              console.log(`[SEARCH-RESULT-DEBUG] Video ${idx + 1}:`, {
+                name: video.name,
+                path: video.path,
+                hasSegments: video.hasSegments,
+                segmentCount: video.segments?.length || 0,
+                segments: video.segments?.map((s: any) => `${s.startTime}s-${s.endTime}s`) || []
+              });
+            });
+          }
+          
           return { 
             success: true, 
             results: { 

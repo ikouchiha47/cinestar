@@ -635,7 +635,7 @@ ipcMain.handle('video:getSegmentsForPlayer', async (_, videoPath: string, search
     
     // Get all segments for this video
     const segments = await videoAPI!.getVideoSegments(videoFile.id);
-    console.log(`[VIDEO-SEGMENTS-DEBUG] Found ${segments.length} segments`);
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Found ${segments.length} segments in database`);
     
     // If we have a search query, filter and score segments by relevance
     let processedSegments = segments.map(segment => ({
@@ -648,14 +648,22 @@ ipcMain.handle('video:getSegmentsForPlayer', async (_, videoPath: string, search
       relevanceScore: searchQuery ? calculateRelevanceScore(segment, searchQuery) : undefined
     }));
     
-    // If search query provided, sort by relevance and filter out low scores
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Mapped ${processedSegments.length} segments with scores:`, 
+      processedSegments.map(s => ({ 
+        time: `${s.startTime}-${s.endTime}`, 
+        score: s.relevanceScore 
+      }))
+    );
+    
+    // If search query provided, sort by relevance (don't filter - show all segments)
     if (searchQuery) {
       processedSegments = processedSegments
-        .filter(segment => (segment.relevanceScore || 0) > 0.1)
         .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
       
-      console.log(`[VIDEO-SEGMENTS-DEBUG] After filtering by search query: ${processedSegments.length} segments`);
+      console.log(`[VIDEO-SEGMENTS-DEBUG] Sorted ${processedSegments.length} segments by relevance`);
     }
+    
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Returning ${processedSegments.length} segments to UI`);
     
     return {
       success: true,
