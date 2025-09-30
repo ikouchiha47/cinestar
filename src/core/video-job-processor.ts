@@ -1375,7 +1375,7 @@ export class VideoJobProcessor {
               try {
                 const batchRecord = {
                   id: batch.id,
-                  video_id: jobId,
+                  video_id: parentVideoId, // Use parent video ID, not job ID
                   batch_index: result.batchIndex || 0,
                   batch_type: 'audio',
                   start_time: batch.startTime,
@@ -1896,8 +1896,12 @@ export class VideoJobProcessor {
 
       console.log(`[ENHANCED-BATCH] Processing video: ${job.fileName}`);
 
+      // Get the parent video ID (not job ID) for batch lookup
+      const parentVideoId = await this.getParentVideoId(job.videoPath);
+      console.log(`[ENHANCED-BATCH] 🔗 Using parent video ID: ${parentVideoId} for batch lookup`);
+
       // Get existing audio batches from Phase 0 (proper ADR-004 implementation)
-      const existingBatches = await this.batchProcessor!.getBatchesForVideo(job.id, 'audio');
+      const existingBatches = await this.batchProcessor!.getBatchesForVideo(parentVideoId, 'audio');
       console.log(`[ENHANCED-BATCH] Found ${existingBatches.length} existing audio batches to enhance`);
 
       if (existingBatches.length === 0) {

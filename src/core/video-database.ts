@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { EmbeddingService } from './embedding-service';
+import { EmbeddingService, RRFFusion } from './embedding-service';
 import { getDataDir } from './utils/data-dir';
 import { UnifiedMigrator } from './unified-migrator';
 

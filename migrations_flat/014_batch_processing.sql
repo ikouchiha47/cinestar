@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS processing_batches (
   scene_coherence REAL,            -- Scene reconstruction quality score
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (video_id) REFERENCES videos (id) ON DELETE CASCADE
+  FOREIGN KEY (video_id) REFERENCES video_files (id) ON DELETE CASCADE
 );
 
 -- Individual transcription segments with precise timing (from Whisper word timestamps)

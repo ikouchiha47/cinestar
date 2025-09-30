@@ -25,64 +25,43 @@ x-ollama: &ollama
         memory: 4G
 
 services:
-  # Primary Ollama instance
-  ollama-1:
-    <<: *ollama
-    container_name: drillbit-ollama-1
-    environment:
-      <<: *env
-      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_1:-0}
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
 
-  # Secondary Ollama instance (optional, for load balancing)
+  # Secondary Ollama instance for load balancing
   ollama-2:
     <<: *ollama
     container_name: drillbit-ollama-2
     environment:
       <<: *env
-      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_2:-1}
+      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_2:-0}
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
-    profiles: ["multi-gpu"]  # Only start with --profile multi-gpu
 
-  # Nginx proxy for Whisper service (single container with nginx benefits)
-  whisper-lb:
-    container_name: drillbit-whisper-lb
+  # Unified nginx proxy for both Ollama and Whisper services
+  nginx-lb:
+    container_name: drillbit-nginx-lb
     image: nginx:alpine
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "${WHISPER_LB_PORT:-9001}:9001"   # Whisper nginx proxy
+      - "${OLLAMA_LB_PORT:-11435}:11434"  # Ollama proxy
+      - "${WHISPER_LB_PORT:-9001}:9001"   # Whisper proxy
     depends_on:
-      whisper:
-        condition: service_healthy
-    restart: unless-stopped
-    # No profile - always available for single container + nginx benefits
-
-  # Load balancer for multiple Ollama instances  
-  ollama-lb:
-    container_name: drillbit-ollama-lb
-    image: nginx:alpine
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    ports:
-      - "${OLLAMA_LB_PORT:-11435}:11434"  # Ollama load balancer
-    depends_on:
-      ollama-1:
+      ollama:
         condition: service_healthy
       ollama-2:
         condition: service_healthy
+      whisper:
+        condition: service_healthy
     restart: unless-stopped
-    profiles: ["multi-gpu"]  # Only start with --profile multi-gpu
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Main Ollama service (single instance)
   ollama:
@@ -97,48 +76,7 @@ services:
       retries: 5
       start_period: 30s
 
-  # Primary Whisper transcription service
-  whisper-1:
-    image: onerahmet/openai-whisper-asr-webservice:latest
-    container_name: drillbit-whisper-1
-    environment:
-      - ASR_MODEL=${WHISPER_MODEL:-base.en}
-      - ASR_ENGINE=${WHISPER_ENGINE:-faster_whisper}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
-
-  # Secondary Whisper transcription service
-  whisper-2:
-    image: onerahmet/openai-whisper-asr-webservice:latest
-    container_name: drillbit-whisper-2
-    environment:
-      - ASR_MODEL=${WHISPER_MODEL:-base.en}
-      - ASR_ENGINE=${WHISPER_ENGINE:-faster_whisper}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
-    profiles: ["multi-whisper"]  # Only start with --profile multi-whisper
-
-  # Single Whisper service (default)
+  # Whisper transcription service
   whisper:
     image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: drillbit-whisper
