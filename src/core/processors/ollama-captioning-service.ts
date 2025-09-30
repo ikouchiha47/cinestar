@@ -1,6 +1,5 @@
 import { CaptioningService } from './captioning-processor';
 import { ConfigManager } from '../config.js';
-import { OllamaUrlResolver } from '../utils/ollama-url-resolver.js';
 import fs from 'fs/promises';
 
 export class OllamaCaptioningService implements CaptioningService {
@@ -8,10 +7,14 @@ export class OllamaCaptioningService implements CaptioningService {
   private baseUrl: string;
   private model: string;
 
-  constructor(baseUrl = OllamaUrlResolver.getOllamaUrl()) {
-    this.baseUrl = baseUrl;
+  constructor(baseUrl?: string) {
+    // PERFORMANCE: Use load balancer for Phase 1 captioning to distribute load
+    // This avoids blocking search embeddings which use direct Ollama instance
     const config = ConfigManager.getConfig();
+    this.baseUrl = baseUrl || config.ai.indexingUrl;
     this.model = config.ai.visionModel;
+    
+    console.log(`[OLLAMA-CAPTIONING] Using Ollama URL for indexing: ${this.baseUrl}`);
   }
 
   async caption(imagePath: string, options: any = {}) {

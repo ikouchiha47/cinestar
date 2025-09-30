@@ -1,6 +1,5 @@
 import fetch from 'node-fetch';
 import { ConfigManager } from './config.js';
-import { OllamaUrlResolver } from './utils/ollama-url-resolver.js';
 
 export interface EmbeddingRequest {
   input: string | string[];
@@ -59,8 +58,12 @@ export class EmbeddingService {
     const cfg = ConfigManager.getConfig();
     const envProvider = (process.env.EMBEDDINGS_PROVIDER || '').toLowerCase();
 
-    const finalBase = (baseUrl || OllamaUrlResolver.getOllamaUrl()).replace(/\/$/, '');
+    // PERFORMANCE: Use direct Ollama instance for search embeddings (no load balancer)
+    // This avoids contention with Phase 1 captioning operations
+    const finalBase = (baseUrl || cfg.ai.searchUrl).replace(/\/$/, '');
     const finalProvider: 'ollama' | 'openai' = envProvider === 'openai' ? 'openai' : 'ollama';
+    
+    console.log(`[EMBEDDING-SERVICE] Using Ollama URL for search: ${finalBase}`);
 
     this.baseUrl = finalBase;
     this.provider = finalProvider;

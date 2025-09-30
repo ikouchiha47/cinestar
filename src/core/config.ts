@@ -21,6 +21,9 @@ export interface AppConfig {
     baseUrl: string;
     useLoadBalancer: boolean;
     loadBalancerUrl: string;
+    // Separate URLs for performance optimization
+    searchUrl: string;      // Direct Ollama for search embeddings (no queuing)
+    indexingUrl: string;    // Load-balanced Ollama for indexing operations
     embeddingModel: string;
     embeddingDimensions: number;
     visionModel: string;
@@ -105,6 +108,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     baseUrl: 'http://localhost:11434',
     useLoadBalancer: false,
     loadBalancerUrl: 'http://localhost:9001',
+    // Performance optimization: separate URLs for search vs indexing
+    searchUrl: 'http://localhost:11434',      // Direct Ollama (fast, no queuing)
+    indexingUrl: 'http://localhost:11435',    // Load-balanced Ollama (distributed)
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',

@@ -7,6 +7,7 @@ import { BatchProcessor, ProcessingBatch, TranscriptionSegment, BatchKeyframe } 
 import { RefinementJobScheduler } from './refinement-job-scheduler';
 import { IncrementalSegmentProcessor } from './incremental-segment-processor';
 import { VideoSegmentIndexer } from './video-segment-indexer';
+import { ConfigManager } from './config.js';
 import { getDataDir } from './utils/data-dir';
 import { getMimeType } from './utils';
 import path from 'path';
@@ -2105,6 +2106,33 @@ export class VideoJobProcessor {
             });
           }
           
+          // Step 1f: Update video_segments table with captions and scene reconstruction
+          console.log(`[ENHANCED-BATCH] 💾 Updating video_segments table with Phase 1 data...`);
+          try {
+            const captionsText = keyframeCaptions.join('; ');
+            
+            const newSegmentId = await this.videoDb.addVideoSegment({
+              videoPath: job.videoPath,
+              startTime: batch.startTime,
+              endTime: batch.endTime,
+              duration: batch.duration,
+              sceneIndex: batch.batchIndex,
+              transcription: batch.transcription || '',
+              caption: captionsText, // Visual captions from keyframes
+              reconstructedScene: sceneReconstruction, // Scene reconstruction
+              embedding: enhancedEmbedding,
+              metadata: {
+                keyframeCount: keyframes.length,
+                enhancedInPhase1: true,
+                processingTimestamp: new Date().toISOString()
+              }
+            });
+            console.log(`[ENHANCED-BATCH] ✅ Updated video_segments (${newSegmentId}) with caption and scene reconstruction`);
+          } catch (segmentError) {
+            console.error(`[ENHANCED-BATCH] ⚠️  Failed to update video_segments:`, segmentError);
+            // Non-critical - vector DB is already updated
+          }
+          
           console.log(`[ENHANCED-BATCH] ✅ Batch ${batch.batchIndex + 1}/${existingBatches.length} fully enhanced`);
           
         } catch (error) {
@@ -2229,7 +2257,9 @@ Visual: ${visualContext}
 Scene Description:`;
 
       // Call Ollama for scene reconstruction
-      const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+      // PERFORMANCE: Use load balancer for indexing operations
+      const config = ConfigManager.getConfig();
+      const baseUrl = config.ai.indexingUrl;
       const model = 'tinyllama:latest';
       
       const response = await fetch(`${baseUrl}/api/generate`, {
@@ -2354,7 +2384,9 @@ Scene Description:`;
       const prompt = this.buildSceneReconstructionPrompt(audioContext, visualContext, batch);
       
       // Call Ollama for scene reconstruction
-      const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+      // PERFORMANCE: Use load balancer for indexing operations
+      const config = ConfigManager.getConfig();
+      const baseUrl = config.ai.indexingUrl;
       const model = 'tinyllama:latest';
       
       const response = await fetch(`${baseUrl}/api/generate`, {
