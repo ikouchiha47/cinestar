@@ -155,15 +155,14 @@ export const VideoSearch: React.FC<VideoSearchProps> = ({ query, onResultClick }
           if (response.success) {
             console.log(`Started processing ${isVideo ? 'video' : 'audio'}: ${result.path}`);
           } else {
-            alert(`Failed to process file: ${response.error}`);
+            console.error('[VIDEO-SEARCH] Failed to process file:', response.error);
           }
         } else {
-          alert('Please select a valid video or audio file');
+          console.error('[VIDEO-SEARCH] Please select a valid video or audio file');
         }
       }
     } catch (error) {
-      console.error('File upload error:', error);
-      alert('Failed to upload file');
+      console.error('[VIDEO-SEARCH] File upload error:', error);
     }
   };
 

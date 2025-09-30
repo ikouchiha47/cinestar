@@ -115,12 +115,10 @@ export function MediaCard({ item, places, placeLabel, onDeleted, onVideoClick }:
         // Optimistically remove from UI
         onDeleted?.(item.id);
       } else {
-        console.error('Failed to remove media item:', result?.error);
-        alert(`Failed to remove ${item.name}: ${result?.error || 'Unknown error'}`);
+        console.error('[MEDIA-GRID] Failed to remove media item:', result?.error);
       }
     } catch (error) {
-      console.error('Error removing media item:', error);
-      alert(`Error removing ${item.name}: ${error}`);
+      console.error('[MEDIA-GRID] Error removing media item:', error);
     } finally {
       setDeleting(false);
     }

@@ -102,10 +102,10 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
         // Start polling for progress updates
         startProgressPolling();
       } else {
-        alert(`Failed to start indexing: ${result.error}`);
+        console.error(`[SOURCE-LIST] Failed to start indexing: ${result.error}`);
       }
     } catch (err) {
-      alert(`Error starting indexing: ${err instanceof Error ? err.message : err}`);
+      console.error(`[SOURCE-LIST] Error starting indexing:`, err instanceof Error ? err.message : err);
     }
   };
 
@@ -121,10 +121,10 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
         // Start polling for progress updates
         startProgressPolling();
       } else {
-        alert(`Failed to start force re-indexing: ${result.error}`);
+        console.error(`[SOURCE-LIST] Failed to start force re-indexing: ${result.error}`);
       }
     } catch (err) {
-      alert(`Error starting force re-indexing: ${err instanceof Error ? err.message : err}`);
+      console.error(`[SOURCE-LIST] Error starting force re-indexing:`, err instanceof Error ? err.message : err);
     }
   };
 
@@ -136,13 +136,13 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
     try {
       const result = await window.mediaAPI.cleanupDuplicates();
       if (result.success) {
-        alert(`Cleanup completed! Removed ${result.removed} duplicates, kept ${result.kept} sources.`);
+        console.log(`[SOURCE-LIST] Cleanup completed! Removed ${result.removed} duplicates, kept ${result.kept} sources.`);
         await loadSources(); // Refresh the list
       } else {
-        alert(`Failed to cleanup duplicates: ${result.error}`);
+        console.error(`[SOURCE-LIST] Failed to cleanup duplicates: ${result.error}`);
       }
     } catch (err) {
-      alert(`Error cleaning up duplicates: ${err instanceof Error ? err.message : err}`);
+      console.error(`[SOURCE-LIST] Error cleaning up duplicates:`, err instanceof Error ? err.message : err);
     }
   };
 
@@ -179,10 +179,10 @@ export const SourceList: React.FC<SourceListProps> = ({ onAddSource, refreshTrig
       if (result.success) {
         await loadSources();
       } else {
-        alert(`Failed to remove source: ${result.error}`);
+        console.error(`[SOURCE-LIST] Failed to remove source: ${result.error}`);
       }
     } catch (err) {
-      alert(`Error removing source: ${err instanceof Error ? err.message : err}`);
+      console.error(`[SOURCE-LIST] Error removing source:`, err instanceof Error ? err.message : err);
     }
   };
 

@@ -385,9 +385,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       const res = forceReindex 
         ? await window.mediaAPI.forceReindex(placeId)
         : await window.mediaAPI.startIndexing(placeId);
-      if (!res.success) alert(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}: ${res.error || 'Unknown error'}`);
+      if (!res.success) console.error(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}: ${res.error || 'Unknown error'}`);
     } catch (e) {
-      alert(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}`);
+      console.error(`Failed to start ${forceReindex ? 'force re-indexing' : 'indexing'}`, e);
     }
   };
 
@@ -432,7 +432,6 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       });
     } catch (error) {
       console.error('[DRILLER-V2] Failed to open video player:', error);
-      alert('Failed to open video player. Please try again.');
     }
   };
 
@@ -479,7 +478,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  alert(`⏎ ENTER DEBUG: Enter pressed with query "${(e.target as HTMLInputElement).value}"`);
+                  console.log(`[SEARCH-DEBUG] Enter pressed with query "${(e.target as HTMLInputElement).value}"`);
                   // Cancel pending debounce and run search immediately
                   if (debounceRef.current) {
                     clearTimeout(debounceRef.current);
@@ -488,20 +487,19 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                   // Trigger the effect's performSearch by transiently changing scope
                   // Simpler: temporarily setSearching and invoke mediaAPI directly here
                   (async () => {
-                    alert(`🚀 ENTER-SEARCH DEBUG: Starting search function with q="${q}", scope="${scope}"`);
+                    console.log(`[SEARCH-DEBUG] Starting search function with q="${q}", scope="${scope}"`);
                     const query = q.trim();
                     if (!query || scope === 'folders') {
-                      alert(`❌ ENTER-SEARCH DEBUG: Exiting early - query="${query}", scope="${scope}"`);
+                      console.log(`[SEARCH-DEBUG] Exiting early - query="${query}", scope="${scope}"`);
                       setSearchResults([]);
                       setVideoSearchResults([]);
                       return;
                     }
                     try {
-                      alert(`🔧 SEARCH DEBUG: About to setSearching(true)`);
                       setSearching(true);
-                      alert(`🔍 SEARCH DEBUG: Calling unifiedSearch with query: "${query}"`);
+                      console.log(`[SEARCH-DEBUG] Calling unifiedSearch with query: "${query}"`);
                       const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
-                      alert(`✅ SEARCH DEBUG: Got response with ${res?.results?.images?.length || 0} images, ${res?.results?.videos?.length || 0} videos`);
+                      console.log(`[SEARCH-DEBUG] Got response with ${res?.results?.images?.length || 0} images, ${res?.results?.videos?.length || 0} videos`);
                       const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
                       const mediaItems: MediaT[] = images.map((it: any) => {
                         const mime = (it.mimeType || '').toLowerCase();
@@ -721,7 +719,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               }
             } else {
               // Placeholder for S3/Drive/NAS
-              alert(`${kind.toUpperCase()} coming soon`);
+              console.log(`${kind.toUpperCase()} coming soon`);
             }
             setConnectOpen(false);
           }}

@@ -98,12 +98,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       });
       
       if (response.ok) {
-        alert(`✅ ${service} service is reachable`);
+        console.log(`[SETTINGS] ${service} service is reachable`);
       } else {
-        alert(`⚠️ ${service} service responded with status: ${response.status}`);
+        console.warn(`[SETTINGS] ${service} service responded with status: ${response.status}`);
       }
     } catch (error) {
-      alert(`❌ Failed to connect to ${service} service: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`[SETTINGS] Failed to connect to ${service} service:`, error instanceof Error ? error.message : 'Unknown error');
     }
   };
 

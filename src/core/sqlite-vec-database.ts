@@ -193,6 +193,8 @@ export class SqliteVecDatabase {
    */
   async addMediaItemWithIdAsync(id: string, item: Partial<MediaItem>): Promise<void> {
     try {
+      console.log(`[SQLITE-VEC-ADD-DEBUG] Adding media item with ID: ${id}, has embedding: ${!!item.embedding}, embedding status: ${item.embeddingStatus}`);
+      
       // First check if item already exists by path hash (since id is generated fresh each time)
       const { getHashPrefix } = await import('./utils/crypto-utils');
       const hashPrefix = await getHashPrefix(item.path || '');
@@ -210,6 +212,8 @@ export class SqliteVecDatabase {
       const captionGeneratedAt = existing?.caption_generated_at || item.captionGeneratedAt?.toISOString() || null;
       const embeddingGeneratedAt = existing?.embedding_generated_at || item.embeddingGeneratedAt?.toISOString() || null;
 
+      console.log(`[SQLITE-VEC-ADD-DEBUG] Final embedding status: ${embeddingStatus}, has embedding data: ${!!item.embedding}`);
+
       stmt.run(
         id,
         item.sourceId,
@@ -226,7 +230,18 @@ export class SqliteVecDatabase {
         embeddingGeneratedAt,
         embeddingStatus
       );
+
+      // CRITICAL FIX: Add embedding to vec_embeddings virtual table for search
+      // This was missing and causing 0 search results!
+      if (item.embedding && embeddingStatus === 'completed') {
+        console.log(`[SQLITE-VEC-ADD-DEBUG] Adding embedding to vec_embeddings virtual table for search: ${id}`);
+        this.addEmbedding(id, item.embedding);
+        console.log(`[SQLITE-VEC-ADD-DEBUG] ✅ Embedding added to vec_embeddings - item is now searchable!`);
+      } else {
+        console.log(`[SQLITE-VEC-ADD-DEBUG] ⚠️ Skipping vec_embeddings insert - embedding: ${!!item.embedding}, status: ${embeddingStatus}`);
+      }
     } catch (error) {
+      console.error(`[SQLITE-VEC-ADD-ERROR] Failed to add media item ${id}:`, error);
       throw error;
     }
   }

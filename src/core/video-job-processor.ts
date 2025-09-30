@@ -1229,12 +1229,18 @@ export class VideoJobProcessor {
     if (!this.currentJobId) return;
     
     try {
+      // Calculate progress based on processing phases:
+      // Phase 0 (transcription + embedding + indexing): 0-50%
+      // Phase 1 (keyframe extraction + enhancement): 50-100%
+      // Each segment in Phase 0 contributes to first 50%
+      const phase0Progress = Math.min((this.segmentCount * 10), 50); // Up to 5 segments = 50%
+      
       await this.videoDb.updateJob(this.currentJobId, {
         segmentCount: this.segmentCount,
-        progress: Math.min(this.segmentCount * 2, 100) // Rough progress estimate
+        progress: phase0Progress
       });
       
-      console.log(`[INCREMENTAL-STORAGE] Updated job progress: ${this.segmentCount} segments processed`);
+      console.log(`[INCREMENTAL-STORAGE] 📊 Updated job progress: ${this.segmentCount} segments processed (${phase0Progress}%)`);
     } catch (error) {
       console.error(`[INCREMENTAL-STORAGE] Failed to update job progress:`, error);
     }
@@ -1346,12 +1352,12 @@ export class VideoJobProcessor {
           if (batch) {
             const job = await this.videoDb.getJob(jobId);
             
-            // Get the parent video ID (not job ID) for foreign key constraint
-            const parentVideoId = await this.getParentVideoId(job?.videoPath || '');
-            console.log(`[IMMEDIATE-BATCH] 🔗 Using parent video ID: ${parentVideoId} for segment`);
+            // Get the parent video (not job ID) for foreign key constraint
+            const parentVideo = await this.getParentVideo(job?.videoPath || '');
+            console.log(`[IMMEDIATE-BATCH] 🔗 Using parent video ID: ${parentVideo.id}, sourceId: ${parentVideo.sourceId} for segment`);
             
             const segmentData = {
-              videoId: parentVideoId, // Use parent video ID, not job ID
+              videoId: parentVideo.id, // Use parent video ID, not job ID
               videoPath: job?.videoPath || '',
               startTime: batch.startTime,
               endTime: batch.endTime,
@@ -1370,12 +1376,43 @@ export class VideoJobProcessor {
             await this.videoDb.addVideoSegment(segmentData);
             console.log(`[IMMEDIATE-BATCH] ✅ Segment stored: ${batch.startTime}s-${batch.endTime}s (${result.result.text.length} chars)`);
             
+            // Increment segment count and update progress
+            this.segmentCount++;
+            await this.updateJobProgress();
+            
+            // CRITICAL: Index segment in vector database for search
+            if (embedding) {
+              try {
+                console.log(`[IMMEDIATE-BATCH-INDEX] 🔍 Indexing segment in vector database for search...`);
+                const segmentId = `video_segment_${parentVideo.id}_${batch.startTime}_${batch.endTime}`;
+                await this.vectorDb.addMediaItemWithIdAsync(segmentId, {
+                  sourceId: parentVideo.sourceId,
+                  name: `${job?.fileName || 'video'} - ${batch.startTime}s-${batch.endTime}s`,
+                  path: `${job?.videoPath}#t=${batch.startTime},${batch.endTime}`,
+                  type: 'video_segment',
+                  size: 0,
+                  embedding: new Float32Array(embedding),
+                  caption: result.result.text.substring(0, 500), // First 500 chars as caption/description
+                  captionStatus: 'completed' as const,
+                  embeddingStatus: 'completed' as const,
+                  createdAt: new Date(),
+                  updatedAt: new Date()
+                });
+                console.log(`[IMMEDIATE-BATCH-INDEX] ✅ Segment indexed in vector database for search`);
+              } catch (indexError) {
+                console.error(`[IMMEDIATE-BATCH-INDEX] ❌ Failed to index segment in vector database:`, indexError);
+                // Don't fail the entire process - segment is still in video-rag.db
+              }
+            } else {
+              console.log(`[IMMEDIATE-BATCH-INDEX] ⚠️  No embedding available, segment not indexed for vector search (text search may still work)`);
+            }
+            
             // CRITICAL: Also create batch record for Phase 1 enhancement
             if (this.batchProcessor) {
               try {
                 const batchRecord = {
                   id: batch.id,
-                  video_id: parentVideoId, // Use parent video ID, not job ID
+                  video_id: parentVideo.id, // Use parent video ID, not job ID
                   batch_index: result.batchIndex || 0,
                   batch_type: 'audio',
                   start_time: batch.startTime,
@@ -1508,7 +1545,7 @@ export class VideoJobProcessor {
   /**
    * Get parent video ID from video path
    */
-  private async getParentVideoId(videoPath: string): Promise<string> {
+  private async getParentVideo(videoPath: string): Promise<any> {
     try {
       console.log(`[DB-PATH-DEBUG] 🔍 Looking for parent video with path: ${videoPath}`);
       
@@ -1540,12 +1577,12 @@ export class VideoJobProcessor {
       );
       
       if (parentVideo) {
-        console.log(`[DB-PATH-DEBUG] 🎯 Found matching parent video: ID=${parentVideo.id}`);
+        console.log(`[DB-PATH-DEBUG] 🎯 Found matching parent video: ID=${parentVideo.id}, sourceId=${parentVideo.sourceId}`);
         
         // Compensation: Ensure parent video exists in video database (video_files table)
         await this.ensureVideoInVideoDatabase(parentVideo);
         
-        return parentVideo.id;
+        return parentVideo;
       }
       
       console.error(`[DB-PATH-DEBUG] ❌ No matching video found for path: ${videoPath}`);
@@ -1569,6 +1606,8 @@ export class VideoJobProcessor {
       
       if (existingVideo) {
         console.log(`[COMPENSATION] ✅ Video already exists in video_files: ${parentVideo.id}`);
+        // Also ensure it's in media_sources for foreign key constraint
+        await this.ensureVideoAsMediaSource(parentVideo);
         return;
       }
       
@@ -1601,10 +1640,76 @@ export class VideoJobProcessor {
       
       console.log(`[COMPENSATION] ✅ Successfully created video_files entry: ${parentVideo.id}`);
       
+      // Also ensure it's in media_sources for foreign key constraint
+      await this.ensureVideoAsMediaSource(parentVideo);
+      
     } catch (error) {
       console.error(`[COMPENSATION] ❌ Failed to ensure video in video database:`, error);
       // Don't throw - this is compensation, not critical path
       console.warn(`[COMPENSATION] ⚠️  Continuing without video_files entry - may cause FOREIGN KEY errors`);
+    }
+  }
+
+  /**
+   * Compensation: Ensure parent video exists as a media source in vector database
+   * This fixes the FOREIGN KEY constraint issue when adding video segments
+   */
+  private async ensureVideoAsMediaSource(parentVideo: any): Promise<void> {
+    try {
+      console.log(`[COMPENSATION] 🔍 Ensuring parent video exists in media_sources: ${parentVideo.id}`);
+      console.log(`[COMPENSATION] Parent video details:`, {
+        id: parentVideo.id,
+        path: parentVideo.path,
+        name: parentVideo.name,
+        type: parentVideo.type
+      });
+      
+      // Import MainMediaAPI to check and add source
+      const { MainMediaAPI } = await import('../api/main-media-api');
+      
+      // Check if a source already exists for this video's directory
+      const sourcesResult = await MainMediaAPI.getSources();
+      console.log(`[COMPENSATION] 📊 Checking existing sources:`, {
+        success: sourcesResult.success,
+        sourceCount: sourcesResult.sources?.length || 0
+      });
+      
+      if (!sourcesResult.success || !sourcesResult.sources) {
+        console.warn(`[COMPENSATION] ⚠️  Could not retrieve sources: ${sourcesResult.error}`);
+        return;
+      }
+      
+      // Check if source exists for this video's path or directory
+      const videoDir = parentVideo.path.substring(0, parentVideo.path.lastIndexOf('/'));
+      const existingSource = sourcesResult.sources.find((source: any) => 
+        source.path === parentVideo.path || source.path === videoDir
+      );
+      
+      if (existingSource) {
+        console.log(`[COMPENSATION] ✅ Media source already exists: ${existingSource.id} (${existingSource.name})`);
+        return;
+      }
+      
+      // Create new media source for this video
+      console.log(`[COMPENSATION] 🔧 Creating new media_source for video directory: ${videoDir}`);
+      const addSourceResult = await MainMediaAPI.addSource({
+        name: `Video: ${parentVideo.name}`,
+        type: 'local',
+        path: videoDir,
+        enabled: true,
+        createdAt: new Date()
+      });
+      
+      if (addSourceResult.success) {
+        console.log(`[COMPENSATION] ✅ Successfully created media_source: ${addSourceResult.id}`);
+      } else {
+        console.warn(`[COMPENSATION] ⚠️  Failed to create media_source: ${addSourceResult.error}`);
+      }
+      
+    } catch (error) {
+      console.error(`[COMPENSATION] ❌ Failed to ensure video as media source:`, error);
+      // Don't throw - this is compensation, not critical path
+      console.warn(`[COMPENSATION] ⚠️  Continuing without media_sources entry - may cause FOREIGN KEY errors`);
     }
   }
 
@@ -1894,14 +1999,12 @@ export class VideoJobProcessor {
         throw new Error(`Job ${jobId} not found`);
       }
 
-      console.log(`[ENHANCED-BATCH] Processing video: ${job.fileName}`);
-
-      // Get the parent video ID (not job ID) for batch lookup
-      const parentVideoId = await this.getParentVideoId(job.videoPath);
-      console.log(`[ENHANCED-BATCH] 🔗 Using parent video ID: ${parentVideoId} for batch lookup`);
+      // Get parent video for batch lookup
+      const parentVideo = await this.getParentVideo(job.videoPath);
+      console.log(`[ENHANCED-BATCH] 🔗 Using parent video ID: ${parentVideo.id} for batch lookup`);
 
       // Get existing audio batches from Phase 0 (proper ADR-004 implementation)
-      const existingBatches = await this.batchProcessor!.getBatchesForVideo(parentVideoId, 'audio');
+      const existingBatches = await this.batchProcessor!.getBatchesForVideo(parentVideo.id, 'audio');
       console.log(`[ENHANCED-BATCH] Found ${existingBatches.length} existing audio batches to enhance`);
 
       if (existingBatches.length === 0) {
@@ -1909,11 +2012,25 @@ export class VideoJobProcessor {
         return;
       }
 
-      // Step 1: Extract 4 keyframes per batch (at 20%, 40%, 60%, 80% positions)
-      console.log(`[ENHANCED-BATCH] 🖼️  Extracting 4 keyframes per batch for ${existingBatches.length} batches...`);
+      // Step 1: Process each batch with full enhancement pipeline
+      console.log(`[ENHANCED-BATCH] 🎨 Processing ${existingBatches.length} batches with full enhancement...`);
+      
       for (const batch of existingBatches) {
         try {
-          const keyframePositions = [0.2, 0.4, 0.6, 0.8]; // 20%, 40%, 60%, 80%
+          const batchNum = batch.batchIndex + 1;
+          const totalBatches = existingBatches.length;
+          console.log(`[ENHANCED-BATCH] 📦 Processing batch ${batchNum}/${totalBatches} (${batch.startTime}s-${batch.endTime}s)`);
+          
+          // Update progress: Phase 1 is 50-100%, distribute across batches
+          const phase1Progress = 50 + Math.floor((batchNum / totalBatches) * 50);
+          await this.videoDb.updateJob(jobId, {
+            progress: phase1Progress
+          });
+          console.log(`[ENHANCED-BATCH] 📊 Progress: ${phase1Progress}% (Phase 1: ${batchNum}/${totalBatches} batches)`);
+          
+          // Step 1a: Extract 4 keyframes per batch
+          console.log(`[ENHANCED-BATCH] 🖼️  Extracting keyframes...`);
+          const keyframePositions = [0.2, 0.4, 0.6, 0.8];
           const keyframes = [];
           
           for (let i = 0; i < keyframePositions.length; i++) {
@@ -1930,19 +2047,97 @@ export class VideoJobProcessor {
               metadata: { position: position, index: i + 1 }
             });
           }
+          console.log(`[ENHANCED-BATCH] ✅ Extracted ${keyframes.length} keyframes`);
           
-          // Store keyframes in database (TODO: implement storeKeyframes method)
-          console.log(`[ENHANCED-BATCH] ⚠️  Keyframe storage skipped - storeKeyframes method not implemented`);
-          console.log(`[ENHANCED-BATCH] ✅ Extracted 4 keyframes for batch ${batch.id} (files created)`);
+          // Step 1b: Caption keyframes
+          console.log(`[ENHANCED-BATCH] 📝 Captioning keyframes...`);
+          const keyframeCaptions = await this.captionKeyframesForBatch(keyframes);
+          console.log(`[ENHANCED-BATCH] ✅ Generated ${keyframeCaptions.length} captions`);
+          
+          // Step 1c: Generate scene reconstruction
+          console.log(`[ENHANCED-BATCH] 🎬 Generating scene reconstruction...`);
+          const sceneReconstruction = await this.reconstructSceneForBatch(
+            batch.transcription || '',
+            keyframeCaptions
+          );
+          console.log(`[ENHANCED-BATCH] ✅ Scene reconstruction: ${sceneReconstruction.substring(0, 100)}...`);
+          
+          // Step 1d: Generate enhanced multi-modal embedding
+          console.log(`[ENHANCED-BATCH] 🧠 Generating enhanced multi-modal embedding...`);
+          const enhancedText = `${batch.transcription}\n\nVisual Context: ${keyframeCaptions.join(', ')}\n\nScene Description: ${sceneReconstruction}`;
+          const enhancedEmbedding = await this.embeddingService.embedSingle(enhancedText);
+          console.log(`[ENHANCED-BATCH] ✅ Generated enhanced embedding (${enhancedEmbedding.length}D)`);
+          
+          // Step 1e: Update vector database with enhanced batch-level embedding
+          console.log(`[ENHANCED-BATCH] 💾 Updating vector database with enhanced embedding...`);
+          const batchId = `video_segment_${parentVideo.id}_${batch.startTime}_${batch.endTime}`;
+          const existingEntry = this.vectorDb.getMediaItem(batchId);
+          
+          if (existingEntry) {
+            await this.vectorDb.addMediaItemWithIdAsync(batchId, {
+              sourceId: parentVideo.sourceId,
+              name: `${job.fileName} - ${batch.startTime}s-${batch.endTime}s`,
+              path: `${job.videoPath}#t=${batch.startTime},${batch.endTime}`,
+              type: 'video_segment',
+              size: 0,
+              embedding: new Float32Array(enhancedEmbedding),
+              caption: sceneReconstruction, // Rich scene description
+              captionStatus: 'completed' as const,
+              embeddingStatus: 'completed' as const,
+              createdAt: existingEntry.createdAt,
+              updatedAt: new Date()
+            });
+            console.log(`[ENHANCED-BATCH] ✅ Updated batch ${batch.startTime}s-${batch.endTime}s with enhanced embedding`);
+          } else {
+            console.warn(`[ENHANCED-BATCH] ⚠️  Batch ${batchId} not found in vector DB - creating new entry`);
+            await this.vectorDb.addMediaItemWithIdAsync(batchId, {
+              sourceId: parentVideo.sourceId,
+              name: `${job.fileName} - ${batch.startTime}s-${batch.endTime}s`,
+              path: `${job.videoPath}#t=${batch.startTime},${batch.endTime}`,
+              type: 'video_segment',
+              size: 0,
+              embedding: new Float32Array(enhancedEmbedding),
+              caption: sceneReconstruction,
+              captionStatus: 'completed' as const,
+              embeddingStatus: 'completed' as const,
+              createdAt: new Date(),
+              updatedAt: new Date()
+            });
+          }
+          
+          console.log(`[ENHANCED-BATCH] ✅ Batch ${batch.batchIndex + 1}/${existingBatches.length} fully enhanced`);
           
         } catch (error) {
-          console.error(`[ENHANCED-BATCH] ❌ Failed to extract keyframes for batch ${batch.id}:`, error);
+          console.error(`[ENHANCED-BATCH] ❌ Failed to enhance batch ${batch.id}:`, error);
+          // Continue with other batches
         }
       }
 
-      // Step 2: For now, skip captions and scene reconstruction (TODO: implement missing BatchProcessor methods)
-      console.log(`[ENHANCED-BATCH] ⚠️  Captions and scene reconstruction temporarily skipped - missing BatchProcessor methods`);
-      console.log(`[ENHANCED-BATCH] 🎯 Phase 1 basic enhancement complete: keyframes extracted for ${existingBatches.length} batches`);
+      console.log(`[ENHANCED-BATCH] 🎯 Phase 1 enhancement complete - ${existingBatches.length} batches enhanced with multi-modal embeddings`);
+
+      // Step 3: Verify segments are indexed in vector database
+      console.log(`[ENHANCED-BATCH] 🔍 Verifying segments are indexed in vector database...`);
+      let indexedCount = 0;
+      let missingCount = 0;
+      
+      for (const batch of existingBatches) {
+        const segmentId = `video_segment_${parentVideo.id}_${batch.startTime}_${batch.endTime}`;
+        const existingSegment = this.vectorDb.getMediaItem(segmentId);
+        
+        if (existingSegment) {
+          indexedCount++;
+          console.log(`[ENHANCED-BATCH] ✅ Segment ${batch.startTime}s-${batch.endTime}s is indexed and searchable`);
+        } else {
+          missingCount++;
+          console.warn(`[ENHANCED-BATCH] ⚠️  Segment ${segmentId} not found in vector database - Phase 0 indexing may have failed`);
+        }
+      }
+      
+      console.log(`[ENHANCED-BATCH] 📊 Vector DB Status: ${indexedCount} segments indexed, ${missingCount} missing`);
+      
+      // Note: Keyframe metadata is stored in video-rag.db batch records
+      // The segments are already searchable via their transcription embeddings from Phase 0
+      // Future enhancement: Generate visual embeddings from keyframes and update vector DB
 
       console.log(`[ENHANCED-BATCH] 🎯 Phase 1 enhancement complete - ${existingBatches.length} batches enhanced per ADR-004`);
 
@@ -1972,6 +2167,98 @@ export class VideoJobProcessor {
       });
       
       throw error;
+    }
+  }
+
+  /**
+   * Caption keyframes for a batch (simplified wrapper)
+   */
+  private async captionKeyframesForBatch(keyframes: any[]): Promise<string[]> {
+    if (keyframes.length === 0) return [];
+
+    try {
+      // Use existing captioning services (Ollama, Moondream)
+      const { OllamaCaptioningService } = await import('./processors/ollama-captioning-service');
+      
+      const service = new OllamaCaptioningService();
+      
+      if (!(await service.isAvailable())) {
+        console.warn(`[ENHANCED-BATCH] Ollama captioning service not available`);
+        return keyframes.map(() => 'Visual content');
+      }
+
+      console.log(`[ENHANCED-BATCH] Captioning ${keyframes.length} keyframes with Ollama...`);
+
+      const captions: string[] = [];
+      for (const keyframe of keyframes) {
+        try {
+          const result = await service.caption(keyframe.imagePath);
+          captions.push(result.caption || 'Visual content');
+        } catch (error) {
+          console.error(`[ENHANCED-BATCH] Failed to caption keyframe:`, error);
+          captions.push('Visual content');
+        }
+      }
+
+      return captions;
+
+    } catch (error) {
+      console.error(`[ENHANCED-BATCH] Keyframe captioning failed:`, error);
+      return keyframes.map(() => 'Visual content');
+    }
+  }
+
+  /**
+   * Reconstruct scene for a batch using transcription + visual captions
+   */
+  private async reconstructSceneForBatch(transcription: string, keyframeCaptions: string[]): Promise<string> {
+    try {
+      const visualContext = keyframeCaptions.filter(c => c && c !== 'Visual content').join('. ');
+      
+      if (!transcription && !visualContext) {
+        return 'Scene content';
+      }
+
+      // Build scene reconstruction prompt
+      const prompt = `Based on the following audio transcription and visual descriptions, provide a concise scene description (2-3 sentences):
+
+Audio: ${transcription}
+
+Visual: ${visualContext}
+
+Scene Description:`;
+
+      // Call Ollama for scene reconstruction
+      const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+      const model = 'tinyllama:latest';
+      
+      const response = await fetch(`${baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0.7,
+            num_predict: 150
+          }
+        })
+      });
+
+      if (!response.ok) {
+        console.warn(`[ENHANCED-BATCH] Scene reconstruction API returned ${response.status}`);
+        return `${transcription.substring(0, 200)}...`;
+      }
+
+      const data = await response.json();
+      const sceneDescription = data.response?.trim() || transcription.substring(0, 200);
+      
+      return sceneDescription;
+
+    } catch (error) {
+      console.error(`[ENHANCED-BATCH] Scene reconstruction failed:`, error);
+      return transcription.substring(0, 200) || 'Scene content';
     }
   }
 

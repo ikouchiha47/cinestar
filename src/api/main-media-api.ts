@@ -1335,6 +1335,7 @@ export class MainMediaAPI {
       const offset = options.offset || 0;
       const requestedTypes = options.types || ['image', 'video', 'audio'];
       const started = Date.now();
+      console.log(`[SEARCH-TIMING] 🔍 Starting unified search for query: "${q}", types: [${requestedTypes.join(', ')}], limit: ${limit}, offset: ${offset}`);
 
       // Initialize grouped results
       const grouped = {
@@ -1348,12 +1349,19 @@ export class MainMediaAPI {
       // Try semantic search first if available
       if (this.vecDb && this.llm && q) {
         try {
+          console.log(`[SEARCH-TIMING] 🧠 Using semantic search (vector + LLM)`);
+          const embeddingStart = Date.now();
           // Get more results to ensure we have enough for each type after grouping
           const searchLimit = limit * requestedTypes.length;
           const textEmbedding = await this.llm.generateEmbedding(q);
+          console.log(`[SEARCH-TIMING] ⏱️  Embedding generation took: ${Date.now() - embeddingStart}ms`);
+          
+          const vectorSearchStart = Date.now();
           const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, searchLimit, 0, q);
+          console.log(`[SEARCH-TIMING] ⏱️  Vector search took: ${Date.now() - vectorSearchStart}ms, found ${paginatedResults.results.length} results`);
           
           // Transform and group results by media type
+          const transformStart = Date.now();
           const allItems = paginatedResults.results.map(r => {
             const mimeType = getMimeType(r.path);
             const lower = (mimeType || '').toLowerCase();
@@ -1383,14 +1391,19 @@ export class MainMediaAPI {
               metadata: (r as any).metadata ? (typeof (r as any).metadata === 'string' ? JSON.parse((r as any).metadata) : (r as any).metadata) : undefined,
             };
           });
+          console.log(`[SEARCH-TIMING] ⏱️  Result transformation took: ${Date.now() - transformStart}ms`);
 
           // Group by type and apply pagination per type
+          const groupingStart = Date.now();
           const imageItems = allItems.filter(item => item.type === 'image');
           const audioItems = allItems.filter(item => item.type === 'audio');
           
           // For videos, deduplicate parent videos and segments
           const videoItems = allItems.filter(item => item.type === 'video');
+          const dedupeStart = Date.now();
           const deduplicatedVideos = await this.deduplicateVideoResults(videoItems);
+          console.log(`[SEARCH-TIMING] ⏱️  Video deduplication took: ${Date.now() - dedupeStart}ms (${videoItems.length} → ${deduplicatedVideos.length})`);
+          console.log(`[SEARCH-TIMING] ⏱️  Type grouping took: ${Date.now() - groupingStart}ms (${imageItems.length} images, ${deduplicatedVideos.length} videos, ${audioItems.length} audio)`);
           
           const typeGroups = {
             image: imageItems,
@@ -1399,6 +1412,7 @@ export class MainMediaAPI {
           };
 
           // Apply pagination and limits per type
+          const paginationStart = Date.now();
           requestedTypes.forEach(type => {
             const items = typeGroups[type] || [];
             const total = items.length;
@@ -1418,8 +1432,11 @@ export class MainMediaAPI {
               grouped.hasMore.audio = (offset + limit) < total;
             }
           });
+          console.log(`[SEARCH-TIMING] ⏱️  Pagination took: ${Date.now() - paginationStart}ms`);
 
           const executionTime = Date.now() - started;
+          console.log(`[SEARCH-TIMING] ✅ Semantic search completed in ${executionTime}ms`);
+          console.log(`[SEARCH-TIMING] 📊 Results: ${grouped.images.length} images, ${grouped.videos.length} videos, ${grouped.audio.length} audio`);
           return { 
             success: true, 
             results: { 
@@ -1436,10 +1453,14 @@ export class MainMediaAPI {
 
       // Fallback: search main DB with text filtering
       try {
+        console.log(`[SEARCH-TIMING] 📝 Using fallback text search`);
+        const dbFetchStart = Date.now();
         const allItems = await this.db.getMediaItems();
+        console.log(`[SEARCH-TIMING] ⏱️  Database fetch took: ${Date.now() - dbFetchStart}ms, got ${allItems.length} items`);
         let filteredItems = allItems as any[];
 
         // Apply text filtering if query provided
+        const filterStart = Date.now();
         if (q) {
           const queryLower = q.toLowerCase();
           filteredItems = allItems.filter((item: any) =>
@@ -1448,8 +1469,10 @@ export class MainMediaAPI {
             (item.path || '').toLowerCase().includes(queryLower)
           );
         }
+        console.log(`[SEARCH-TIMING] ⏱️  Text filtering took: ${Date.now() - filterStart}ms (${allItems.length} → ${filteredItems.length} items)`);
 
         // Transform items with proper type detection
+        const transformStart = Date.now();
         const transformedItems = filteredItems.map((it: any) => {
           const mimeType = getMimeType(it.path);
           const lower = (mimeType || '').toLowerCase();
@@ -1480,14 +1503,19 @@ export class MainMediaAPI {
             metadata: it.metadata ? (typeof it.metadata === 'string' ? JSON.parse(it.metadata) : it.metadata) : undefined,
           };
         });
+        console.log(`[SEARCH-TIMING] ⏱️  Result transformation took: ${Date.now() - transformStart}ms`);
 
-        // Group by type  
+        // Group by type
+        const groupingStart = Date.now();
         const imageItems = transformedItems.filter(item => item.type === 'image');
         const audioItems = transformedItems.filter(item => item.type === 'audio');
         
         // For videos, deduplicate parent videos and segments
         const videoItems = transformedItems.filter(item => item.type === 'video');
+        const dedupeStart = Date.now();
         const deduplicatedVideos = await this.deduplicateVideoResults(videoItems);
+        console.log(`[SEARCH-TIMING] ⏱️  Video deduplication took: ${Date.now() - dedupeStart}ms (${videoItems.length} → ${deduplicatedVideos.length})`);
+        console.log(`[SEARCH-TIMING] ⏱️  Type grouping took: ${Date.now() - groupingStart}ms (${imageItems.length} images, ${deduplicatedVideos.length} videos, ${audioItems.length} audio)`);
         
         const typeGroups = {
           image: imageItems,
@@ -1496,6 +1524,7 @@ export class MainMediaAPI {
         };
 
         // Apply pagination per type
+        const paginationStart = Date.now();
         requestedTypes.forEach(type => {
           const items = typeGroups[type] || [];
           
@@ -1523,8 +1552,11 @@ export class MainMediaAPI {
             grouped.hasMore.audio = (offset + limit) < total;
           }
         });
+        console.log(`[SEARCH-TIMING] ⏱️  Pagination took: ${Date.now() - paginationStart}ms`);
 
         const executionTime = Date.now() - started;
+        console.log(`[SEARCH-TIMING] ✅ Fallback search completed in ${executionTime}ms`);
+        console.log(`[SEARCH-TIMING] 📊 Results: ${grouped.images.length} images, ${grouped.videos.length} videos, ${grouped.audio.length} audio`);
         return {
           success: true,
           results: {
