@@ -3,6 +3,7 @@ import { DockerWhisperService } from './docker-whisper-service';
 // import { WhisperCppService } from './whisper-cpp-service';
 // import { WhisperCliService } from './whisper-cli-service';
 import { ProcessingBatch } from './batch-processor';
+import { ConfigManager } from '../config';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -24,8 +25,10 @@ export class HttpTranscriptionService implements TranscriptionService {
   public name = 'http-transcription';
   private endpoint: string;
 
-  constructor(endpoint: string = 'http://localhost:9001/asr') {
-    this.endpoint = endpoint;
+  constructor(endpoint?: string) {
+    // Use config-based transcription URL for nginx path routing
+    const config = ConfigManager.getConfig();
+    this.endpoint = endpoint || config.ai.transcriptionUrl;
   }
 
   async transcribe(audioPath: string, options: any = {}) {
@@ -67,10 +70,11 @@ export class HttpTranscriptionService implements TranscriptionService {
 
   async isAvailable(): Promise<boolean> {
     try {
-      // Check if the base service is available (Whisper ASR webservice)
-      const baseUrl = this.endpoint.replace('/asr', '');
-      const response = await fetch(`${baseUrl}/docs`, { method: 'GET' });
-      return response.ok;
+      // Check if the transcription service is available via config URL
+      const config = ConfigManager.getConfig();
+      const response = await fetch(`${config.ai.transcriptionUrl}`, { method: 'GET' });
+      // Whisper service returns 405 Method Not Allowed for GET, which means it's available
+      return response.ok || response.status === 405;
     } catch {
       return false;
     }

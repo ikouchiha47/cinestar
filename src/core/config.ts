@@ -21,9 +21,13 @@ export interface AppConfig {
     baseUrl: string;
     useLoadBalancer: boolean;
     loadBalancerUrl: string;
-    // Separate URLs for performance optimization
-    searchUrl: string;      // Direct Ollama for search embeddings (no queuing)
-    indexingUrl: string;    // Load-balanced Ollama for indexing operations
+    // Specialized service URLs for optimal performance
+    embedUrl: string;        // Embedding service (BGE-large, tinyllama) - /embed path
+    captionUrl: string;      // Vision/captioning service (moondream:v2) - /caption path  
+    transcriptionUrl: string; // Transcription service (whisper) - /asr path
+    // Legacy URLs (deprecated but kept for backward compatibility)
+    searchUrl: string;       // Direct Ollama for search embeddings (no queuing)
+    indexingUrl: string;     // Load-balanced Ollama for indexing operations
     embeddingModel: string;
     embeddingDimensions: number;
     visionModel: string;
@@ -105,12 +109,16 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   ai: {
     provider: 'ollama',
-    baseUrl: 'http://localhost:11434',
+    baseUrl: 'http://localhost:11343',
     useLoadBalancer: false,
     loadBalancerUrl: 'http://localhost:9001',
-    // Performance optimization: separate URLs for search vs indexing
-    searchUrl: 'http://localhost:11434',      // Direct Ollama (fast, no queuing)
-    indexingUrl: 'http://localhost:11435',    // Load-balanced Ollama (distributed)
+    // Specialized service URLs for optimal performance
+    embedUrl: 'http://localhost:9001/embed',     // Embedding service via nginx
+    captionUrl: 'http://localhost:9001/caption', // Vision/captioning service via nginx
+    transcriptionUrl: 'http://localhost:9001/asr', // Transcription service via nginx
+    // Legacy URLs (deprecated but kept for backward compatibility)
+    searchUrl: 'http://localhost:11343',      // Direct Ollama instance 1 (fast, no queuing)
+    indexingUrl: 'http://localhost:9001',     // Nginx load balancer for Ollama (distributed)
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',

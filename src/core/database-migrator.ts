@@ -1,7 +1,7 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+import { isPackaged } from './utils/is-packaged';
 import { UnifiedMigrator } from './unified-migrator';
 
 export interface MigrationResult {
@@ -22,9 +22,7 @@ export class DatabaseMigrator {
       this.migrationsDir = migrationsDir;
     } else {
       // Detect if we're in packaged app or development
-      const isPackaged = process.env.NODE_ENV === 'production' || process.resourcesPath;
-      
-      if (isPackaged) {
+      if (isPackaged()) {
         // In packaged app, migrations are in the app bundle
         const appPath = process.resourcesPath || path.dirname(process.execPath);
         this.migrationsDir = path.join(appPath, 'app.asar.unpacked', 'src', 'core', 'migrations');

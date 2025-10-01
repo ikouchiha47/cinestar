@@ -4,9 +4,10 @@
  */
 
 import { execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { isPackaged, getResourcesPath } from './utils/is-packaged';
 
 export interface UnifiedMigrationResult {
   success: boolean;
@@ -38,9 +39,7 @@ export class UnifiedMigrator {
   }
 
   private getDefaultDataDir(): string {
-    const isProduction = process.env.NODE_ENV === 'production' || process.resourcesPath;
-    
-    if (isProduction) {
+    if (isPackaged()) {
       // Production: use user data directory  
       return path.join(os.homedir(), '.clipwise');
     } else {
@@ -50,14 +49,16 @@ export class UnifiedMigrator {
   }
 
   private getMigrationsDir(): string {
-    // Use proper Electron packaged detection - app.isPackaged is the reliable way
-    const isPackaged = process.env.NODE_ENV === 'production' && process.resourcesPath && !process.env.VITE_DEV_SERVER_URL;
+    // Use common utility for consistent packaged detection
+    const packed = isPackaged();
     
-    console.log(`[UNIFIED-MIGRATION-DEBUG] isPackaged: ${isPackaged}, NODE_ENV: ${process.env.NODE_ENV}, resourcesPath: ${process.resourcesPath}, VITE_DEV_SERVER_URL: ${process.env.VITE_DEV_SERVER_URL}`);
+    console.log(`[UNIFIED-MIGRATION-DEBUG] isPackaged: ${packed}, VITE_DEV_SERVER_URL: ${process.env.VITE_DEV_SERVER_URL}`);
+    console.log(`[UNIFIED-MIGRATION-DEBUG] resourcesPath: ${process.resourcesPath}`);
+    console.log(`[UNIFIED-MIGRATION-DEBUG] process.cwd(): ${process.cwd()}`);
     
-    if (isPackaged) {
-      // In packaged app, migrations are in the app bundle
-      const appPath = process.resourcesPath || path.dirname(process.execPath);
+    if (packed) {
+      // In packaged app, migrations are in app.asar.unpacked
+      const appPath = getResourcesPath();
       const migrationsPath = path.join(appPath, 'app.asar.unpacked', 'migrations_flat');
       console.log(`[UNIFIED-MIGRATION-DEBUG] Using packaged migrations path: ${migrationsPath}`);
       return migrationsPath;
@@ -250,6 +251,9 @@ export class UnifiedMigrator {
           return normalizeVersion(versionA) - normalizeVersion(versionB);
         });
       
+      console.log(`[UNIFIED-MIGRATION-DEBUG] Found ${migrationFiles.length} migration files:`, migrationFiles);
+      console.log(`[UNIFIED-MIGRATION-DEBUG] Migrations directory: ${this.migrationsDir}`);
+      
       const migrationsRun: string[] = [];
       
       for (const migrationFile of migrationFiles) {
@@ -262,9 +266,22 @@ export class UnifiedMigrator {
         // Check if migration has been applied to the target database
         const appliedMigrations = targetDb === this.videoDbPath ? appliedVideoMigrations : appliedMediaMigrations;
         
+        console.log(`[UNIFIED-MIGRATION-DEBUG] Processing ${migrationFile}:`);
+        console.log(`[UNIFIED-MIGRATION-DEBUG] - Raw version: ${version}, Normalized: ${normalizedVersion}`);
+        console.log(`[UNIFIED-MIGRATION-DEBUG] - Target DB: ${path.basename(targetDb)}`);
+        console.log(`[UNIFIED-MIGRATION-DEBUG] - Applied migrations: [${appliedMigrations.join(', ')}]`);
+        console.log(`[UNIFIED-MIGRATION-DEBUG] - Already applied? ${appliedMigrations.includes(normalizedVersion)}`);
+        
         if (!appliedMigrations.includes(normalizedVersion)) {
-          this.applyMigration(migrationFile, targetDb);
-          migrationsRun.push(migrationFile);
+          console.log(`[UNIFIED-MIGRATION-DEBUG] Applying ${migrationFile}...`);
+          try {
+            this.applyMigration(migrationFile, targetDb);
+            migrationsRun.push(migrationFile);
+            console.log(`[UNIFIED-MIGRATION-DEBUG] ✅ Successfully applied ${migrationFile}`);
+          } catch (error) {
+            console.error(`[UNIFIED-MIGRATION-DEBUG] ❌ Failed to apply ${migrationFile}:`, error);
+            throw error;
+          }
         } else {
           console.log(`[UNIFIED-MIGRATION] ⏭️  Skipping ${migrationFile} (already applied)`);
         }
@@ -300,9 +317,7 @@ export class UnifiedMigrator {
 
 // Helper function for backward compatibility
 export function getDefaultDataDir(): string {
-  const isProduction = process.env.NODE_ENV === 'production' || process.resourcesPath;
-  
-  if (isProduction) {
+  if (isPackaged()) {
     return path.join(os.homedir(), '.clipwise');
   } else {
     return path.join(process.cwd(), 'data');

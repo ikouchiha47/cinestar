@@ -24,6 +24,12 @@ function ts() {
 function safeWrite(line: string) {
   try {
     stream.write(line + '\n');
+    // Force flush in production to ensure logs are written immediately
+    if (process.env.NODE_ENV !== 'development') {
+      try {
+        (stream as any).fd && fs.fsyncSync((stream as any).fd);
+      } catch {}
+    }
   } catch {}
 }
 

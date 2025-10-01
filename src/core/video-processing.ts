@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
 import { ConfigManager } from './config';
+import { isPackaged } from './utils/is-packaged';
 // FFmpeg/FFprobe paths are configured centrally in electron/main.ts via ffmpeg-bootstrap
 
 export interface VideoSegment {
@@ -260,8 +261,7 @@ export function getCacheDir(videoFile: string): string {
   const hash = Buffer.from(videoFile).toString('base64').replace(/[/+=]/g, '');
   
   // Use user data directory in production, project directory in development
-  const isProduction = process.env.NODE_ENV === 'production' || process.resourcesPath;
-  const baseDir = isProduction 
+  const baseDir = isPackaged() 
     ? path.join(os.homedir(), '.clipwise', 'cache')
     : path.join(process.cwd(), '.cache');
     

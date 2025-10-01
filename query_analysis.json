@@ -1,0 +1,179 @@
+[
+  {
+    "dbName": "video-rag.db",
+    "tableName": "video_processing_jobs",
+    "indexedCols": [
+      ["video_path"],
+      ["status"],
+      ["video_path", "status"],
+      ["status", "created_at"],
+      ["refinement_pass", "scheduled_at"],
+      ["parent_job_id"],
+      ["scheduled_at", "status"],
+      ["id"]
+    ],
+    "queryPatterns": [
+      "SELECT id, status FROM video_processing_jobs WHERE video_path = ? AND status IN (...)",
+      "SELECT * FROM video_processing_jobs WHERE status = ? ORDER BY created_at DESC",
+      "UPDATE video_processing_jobs SET ... WHERE id = ?",
+      "DELETE FROM video_processing_jobs WHERE video_path = ?"
+    ]
+  },
+  {
+    "dbName": "video-rag.db", 
+    "tableName": "video_files",
+    "indexedCols": [
+      ["file_path"],
+      ["processing_status"],
+      ["id"],
+      ["created_at", "processing_status"]
+    ],
+    "queryPatterns": [
+      "SELECT * FROM video_files WHERE file_path = ?",
+      "SELECT id FROM video_files WHERE file_path = ?",
+      "SELECT * FROM video_files WHERE processing_status = ?",
+      "UPDATE video_files SET ... WHERE id = ?",
+      "DELETE FROM video_files WHERE id = ?"
+    ]
+  },
+  {
+    "dbName": "video-rag.db",
+    "tableName": "video_segments", 
+    "indexedCols": [
+      ["video_id"],
+      ["video_id", "start_time"],
+      ["id"],
+      ["segment_id"]
+    ],
+    "queryPatterns": [
+      "SELECT * FROM video_segments WHERE video_id = ? ORDER BY start_time",
+      "SELECT COUNT(*) as count FROM video_segments WHERE video_id = ?",
+      "UPDATE video_segments SET ... WHERE id = ?",
+      "DELETE FROM video_segments WHERE video_id = ?",
+      "SELECT id FROM video_segments WHERE video_id = ?"
+    ]
+  },
+  {
+    "dbName": "video-rag.db",
+    "tableName": "video_keyframes",
+    "indexedCols": [
+      ["segment_id"],
+      ["video_id"],
+      ["created_at"],
+      ["id"],
+      ["caption"],
+      ["embedding"]
+    ],
+    "queryPatterns": [
+      "SELECT id, video_id, segment_id, image_path, label FROM video_keyframes WHERE caption IS NULL OR TRIM(caption) = '' ORDER BY created_at ASC",
+      "SELECT id, caption FROM video_keyframes WHERE caption IS NOT NULL AND TRIM(caption) <> '' AND embedding IS NULL ORDER BY created_at ASC",
+      "UPDATE video_keyframes SET caption = ? WHERE id = ?",
+      "UPDATE video_keyframes SET embedding = ? WHERE id = ?",
+      "DELETE FROM video_keyframes WHERE segment_id IN (...)"
+    ]
+  },
+  {
+    "dbName": "video-rag.db",
+    "tableName": "processing_batches",
+    "indexedCols": [
+      ["video_id"],
+      ["video_id", "status"],
+      ["video_id", "batch_index", "status"],
+      ["status"]
+    ],
+    "queryPatterns": [
+      "SELECT COUNT(*) FROM processing_batches WHERE video_id = ? AND status = ?",
+      "SELECT * FROM processing_batches WHERE video_id = ? ORDER BY batch_index",
+      "UPDATE processing_batches SET status = ? WHERE video_id = ? AND batch_index = ?"
+    ]
+  },
+  {
+    "dbName": "video-rag.db",
+    "tableName": "scene_reconstruction_jobs",
+    "indexedCols": [
+      ["video_path"],
+      ["status"],
+      ["job_type", "status"],
+      ["scheduled_at"],
+      ["id"]
+    ],
+    "queryPatterns": [
+      "DELETE FROM scene_reconstruction_jobs WHERE video_path = ?",
+      "SELECT * FROM scene_reconstruction_jobs WHERE job_type = ? AND status = ? ORDER BY priority ASC",
+      "UPDATE scene_reconstruction_jobs SET status = ? WHERE id = ?"
+    ]
+  },
+  {
+    "dbName": "vector.db",
+    "tableName": "media_sources",
+    "indexedCols": [
+      ["path"],
+      ["id"],
+      ["created_at"],
+      ["path", "enabled"]
+    ],
+    "queryPatterns": [
+      "SELECT id FROM media_sources WHERE path = ?",
+      "SELECT * FROM media_sources WHERE id = ?",
+      "SELECT * FROM media_sources ORDER BY datetime(created_at) DESC",
+      "DELETE FROM media_sources WHERE id = ?",
+      "UPDATE media_sources SET ... WHERE id = ?"
+    ]
+  },
+  {
+    "dbName": "vector.db", 
+    "tableName": "media_items",
+    "indexedCols": [
+      ["source_id", "path"],
+      ["source_id"],
+      ["created_at"],
+      ["type"],
+      ["caption_status"],
+      ["embedding_status"],
+      ["type", "caption_status"],
+      ["type", "embedding_status"],
+      ["id"]
+    ],
+    "queryPatterns": [
+      "SELECT id FROM media_items WHERE source_id = ? AND path = ?",
+      "SELECT * FROM media_items WHERE source_id = ? ORDER BY datetime(created_at) DESC",
+      "SELECT * FROM media_items ORDER BY datetime(created_at) DESC",
+      "SELECT * FROM media_items WHERE lower(name) LIKE ? OR lower(path) LIKE ? OR lower(caption) LIKE ?",
+      "UPDATE media_items SET ... WHERE id = ?",
+      "DELETE FROM media_items WHERE source_id = ?",
+      "DELETE FROM media_items WHERE id = ?"
+    ]
+  },
+  {
+    "dbName": "vector.db",
+    "tableName": "indexing_jobs", 
+    "indexedCols": [
+      ["source_id"],
+      ["status"],
+      ["status", "created_at"],
+      ["id"]
+    ],
+    "queryPatterns": [
+      "SELECT source_id FROM indexing_jobs WHERE id = ?",
+      "UPDATE indexing_jobs SET ... WHERE id = ?",
+      "DELETE FROM indexing_jobs WHERE source_id = ?"
+    ]
+  },
+  {
+    "dbName": "orchestrator.db",
+    "tableName": "jobs",
+    "indexedCols": [
+      ["id"],
+      ["status"],
+      ["status", "created_at"],
+      ["queue", "status", "scheduled_at"]
+    ],
+    "queryPatterns": [
+      "SELECT * FROM jobs WHERE id = ?",
+      "SELECT * FROM jobs WHERE status = ? ORDER BY created_at DESC",
+      "SELECT * FROM jobs ORDER BY created_at DESC",
+      "SELECT * FROM jobs WHERE queue = ? AND (status = ? OR (status = ? AND scheduled_at <= ?)) ORDER BY created_at ASC",
+      "UPDATE jobs SET ... WHERE id = ?"
+    ]
+  }
+]

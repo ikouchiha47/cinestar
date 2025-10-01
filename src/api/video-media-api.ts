@@ -186,6 +186,17 @@ export class VideoMediaAPI {
         // Continue anyway - background processing will handle it
       }
       
+      // HACKY FIX: Check if job already exists to prevent duplicate processing
+      const existingJobs = await this.videoDb.database.prepare(`
+        SELECT id, status FROM video_processing_jobs 
+        WHERE video_path = ? AND status IN ('pending', 'scheduled', 'processing')
+      `).all(videoPath);
+      
+      if (existingJobs.length > 0) {
+        console.log(`[VIDEO-UPLOAD] 🔥 IDEMPOTENCY: Job already exists for ${videoPath}, returning existing job ${(existingJobs[0] as any).id}`);
+        return (existingJobs[0] as any).id;
+      }
+
       // Create job in database for background processing (Pass 1 scheduled)
       const jobId = await this.videoDb.createJob({
         videoPath,
@@ -391,6 +402,67 @@ export class VideoMediaAPI {
     console.log(`[VIDEO-API-ACTIVE] 📋 VideoMediaAPI returning ${jobs.length} jobs:`, 
       jobs.map(j => ({ id: j.id, status: j.status, videoPath: j.videoPath })));
     return jobs;
+  }
+
+  /**
+   * Delete all processing jobs and video data for a specific video path
+   * Used when deleting a video to prevent job resurrection
+   * Cleans up ALL related tables in video-rag.db
+   */
+  async deleteJobsByVideoPath(videoPath: string): Promise<number> {
+    console.log(`[VIDEO-API-DELETE] 🗑️  Comprehensive cleanup for: ${videoPath}`);
+    
+    let totalDeleted = 0;
+    
+    // Get video_id first (needed for cascading deletes)
+    const videoFile = await this.videoDb.database.prepare(`
+      SELECT id FROM video_files WHERE file_path = ?
+    `).get(videoPath) as { id: string } | undefined;
+    
+    if (videoFile) {
+      const videoId = videoFile.id;
+      
+      // Delete video_keyframes (references segments)
+      const deletedKeyframes = await this.videoDb.database.prepare(`
+        DELETE FROM video_keyframes 
+        WHERE segment_id IN (SELECT id FROM video_segments WHERE video_id = ?)
+      `).run(videoId);
+      console.log(`[VIDEO-API-DELETE] Deleted ${deletedKeyframes.changes || 0} keyframes`);
+      
+      // Delete video_segments
+      const deletedSegments = await this.videoDb.database.prepare(`
+        DELETE FROM video_segments WHERE video_id = ?
+      `).run(videoId);
+      totalDeleted += deletedSegments.changes || 0;
+      console.log(`[VIDEO-API-DELETE] Deleted ${deletedSegments.changes || 0} segments`);
+      
+      // Delete from video_files
+      const deletedFiles = await this.videoDb.database.prepare(`
+        DELETE FROM video_files WHERE id = ?
+      `).run(videoId);
+      totalDeleted += deletedFiles.changes || 0;
+      console.log(`[VIDEO-API-DELETE] Deleted ${deletedFiles.changes || 0} video files`);
+    }
+    
+    // Delete from video_processing_jobs (by path, not video_id)
+    const deletedJobs = await this.videoDb.database.prepare(`
+      DELETE FROM video_processing_jobs WHERE video_path = ?
+    `).run(videoPath);
+    totalDeleted += deletedJobs.changes || 0;
+    console.log(`[VIDEO-API-DELETE] Deleted ${deletedJobs.changes || 0} processing jobs`);
+    
+    // Delete from scene_reconstruction_jobs (if table exists)
+    try {
+      const deletedSceneJobs = await this.videoDb.database.prepare(`
+        DELETE FROM scene_reconstruction_jobs WHERE video_path = ?
+      `).run(videoPath);
+      console.log(`[VIDEO-API-DELETE] Deleted ${deletedSceneJobs.changes || 0} scene reconstruction jobs`);
+    } catch (e) {
+      // Table might not exist, ignore
+    }
+    
+    console.log(`[VIDEO-API-DELETE] ✅ Total deleted: ${totalDeleted} records for: ${videoPath}`);
+    return totalDeleted;
   }
 
   /**

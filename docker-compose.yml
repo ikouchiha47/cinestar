@@ -9,10 +9,10 @@ x-ollama: &ollama
   volumes:
     - ${OLLAMA_MODELS:-~/.ollama}:/root/.ollama
   environment: &env
-    OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:--1}
+    OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
     OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-5m}
-    OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-3}
-    OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-5}
+    OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+    OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-3}
     OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-0}
     OLLAMA_DEBUG: ${OLLAMA_DEBUG:-0}
     OLLAMA_HOST: 0.0.0.0
@@ -20,61 +20,80 @@ x-ollama: &ollama
   deploy:
     resources:
       limits:
-        memory: 6G
+        memory: 8G
       reservations:
-        memory: 4G
+        memory: 6G
 
 services:
 
-  # Secondary Ollama instance for load balancing
-  ollama-2:
+  # Embedding service Ollama (BGE-large, tinyllama for search)
+  ollama-embed:
     <<: *ollama
-    container_name: drillbit-ollama-2
+    container_name: drillbit-ollama-embed
+    # No external ports - nginx connects via internal Docker network
     environment:
       <<: *env
-      CUDA_VISIBLE_DEVICES: ${CUDA_DEVICE_2:-0}
+      # Share the same models directory as other Ollama instances
+    volumes:
+      - ${OLLAMA_MODELS:-~/.ollama}:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 10 &&
+       ollama pull qllama/bge-large-en-v1.5:latest &&
+       ollama pull tinyllama:latest &&
+       wait"
 
-  # Unified nginx proxy for both Ollama and Whisper services
+  # Vision/Captioning service Ollama (moondream:v2)
+  ollama-caption:
+    <<: *ollama
+    container_name: drillbit-ollama-caption
+    # No external ports - nginx connects via internal Docker network
+    environment:
+      <<: *env
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 10 &&
+       ollama pull moondream:v2 &&
+       wait"
+
   nginx-lb:
     container_name: drillbit-nginx-lb
     image: nginx:alpine
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "${OLLAMA_LB_PORT:-11435}:11434"  # Ollama proxy
-      - "${WHISPER_LB_PORT:-9001}:9001"   # Whisper proxy
+      - "${OLLAMA_LB_PORT:-9001}:9001"    # Ollama load balancer
     depends_on:
-      ollama:
+      ollama-embed:
         condition: service_healthy
-      ollama-2:
-        condition: service_healthy
-      whisper:
+      ollama-caption:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9001/"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-
-  # Main Ollama service (single instance)
-  ollama:
-    <<: *ollama
-    container_name: drillbit-ollama
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
 
   # Whisper transcription service
   whisper:

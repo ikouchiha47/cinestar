@@ -744,6 +744,20 @@ export class MainMediaAPI {
         }
       }
       
+      // CRITICAL: Also delete associated video processing jobs to prevent resurrection
+      if (item.type === 'video' && item.path) {
+        try {
+          const { VideoMediaAPI } = await import('./video-media-api');
+          const videoAPI = VideoMediaAPI.getInstance();
+          
+          // Delete all jobs for this video path
+          const deleted = await videoAPI.deleteJobsByVideoPath(item.path);
+          console.log(`[MEDIA-DELETE] Deleted ${deleted} video processing jobs for: ${item.path}`);
+        } catch (error) {
+          console.warn(`[MEDIA-DELETE] Failed to delete video jobs (non-critical):`, error);
+        }
+      }
+      
       console.log(`[MEDIA-DELETE] Successfully removed ${item.name} from library`);
       return { success: true };
       
@@ -1089,18 +1103,37 @@ export class MainMediaAPI {
             jobDescription = `Queued for video processing: ${fileName}`;
             operationType = 'video_queue';
           } else if (j.status === 'running' || j.status === 'processing') {
-            if (j.progress < 30) {
-              jobTitle = 'Extracting Video Segments';
-              jobDescription = `Extracting segments from ${fileName}`;
-              operationType = 'video_segmentation';
-            } else if (j.progress < 70) {
-              jobTitle = 'Generating Transcriptions';
-              jobDescription = `Creating transcriptions for ${fileName}`;
-              operationType = 'video_transcription';
+            // Use stored status message and metadata instead of hardcoded progress thresholds
+            console.log(`[UI-DEBUG] Job ${j.id}: statusMessage="${j.statusMessage}", progress=${j.progress}`);
+            if (j.statusMessage) {
+              // Use stored status message as job title
+              jobTitle = j.statusMessage;
+              
+              // Try to get additional info from metadata
+              let metadata: any = {};
+              try {
+                metadata = j.metadata ? JSON.parse(j.metadata) : {};
+              } catch (e) {
+                // Ignore metadata parsing errors
+              }
+              
+              jobDescription = metadata.actionDescription || `Processing ${fileName}`;
+              operationType = metadata.currentPhase === 'phase0' ? 'video_segmentation' : 'video_keyframes';
             } else {
-              jobTitle = 'Creating Keyframes';
-              jobDescription = `Generating keyframes for ${fileName}`;
-              operationType = 'video_keyframes';
+              // Fallback to old progress-based logic (for compatibility)
+              if (j.progress < 30) {
+                jobTitle = 'Extracting Video Segments';
+                jobDescription = `Extracting segments from ${fileName}`;
+                operationType = 'video_segmentation';
+              } else if (j.progress < 70) {
+                jobTitle = 'Generating Transcriptions';
+                jobDescription = `Creating transcriptions for ${fileName}`;
+                operationType = 'video_transcription';
+              } else {
+                jobTitle = 'Creating Keyframes';
+                jobDescription = `Generating keyframes for ${fileName}`;
+                operationType = 'video_keyframes';
+              }
             }
           } else if (j.status === 'completed') {
             jobTitle = 'Video Processing Complete';

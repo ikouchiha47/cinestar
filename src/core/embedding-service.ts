@@ -54,18 +54,14 @@ export class EmbeddingService {
     embeddingModel?: string,
     rerankModel?: string
   ) {
-    // Lock to explicit backend URL and provider (no inference)
     const cfg = ConfigManager.getConfig();
     const envProvider = (process.env.EMBEDDINGS_PROVIDER || '').toLowerCase();
 
-    // PERFORMANCE: Use direct Ollama instance for search embeddings (no load balancer)
-    // This avoids contention with Phase 1 captioning operations
-    const finalBase = (baseUrl || cfg.ai.searchUrl).replace(/\/$/, '');
-    const finalProvider: 'ollama' | 'openai' = envProvider === 'openai' ? 'openai' : 'ollama';
-    
-    console.log(`[EMBEDDING-SERVICE] Using Ollama URL for search: ${finalBase}`);
-
+    // PERFORMANCE: Use specialized embed URL for embedding generation
+    const finalBase = (baseUrl || cfg.ai.embedUrl).replace(/\/$/, '');
     this.baseUrl = finalBase;
+    
+    const finalProvider = envProvider === 'openai' ? 'openai' : 'ollama';
     this.provider = finalProvider;
     this.apiKey = apiKey || process.env.EMBEDDINGS_API_KEY || '';
     

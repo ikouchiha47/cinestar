@@ -18,18 +18,19 @@ import path from 'path';
  */
 export class VideoJobProcessor {
   private videoDb: VideoDatabase;
+  private vectorDb: SqliteVecDatabase;
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
   // private concurrencyLimiter: ConcurrencyLimiter; // Unused
-  private vectorDb: SqliteVecDatabase;
   private refinementScheduler: RefinementJobScheduler;
   private incrementalProcessor: IncrementalSegmentProcessor;
   private segmentIndexer: VideoSegmentIndexer;
   private batchProcessor?: BatchProcessor;
   private transcriptionProcessor: TranscriptionProcessor;
-  private isRunning = false;
-  private isProcessing = false;
+  private isRunning: boolean = false;
+  private isProcessing: boolean = false;
   private processingInterval: NodeJS.Timeout | null = null;
+  private processingLoopPromise: Promise<void> | null = null;
   private currentJobId: string | null = null;
   private segmentCount = 0;
 
@@ -87,26 +88,241 @@ export class VideoJobProcessor {
       return;
     }
 
-    console.log('[VIDEO-JOB-PROCESSOR] Starting video job processor...');
-    
-    // Initialize databases
-    await this.videoDb.initialize();
-    
-    // BatchProcessor already initialized in constructor - no need to set to null
-    
+    console.log('[VIDEO-JOB-PROCESSOR] Starting background job processor...');
     this.isRunning = true;
+
+    // Recover any stalled jobs on startup
+    try {
+      await this.recoverStalledVideoJobs();
+    } catch (error) {
+      console.error('[VIDEO-JOB-PROCESSOR] Failed to recover stalled jobs:', error);
+    }
+
+    console.log('[VIDEO-JOB-PROCESSOR] Background job processor started with progressive refinement');
     
-    // Start refinement scheduler
-    await this.refinementScheduler.start();
-    
-    // Start processing loop
-    this.processingInterval = setInterval(async () => {
-      if (!this.isProcessing) {
-        await this.processNextJob();
+    // Start the processing loop (Go-style with promisified setTimeout)
+    // Store promise reference to prevent garbage collection in production builds
+    this.processingLoopPromise = this.runProcessingLoop().catch(err => {
+      console.error('[VIDEO-JOB-PROCESSOR] Processing loop crashed:', err);
+      // Restart the loop if it crashes
+      if (this.isRunning) {
+        console.log('[VIDEO-JOB-PROCESSOR] Restarting processing loop...');
+        setTimeout(() => {
+          this.processingLoopPromise = this.runProcessingLoop().catch(err => {
+            console.error('[VIDEO-JOB-PROCESSOR] Processing loop crashed again:', err);
+          });
+        }, 5000);
       }
-    }, 5000); // Check every 5 seconds
+    });
+  }
+
+  /**
+   * Main processing loop - runs continuously while isRunning is true
+   * Similar to Go's: for { select { case <-time.After(5*time.Second): ... } }
+   */
+  private async runProcessingLoop(): Promise<void> {
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     
-    console.log('[VIDEO-JOB-PROCESSOR] Video job processor started with progressive refinement');
+    // CRITICAL: Direct file logging for production debugging (only in debug mode)
+    // await this.writeLoopDebug(`LOOP-START: Processing loop starting...`);
+    console.log('[VIDEO-JOB-PROCESSOR] Starting processing loop...');
+    
+    let iteration = 0;
+    while (this.isRunning) {
+      try {
+        iteration++;
+        // await this.writeLoopDebug(`LOOP-ITERATION-${iteration}: About to call processNextJob()`);
+        await this.processNextJob();
+        // await this.writeLoopDebug(`LOOP-ITERATION-${iteration}: processNextJob() completed`);
+      } catch (error) {
+        await this.writeLoopDebug(`LOOP-ERROR-${iteration}: ${error}`); // Keep error logging
+        console.error('[VIDEO-JOB-PROCESSOR] Error in processing loop:', error);
+      }
+      
+      // Wait 5 seconds before next check (like Go's <-time.After(5*time.Second))
+      // await this.writeLoopDebug(`LOOP-ITERATION-${iteration}: Sleeping for 5 seconds...`);
+      await sleep(5000);
+    }
+    
+    // await this.writeLoopDebug('LOOP-STOP: Processing loop stopped');
+    console.log('[VIDEO-JOB-PROCESSOR] Processing loop stopped');
+  }
+
+  /**
+   * Check if debug mode is enabled
+   */
+  private isDebugMode(): boolean {
+    return process.env.DEBUG_MODE === 'true' || process.env.NODE_ENV === 'development';
+  }
+
+  /**
+   * Write debug info directly to file (bypasses console logging issues)
+   * Only writes to file when debug mode is enabled
+   */
+  private async writeLoopDebug(message: string): Promise<void> {
+    // Only log to file in debug mode to prevent performance issues
+    if (!this.isDebugMode()) return;
+    
+    try {
+      const fs = await import('fs');
+      const os = await import('os');
+      const path = await import('path');
+      
+      const logPath = path.join(os.homedir(), '.clipwise', 'loop-debug.txt');
+      const timestamp = new Date().toISOString();
+      const logLine = `[${timestamp}] ${message}\n`;
+      
+      fs.appendFileSync(logPath, logLine);
+    } catch (e) {
+      // Silent fail - don't break the loop
+    }
+  }
+
+  /**
+   * Get completed batches for a job to determine resume progress
+   */
+  private async getCompletedBatches(jobId: string): Promise<{phase0: number, phase1: number, totalBatches: number}> {
+    try {
+      const job = await this.videoDb.getJob(jobId);
+      if (!job) return {phase0: 0, phase1: 0, totalBatches: 0};
+
+      // Get the parent video ID from the job's video path
+      const parentVideo = await this.getParentVideo(job.videoPath);
+      if (!parentVideo || !parentVideo.id) {
+        console.warn(`[JOB-RESUME] No parent video found for ${job.videoPath}`);
+        return {phase0: 0, phase1: 0, totalBatches: 0};
+      }
+
+      // Count batches that completed Phase 0 (transcription) - status = 'audio_only' or higher
+      const phase0Batches = await this.videoDb.database.prepare(`
+        SELECT COUNT(1) as count FROM processing_batches 
+        WHERE video_id = ? AND status IN ('audio_only', 'enhanced', 'complete')
+      `).get(parentVideo.id) as {count: number};
+
+      // Count batches that completed Phase 1 (keyframes/captions) - status = 'enhanced' or 'complete'
+      const phase1Batches = await this.videoDb.database.prepare(`
+        SELECT COUNT(1) as count FROM processing_batches 
+        WHERE video_id = ? AND status IN ('enhanced', 'complete')
+      `).get(parentVideo.id) as {count: number};
+
+      // Get total batches that exist for this video
+      const totalBatches = await this.videoDb.database.prepare(`
+        SELECT COUNT(1) as count FROM processing_batches 
+        WHERE video_id = ?
+      `).get(parentVideo.id) as {count: number};
+
+      console.log(`[JOB-RESUME] Progress for ${jobId}: Phase0=${phase0Batches?.count || 0}/${totalBatches?.count || 0}, Phase1=${phase1Batches?.count || 0}/${totalBatches?.count || 0}`);
+
+      return {
+        phase0: phase0Batches?.count || 0,
+        phase1: phase1Batches?.count || 0,
+        totalBatches: totalBatches?.count || 0
+      };
+    } catch (error) {
+      console.error(`[JOB-RESUME] Failed to get completed batches for ${jobId}:`, error);
+      return {phase0: 0, phase1: 0, totalBatches: 0};
+    }
+  }
+
+
+  /**
+   * Calculate phase-specific progress and current phase info
+   */
+  private calculatePhaseProgress(phase0Complete: number, phase1Complete: number, totalBatches: number): {
+    progress: number;
+    currentPhase: 'phase0' | 'phase1' | 'completed';
+    phaseProgress: number;
+    actionTitle: string;
+    actionDescription: string;
+  } {
+    if (totalBatches === 0) {
+      return {
+        progress: 0,
+        currentPhase: 'phase0',
+        phaseProgress: 0,
+        actionTitle: 'Extracting Video Segments',
+        actionDescription: 'Preparing video for processing'
+      };
+    }
+    
+    // Validate checkpoint consistency
+    if (phase1Complete > phase0Complete) {
+      console.warn(`[JOB-RESUME] ⚠️ Inconsistent state: Phase1 (${phase1Complete}) > Phase0 (${phase0Complete}). Capping Phase1.`);
+      phase1Complete = phase0Complete;
+    }
+    
+    // Determine current phase and phase-specific progress (0-100% within that phase)
+    let currentPhase: 'phase0' | 'phase1' | 'completed';
+    let phaseProgress: number;
+    let actionTitle: string;
+    let actionDescription: string;
+    
+    if (phase0Complete < totalBatches) {
+      // Still in Phase 0 - show Phase 0 progress
+      currentPhase = 'phase0';
+      phaseProgress = Math.floor((phase0Complete / totalBatches) * 100);
+      actionTitle = 'Extracting Video Segments';
+      actionDescription = 'Processing audio transcription and basic indexing';
+    } else if (phase1Complete < totalBatches) {
+      // Phase 0 complete, in Phase 1 - show Phase 1 progress
+      currentPhase = 'phase1';
+      phaseProgress = Math.floor((phase1Complete / totalBatches) * 100);
+      actionTitle = 'Creating Keyframes';
+      actionDescription = 'Generating keyframes and enhanced embeddings';
+    } else {
+      // Both phases complete
+      currentPhase = 'completed';
+      phaseProgress = 100;
+      actionTitle = 'Video Processing Complete';
+      actionDescription = 'All processing phases completed successfully';
+    }
+    
+    console.log(`[JOB-PROGRESS] 📊 Phase calculation: Phase0=${phase0Complete}/${totalBatches}, Phase1=${phase1Complete}/${totalBatches} → Current: ${currentPhase} at ${phaseProgress}% within phase`);
+    
+    return {
+      progress: phaseProgress, // Phase-specific progress (0-100% within current phase)
+      currentPhase,
+      phaseProgress,
+      actionTitle,
+      actionDescription
+    };
+  }
+
+  /**
+   * Recover stalled jobs on startup
+   */
+  private async recoverStalledVideoJobs(): Promise<void> {
+    console.log('[VIDEO-JOB-PROCESSOR] 🔧 Recovering stalled jobs...');
+    
+    // Reset any jobs stuck in 'processing' status back to 'scheduled'
+    const stalledJobs = await this.videoDb.database.prepare(`
+      SELECT id, file_name FROM video_processing_jobs 
+      WHERE status = 'processing'
+    `).all() as Array<{id: string, file_name: string}>;
+    
+    if (stalledJobs.length > 0) {
+      console.log(`[VIDEO-JOB-PROCESSOR] Found ${stalledJobs.length} stalled jobs, calculating resume progress...`);
+      
+      for (const job of stalledJobs) {
+        // Calculate actual progress based on completed batches
+        const {phase0, phase1, totalBatches} = await this.getCompletedBatches(job.id);
+        const phaseInfo = this.calculatePhaseProgress(phase0, phase1, totalBatches);
+        
+        await this.videoDb.updateJob(job.id, {
+          status: 'scheduled',
+          progress: phaseInfo.progress,
+          statusMessage: phaseInfo.actionTitle,  // Use existing statusMessage field
+          metadata: JSON.stringify({
+            currentPhase: phaseInfo.currentPhase,
+            actionDescription: phaseInfo.actionDescription
+          })
+        });
+        
+        console.log(`[VIDEO-JOB-PROCESSOR] 🔄 Resumed stalled job: ${job.id} (${job.file_name}) at ${phaseInfo.progress}% in ${phaseInfo.currentPhase} (Phase0: ${phase0}/${totalBatches}, Phase1: ${phase1}/${totalBatches})`);
+      }
+    } else {
+      console.log('[VIDEO-JOB-PROCESSOR] No stalled jobs found');
+    }
   }
 
   /**
@@ -115,15 +331,12 @@ export class VideoJobProcessor {
   async stop(): Promise<void> {
     console.log(`[VIDEO-JOB-PROCESSOR] Stopping background job processor`);
     
-    if (this.processingInterval) {
-      clearInterval(this.processingInterval);
-      this.processingInterval = null;
-    }
+    // Stop the processing loop (will exit on next iteration)
+    this.isRunning = false;
     
     // Stop refinement scheduler
     this.refinementScheduler.stop();
     
-    this.isRunning = false;
     console.log(`[VIDEO-JOB-PROCESSOR] Background job processor stopped`);
   }
 
@@ -131,19 +344,38 @@ export class VideoJobProcessor {
    * Process the next pending job
    */
   private async processNextJob(): Promise<void> {
+    console.log('[VIDEO-JOB-PROCESSOR] 🚀 processNextJob() CALLED');
+    // Debug logging to file (bypasses broken console logger)
+    // Only writes to file when debug mode is enabled
+    const debugLog = (msg: string) => {
+      if (!this.isDebugMode()) return;
+      
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const os = require('os');
+        const logPath = path.join(os.homedir(), '.clipwise', 'processor-debug.txt');
+        fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+      } catch {}
+    };
+    
     try {
       this.isProcessing = true;
+      debugLog('processNextJob() called');
       
       console.log(`[VIDEO-JOB-PROCESSOR] 🔍 Checking for pending jobs...`);
       const pendingJobs = await this.videoDb.getPendingJobs();
+      debugLog(`Found ${pendingJobs.length} pending jobs`);
       console.log(`[VIDEO-JOB-PROCESSOR] 📊 Found ${pendingJobs.length} pending jobs`);
       
       if (pendingJobs.length === 0) {
+        debugLog('No pending jobs, waiting...');
         console.log(`[VIDEO-JOB-PROCESSOR] 💤 No pending jobs, waiting...`);
         return;
       }
 
       const job = pendingJobs[0];
+      debugLog(`Processing job ${job.id} for ${job.videoPath}`);
       console.log(`[VIDEO-JOB-PROCESSOR] 🎯 Processing job ${job.id} for ${job.videoPath}`, {
         status: job.status,
         refinementPass: job.refinementPass,
@@ -156,14 +388,18 @@ export class VideoJobProcessor {
         startTime: new Date(),
         progress: 0
       });
+      debugLog(`Updated job ${job.id} to processing status`);
 
       // Process the video
       await this.processVideoJob(job);
+      debugLog(`Completed processing job ${job.id}`);
 
     } catch (error) {
+      debugLog(`ERROR in processNextJob: ${error}`);
       console.error(`[VIDEO-JOB-PROCESSOR-ERROR] Failed to process job:`, error);
     } finally {
       this.isProcessing = false;
+      debugLog('processNextJob() finished, isProcessing = false');
     }
   }
 
@@ -190,27 +426,41 @@ export class VideoJobProcessor {
 
         // PHASE 0: Immediate batch processing for 60-second searchability
         console.log(`[VIDEO-JOB-PROCESSOR] 🚀 Starting Phase 0: Immediate batch processing`);
+        // await this.writeLoopDebug(`PHASE-0-START: Starting immediate batch processing for ${job.videoPath}`);
         try {
           await this.processImmediateBatches(job.id);
           phase0Success = true;
+          // await this.writeLoopDebug(`PHASE-0-SUCCESS: Phase 0 completed successfully`);
           console.log(`[VIDEO-JOB-PROCESSOR] ✅ Phase 0 complete - Video is now searchable!`);
         } catch (error) {
+          await this.writeLoopDebug(`PHASE-0-ERROR: ${error}`); // Keep error logging
           console.error(`[VIDEO-JOB-PROCESSOR] ❌ Phase 0 failed:`, error);
         }
 
         // PHASE 1: Enhanced batch processing with visual context
         console.log(`[VIDEO-JOB-PROCESSOR] 🎨 Starting Phase 1: Enhanced batch processing`);
+        // await this.writeLoopDebug(`PHASE-1-START: Starting enhanced batch processing for ${job.videoPath}`);
         try {
           await this.processEnhancedBatches(job.id);
           phase1Success = true;
+          // await this.writeLoopDebug(`PHASE-1-SUCCESS: Phase 1 completed successfully`);
           console.log(`[VIDEO-JOB-PROCESSOR] ✅ Phase 1 complete - Enhanced visual processing!`);
         } catch (error) {
+          await this.writeLoopDebug(`PHASE-1-ERROR: ${error}`); // Keep error logging
           console.error(`[VIDEO-JOB-PROCESSOR] ❌ Phase 1 failed:`, error);
         }
 
         // Check if any segments were actually created
-        const segmentCount = await this.videoDb.getSegmentCount(job.id);
-        console.log(`[VIDEO-JOB-PROCESSOR] 📊 Created ${segmentCount} video segments`);
+        // CRITICAL FIX: Get video ID from job's video path, not job ID
+        const videoFile = await this.videoDb.getVideoFileByPath(job.videoPath);
+        const videoId = videoFile?.id;
+        
+        if (!videoId) {
+          console.warn(`[VIDEO-JOB-PROCESSOR] ⚠️  No video file found for path: ${job.videoPath}`);
+        }
+        
+        const segmentCount = videoId ? await this.videoDb.getSegmentCount(videoId) : 0;
+        console.log(`[VIDEO-JOB-PROCESSOR] 📊 Created ${segmentCount} video segments (videoId: ${videoId})`);
 
         if (!phase0Success && !phase1Success) {
           throw new Error(`Both Phase 0 and Phase 1 failed - no video processing completed`);
@@ -259,6 +509,59 @@ export class VideoJobProcessor {
       // Clear current job tracking
       this.currentJobId = null;
       this.segmentCount = 0;
+      
+      // Cleanup temp files for this job
+      await this.cleanupTempFiles(job.id);
+    }
+  }
+
+  /**
+   * Cleanup temporary files created during video processing
+   */
+  private async cleanupTempFiles(jobId: string): Promise<void> {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const os = await import('os');
+      
+      // Get system temp directory (works in both dev and production)
+      const systemTmp = os.tmpdir();
+      
+      const tempDirs = [
+        path.join(systemTmp, 'drillbit_batches'),
+        path.join(systemTmp, 'drillbit_keyframes'),
+        '/tmp/drillbit_batches',  // Fallback for Unix systems
+        '/tmp/drillbit_keyframes'
+      ];
+      
+      for (const tempDir of tempDirs) {
+        if (fs.existsSync(tempDir)) {
+          const files = fs.readdirSync(tempDir);
+          let deletedCount = 0;
+          
+          for (const file of files) {
+            // Delete files related to this job or older than 1 hour
+            const filePath = path.join(tempDir, file);
+            try {
+              const stats = fs.statSync(filePath);
+              const ageHours = (Date.now() - stats.mtimeMs) / (1000 * 60 * 60);
+              
+              if (file.includes(jobId) || ageHours > 1) {
+                fs.unlinkSync(filePath);
+                deletedCount++;
+              }
+            } catch (e) {
+              // File might be in use or already deleted, skip
+            }
+          }
+          
+          if (deletedCount > 0) {
+            console.log(`[VIDEO-JOB-PROCESSOR] 🗑️  Cleaned up ${deletedCount} temp files from ${tempDir}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`[VIDEO-JOB-PROCESSOR] Failed to cleanup temp files (non-critical):`, error);
     }
   }
 
@@ -1224,24 +1527,31 @@ export class VideoJobProcessor {
   }
 
   /**
-   * Update job progress with current segment count
+   * Update job progress based on actual batch completion with phase-specific progress
    */
   private async updateJobProgress(): Promise<void> {
     if (!this.currentJobId) return;
     
     try {
-      // Calculate progress based on processing phases:
-      // Phase 0 (transcription + embedding + indexing): 0-50%
-      // Phase 1 (keyframe extraction + enhancement): 50-100%
-      // Each segment in Phase 0 contributes to first 50%
-      const phase0Progress = Math.min((this.segmentCount * 10), 50); // Up to 5 segments = 50%
+      // Get actual completed batches instead of using segment count
+      const {phase0, phase1, totalBatches} = await this.getCompletedBatches(this.currentJobId);
+      const phaseInfo = this.calculatePhaseProgress(phase0, phase1, totalBatches);
       
       await this.videoDb.updateJob(this.currentJobId, {
         segmentCount: this.segmentCount,
-        progress: phase0Progress
+        progress: phaseInfo.progress,
+        statusMessage: phaseInfo.actionTitle,  // Use existing statusMessage field
+        metadata: JSON.stringify({
+          currentPhase: phaseInfo.currentPhase,
+          actionDescription: phaseInfo.actionDescription,
+          phase0Complete: phase0,
+          phase1Complete: phase1,
+          totalBatches: totalBatches
+        })
       });
+
       
-      console.log(`[INCREMENTAL-STORAGE] 📊 Updated job progress: ${this.segmentCount} segments processed (${phase0Progress}%)`);
+      console.log(`[INCREMENTAL-STORAGE] 📊 Updated job progress: ${phaseInfo.currentPhase} at ${phaseInfo.progress}% (Phase0=${phase0}/${totalBatches}, Phase1=${phase1}/${totalBatches}) - ${phaseInfo.actionTitle}`);
     } catch (error) {
       console.error(`[INCREMENTAL-STORAGE] Failed to update job progress:`, error);
     }
@@ -1432,6 +1742,7 @@ export class VideoJobProcessor {
             }
           }
 
+  
           const embeddingStatus = embedding ? 'with embedding' : 'text-only';
           console.log(`[IMMEDIATE-BATCH] ✅ Batch ${result.batchIndex} stored and indexed (${result.result.text.length} chars, ${embeddingStatus})`);
 
@@ -1763,9 +2074,10 @@ export class VideoJobProcessor {
   private async extractAudioSegment(videoPath: string, audioPath: string, startTime: number, duration: number): Promise<void> {
     return new Promise(async (resolve, reject) => {
       const { spawn } = await import('child_process');
+      const { getFfmpegPaths } = await import('./ffmpeg-bootstrap');
       
-      const ffmpegBin = process.env.FFMPEG_PATH || 'ffmpeg';
-      const ffmpeg = spawn(ffmpegBin, [
+      const { ffmpeg: ffmpegPath } = getFfmpegPaths();
+      const ffmpeg = spawn(ffmpegPath || 'ffmpeg', [
         '-i', videoPath,
         '-ss', startTime.toString(),
         '-t', duration.toString(),
@@ -1802,8 +2114,10 @@ export class VideoJobProcessor {
   private async getVideoDuration(videoPath: string): Promise<number> {
     return new Promise(async (resolve, reject) => {
       const { spawn } = await import('child_process');
+      const { getFfmpegPaths } = await import('./ffmpeg-bootstrap');
       
-      const ffprobe = spawn('ffprobe', [
+      const { ffprobe: ffprobePath } = getFfmpegPaths();
+      const ffprobe = spawn(ffprobePath || 'ffprobe', [
         '-v', 'quiet',
         '-print_format', 'json',
         '-show_format',
@@ -2005,13 +2319,23 @@ export class VideoJobProcessor {
       console.log(`[ENHANCED-BATCH] 🔗 Using parent video ID: ${parentVideo.id} for batch lookup`);
 
       // Get existing audio batches from Phase 0 (proper ADR-004 implementation)
-      const existingBatches = await this.batchProcessor!.getBatchesForVideo(parentVideo.id, 'audio');
-      console.log(`[ENHANCED-BATCH] Found ${existingBatches.length} existing audio batches to enhance`);
+      const allBatches = await this.batchProcessor!.getBatchesForVideo(parentVideo.id, 'audio');
+      console.log(`[ENHANCED-BATCH] Found ${allBatches.length} total batches for video`);
 
-      if (existingBatches.length === 0) {
-        console.log(`[ENHANCED-BATCH] ⚠️  No existing audio batches found - Phase 0 may have failed`);
+      // CRITICAL: Only process batches with status 'audio_only' (Phase 0 complete, Phase 1 needed)
+      const batchesToEnhance = allBatches.filter(batch => batch.status === 'audio_only');
+      const alreadyEnhanced = allBatches.filter(batch => batch.status === 'enhanced');
+      
+      console.log(`[ENHANCED-BATCH] 🎯 Batches needing enhancement: ${batchesToEnhance.length} (audio_only)`);
+      console.log(`[ENHANCED-BATCH] ✅ Already enhanced batches: ${alreadyEnhanced.length} (enhanced)`);
+
+      if (batchesToEnhance.length === 0) {
+        console.log(`[ENHANCED-BATCH] 🎉 All batches already enhanced! Phase 1 complete.`);
         return;
       }
+
+      // Use filtered batches instead of all batches
+      const existingBatches = batchesToEnhance;
 
       // Step 1: Process each batch with full enhancement pipeline
       console.log(`[ENHANCED-BATCH] 🎨 Processing ${existingBatches.length} batches with full enhancement...`);
@@ -2031,6 +2355,7 @@ export class VideoJobProcessor {
           
           // Step 1a: Extract 4 keyframes per batch
           console.log(`[ENHANCED-BATCH] 🖼️  Extracting keyframes...`);
+          // await this.writeLoopDebug(`PHASE-1-KEYFRAMES-START: Extracting keyframes for batch ${batch.id}`);
           const keyframePositions = [0.2, 0.4, 0.6, 0.8];
           const keyframes = [];
           
@@ -2039,6 +2364,7 @@ export class VideoJobProcessor {
             const timestamp = batch.startTime + (batch.duration * position);
             const keyframePath = `/tmp/drillbit_keyframes/batch_${batch.id}_${i + 1}.jpg`;
             
+            // await this.writeLoopDebug(`PHASE-1-KEYFRAME-${i + 1}: Extracting at ${timestamp}s`);
             await this.extractKeyframeAtTime(job.videoPath, keyframePath, timestamp);
             keyframes.push({
               id: `keyframe_${batch.id}_${i + 1}`,
@@ -2049,11 +2375,14 @@ export class VideoJobProcessor {
             });
           }
           console.log(`[ENHANCED-BATCH] ✅ Extracted ${keyframes.length} keyframes`);
+          // await this.writeLoopDebug(`PHASE-1-KEYFRAMES-DONE: Extracted ${keyframes.length} keyframes`);
           
           // Step 1b: Caption keyframes
           console.log(`[ENHANCED-BATCH] 📝 Captioning keyframes...`);
+          // await this.writeLoopDebug(`PHASE-1-CAPTIONS-START: Captioning ${keyframes.length} keyframes`);
           const keyframeCaptions = await this.captionKeyframesForBatch(keyframes);
           console.log(`[ENHANCED-BATCH] ✅ Generated ${keyframeCaptions.length} captions`);
+          // await this.writeLoopDebug(`PHASE-1-CAPTIONS-DONE: Generated ${keyframeCaptions.length} captions`);
           
           // Step 1c: Generate scene reconstruction
           console.log(`[ENHANCED-BATCH] 🎬 Generating scene reconstruction...`);
@@ -2106,12 +2435,29 @@ export class VideoJobProcessor {
             });
           }
           
-          // Step 1f: Update video_segments table with captions and scene reconstruction
-          console.log(`[ENHANCED-BATCH] 💾 Updating video_segments table with Phase 1 data...`);
+          // CRITICAL: Update batch with Phase 1 visual data and status (proper API methods)
+          await this.batchProcessor!.updateBatchVisualData(
+            batch.id, 
+            keyframeCaptions, // keyframeCaptions is already string[]
+            0.85 // Average confidence for successful captioning
+          );
+          
+          await this.batchProcessor!.updateBatchSceneReconstruction(
+            batch.id,
+            sceneReconstruction,
+            0.90 // High coherence for successful scene reconstruction
+          );
+          
+          await this.batchProcessor!.updateBatchStatus(batch.id, 'enhanced');
+          console.log(`[ENHANCED-BATCH] ✅ Updated batch ${batch.id} with visual data and 'enhanced' status`);
+          
+          // Step 1f: Update existing video_segments with Phase 1 data (proper upsert)
+          console.log(`[ENHANCED-BATCH] 💾 Updating existing video_segments with Phase 1 data...`);
           try {
             const captionsText = keyframeCaptions.join('; ');
             
-            const newSegmentId = await this.videoDb.addVideoSegment({
+            // CRITICAL: Use proper upsert method to update existing segment
+            const upsertResult = await this.videoDb.upsertVideoSegment({
               videoPath: job.videoPath,
               startTime: batch.startTime,
               endTime: batch.endTime,
@@ -2120,20 +2466,30 @@ export class VideoJobProcessor {
               transcription: batch.transcription || '',
               caption: captionsText, // Visual captions from keyframes
               reconstructedScene: sceneReconstruction, // Scene reconstruction
-              embedding: enhancedEmbedding,
+              embedding: new Float32Array(enhancedEmbedding),
               metadata: {
                 keyframeCount: keyframes.length,
                 enhancedInPhase1: true,
                 processingTimestamp: new Date().toISOString()
               }
+            }, { 
+              updateExisting: true // Flag: update existing segment by videoPath + time range
             });
-            console.log(`[ENHANCED-BATCH] ✅ Updated video_segments (${newSegmentId}) with caption and scene reconstruction`);
+            
+            if (upsertResult.wasUpdated) {
+              console.log(`[ENHANCED-BATCH] ✅ Updated existing video_segment ${upsertResult.id} with Phase 1 data`);
+            } else {
+              console.warn(`[ENHANCED-BATCH] ⚠️  Created new segment ${upsertResult.id} - no existing segment found for ${batch.startTime}s-${batch.endTime}s`);
+            }
           } catch (segmentError) {
-            console.error(`[ENHANCED-BATCH] ⚠️  Failed to update video_segments:`, segmentError);
+            console.error(`[ENHANCED-BATCH] ⚠️  Failed to upsert video_segments:`, segmentError);
             // Non-critical - vector DB is already updated
           }
           
           console.log(`[ENHANCED-BATCH] ✅ Batch ${batch.batchIndex + 1}/${existingBatches.length} fully enhanced`);
+          
+          // Update progress after each Phase 1 batch completion
+          await this.updateJobProgress();
           
         } catch (error) {
           console.error(`[ENHANCED-BATCH] ❌ Failed to enhance batch ${batch.id}:`, error);
@@ -2257,9 +2613,9 @@ Visual: ${visualContext}
 Scene Description:`;
 
       // Call Ollama for scene reconstruction
-      // PERFORMANCE: Use load balancer for indexing operations
+      // PERFORMANCE: Use specialized embed service for text generation
       const config = ConfigManager.getConfig();
-      const baseUrl = config.ai.indexingUrl;
+      const baseUrl = config.ai.embedUrl;
       const model = 'tinyllama:latest';
       
       const response = await fetch(`${baseUrl}/api/generate`, {
@@ -2384,9 +2740,9 @@ Scene Description:`;
       const prompt = this.buildSceneReconstructionPrompt(audioContext, visualContext, batch);
       
       // Call Ollama for scene reconstruction
-      // PERFORMANCE: Use load balancer for indexing operations
+      // PERFORMANCE: Use specialized embed service for text generation
       const config = ConfigManager.getConfig();
-      const baseUrl = config.ai.indexingUrl;
+      const baseUrl = config.ai.embedUrl;
       const model = 'tinyllama:latest';
       
       const response = await fetch(`${baseUrl}/api/generate`, {

@@ -213,3 +213,230 @@ When debugging issues:
 5. **Verify the fix** with additional logging if needed
 
 Remember: **Logs are the AI's eyes into the system. Without proper logging, debugging becomes guesswork.**
+
+## Root Cause Analysis (RCA) Methodology
+
+### The Systematic Approach
+
+When debugging complex issues, follow this incremental investigation pattern:
+
+#### 1. **Start with the Error Message**
+```bash
+# Always begin with the exact error from logs
+grep -n "ERROR\|Failed\|Exception" logs_file
+grep -A5 -B5 "specific_error_message" logs_file
+```
+
+#### 2. **Trace Backwards Through the Call Stack**
+```typescript
+// Example: Job marked as "failed" despite success
+// Step 1: Find the failure point
+[VIDEO-JOB-PROCESSOR-ERROR] Job job_123 failed: Error: No video segments were created
+
+// Step 2: Find where this validation occurs
+grep -n "No video segments were created" src/**/*.ts
+
+// Step 3: Examine the validation logic
+const segmentCount = await this.videoDb.getSegmentCount(job.id);  // ← SUSPECT LINE
+if (segmentCount === 0) {
+  throw new Error(`No video segments were created despite phase completion`);
+}
+```
+
+#### 3. **Verify Assumptions with Database Queries**
+```bash
+# Test the assumption: Are there actually segments?
+sqlite3 data/database.db "SELECT COUNT(*) FROM video_segments WHERE video_id = 'job_123';"
+# Result: 0 (but job_123 is a JOB ID, not VIDEO ID!)
+
+# Test with correct parameter
+sqlite3 data/database.db "SELECT COUNT(*) FROM video_segments WHERE video_id = 'video_456';"
+# Result: 5 (segments exist!)
+```
+
+#### 4. **Identify Parameter Mismatches**
+```typescript
+// Check function signature vs usage
+async getSegmentCount(videoId: string): Promise<number> {  // Expects VIDEO ID
+  const stmt = this.db.prepare('SELECT COUNT(*) FROM video_segments WHERE video_id = ?');
+  return stmt.get(videoId).count;
+}
+
+// But called with JOB ID
+const segmentCount = await this.videoDb.getSegmentCount(job.id);  // ❌ WRONG PARAMETER
+```
+
+### Git-Based Investigation Techniques
+
+#### 1. **Find When Code Was Last Changed**
+```bash
+# Find recent changes to problematic function
+git log --oneline -p -- src/core/video-job-processor.ts | grep -A10 -B10 "getSegmentCount"
+
+# See who changed what and when
+git blame src/core/video-job-processor.ts | grep -n "getSegmentCount"
+
+# Check if recent commits introduced the bug
+git log --since="1 week ago" --oneline -- src/core/video-job-processor.ts
+```
+
+#### 2. **Compare Working vs Broken States**
+```bash
+# Find the last known working commit
+git log --grep="working\|fix\|success" --oneline
+
+# Compare current state with working version
+git diff HEAD~5 -- src/core/video-job-processor.ts
+
+# Check specific function changes
+git show HEAD~3:src/core/video-job-processor.ts | grep -A20 "getSegmentCount"
+```
+
+#### 3. **Bisect to Find Breaking Commit**
+```bash
+# Start bisection
+git bisect start
+git bisect bad HEAD                    # Current state is broken
+git bisect good v1.2.0                # Last known working version
+
+# Git will checkout commits for testing
+# Test each commit and mark as good/bad
+git bisect good    # if this commit works
+git bisect bad     # if this commit is broken
+
+# Git will identify the exact breaking commit
+git bisect reset   # when done
+```
+
+### Manual Testing and Verification
+
+#### 1. **Write Minimal Reproduction Tests**
+```typescript
+// Create focused test for the bug
+async function testSegmentCount() {
+  const videoDb = new VideoDatabase();
+  
+  // Test with job ID (broken)
+  const jobId = 'job_1759353095548_gusol8era';
+  const countWithJobId = await videoDb.getSegmentCount(jobId);
+  console.log(`Count with job ID: ${countWithJobId}`);  // Should be 0
+  
+  // Test with video ID (correct)
+  const videoFile = await videoDb.getVideoFileByPath('/path/to/video.mp4');
+  const countWithVideoId = await videoDb.getSegmentCount(videoFile.id);
+  console.log(`Count with video ID: ${countWithVideoId}`);  // Should be 5
+}
+```
+
+#### 2. **Validate Database State Manually**
+```bash
+# Check table relationships
+sqlite3 data/database.db ".schema video_segments"
+sqlite3 data/database.db ".schema video_processing_jobs"
+
+# Verify data exists
+sqlite3 data/database.db "SELECT id, video_path FROM video_processing_jobs WHERE id = 'job_123';"
+sqlite3 data/database.db "SELECT id, file_path FROM video_files WHERE file_path = '/path/from/job';"
+sqlite3 data/database.db "SELECT COUNT(*) FROM video_segments WHERE video_id = 'video_id_from_above';"
+```
+
+#### 3. **Test the Fix Incrementally**
+```typescript
+// Step 1: Add logging to see current behavior
+console.log(`[DEBUG] Job ID: ${job.id}`);
+console.log(`[DEBUG] Video path: ${job.videoPath}`);
+
+// Step 2: Test video file lookup
+const videoFile = await this.videoDb.getVideoFileByPath(job.videoPath);
+console.log(`[DEBUG] Video file found:`, videoFile);
+
+// Step 3: Test segment count with correct ID
+if (videoFile) {
+  const segmentCount = await this.videoDb.getSegmentCount(videoFile.id);
+  console.log(`[DEBUG] Segment count: ${segmentCount}`);
+}
+```
+
+### Command-Line Investigation Tools
+
+#### 1. **Log Analysis Commands**
+```bash
+# Find error patterns
+grep -E "(ERROR|FAILED|Exception)" logs_* | head -20
+
+# Track specific job through logs
+grep "job_1759353095548_gusol8era" logs_* | grep -E "(Phase|complete|failed)"
+
+# Find successful vs failed patterns
+grep -A3 -B3 "Phase.*complete" logs_* | grep -E "(success|fail)"
+```
+
+#### 2. **Database Investigation**
+```bash
+# Check foreign key relationships
+sqlite3 data.db "PRAGMA foreign_key_list(video_segments);"
+
+# Find orphaned records
+sqlite3 data.db "SELECT vs.id FROM video_segments vs LEFT JOIN video_files vf ON vs.video_id = vf.id WHERE vf.id IS NULL;"
+
+# Verify data consistency
+sqlite3 data.db "SELECT j.id as job_id, vf.id as video_id, COUNT(vs.id) as segments FROM video_processing_jobs j LEFT JOIN video_files vf ON j.video_path = vf.file_path LEFT JOIN video_segments vs ON vf.id = vs.video_id GROUP BY j.id;"
+```
+
+#### 3. **Code Pattern Analysis**
+```bash
+# Find all uses of problematic function
+grep -r "getSegmentCount" src/ --include="*.ts"
+
+# Check parameter patterns
+grep -r "getSegmentCount.*job\." src/ --include="*.ts"  # Wrong usage
+grep -r "getSegmentCount.*video\." src/ --include="*.ts"  # Correct usage
+
+# Find similar bugs
+grep -r "job\.id.*video" src/ --include="*.ts"
+```
+
+### RCA Documentation Template
+
+When documenting your findings:
+
+```markdown
+## Bug Report: [Brief Description]
+
+### 1. **Symptom**
+- What the user/system experienced
+- Error messages observed
+- Expected vs actual behavior
+
+### 2. **Investigation Steps**
+- Log analysis commands used
+- Database queries executed
+- Git history examined
+- Manual tests performed
+
+### 3. **Root Cause**
+- Exact line(s) of code causing the issue
+- Parameter mismatch/logic error identified
+- Why the bug wasn't caught earlier
+
+### 4. **Fix Applied**
+- Code changes made
+- Why this approach was chosen
+- Verification steps taken
+
+### 5. **Prevention**
+- How to catch similar bugs in future
+- Additional logging/validation added
+- Test cases to prevent regression
+```
+
+### Key Debugging Principles
+
+1. **Never assume data structure** - Always log and verify
+2. **Follow the data flow** - Trace parameters through the entire call chain
+3. **Verify at each step** - Use database queries to confirm assumptions
+4. **Use git history** - Understand when and why code changed
+5. **Write minimal tests** - Isolate the problem with focused reproduction
+6. **Document thoroughly** - Help future debugging efforts
+
+**Remember: The best debugging is systematic, evidence-based, and leaves a clear trail for others to follow.**

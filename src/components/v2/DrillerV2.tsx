@@ -370,12 +370,16 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   }, [q, scope, selectedPlace, searchResults, library, places]);
 
   const grouped = useMemo(
-    () => ({
-      image: scopedMedia.filter((m) => m.type === 'image'),
-      video: scopedMedia.filter((m) => m.type === 'video'),
-      audio: scopedMedia.filter((m) => m.type === 'audio'),
-    }),
-    [scopedMedia]
+    () => {
+      const result = {
+        image: scopedMedia.filter((m) => m.type === 'image'),
+        video: scopedMedia.filter((m) => m.type === 'video'),
+        audio: scopedMedia.filter((m) => m.type === 'audio'),
+      };
+      
+      return result;
+    },
+    [scopedMedia, q]
   );
 
   const pinned = useMemo(() => places.filter((p) => p.pinned).slice(0, 3), [places]);
@@ -532,8 +536,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                         path: String(r.path || ''),
                         thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
                       } as MediaT));
-                      // Set results
-                      setSearchResults(mediaItems);
+                      // Set results - COMBINE images and videos into searchResults
+                      const allResults = [...mediaItems, ...videoItems];
+                      setSearchResults(allResults);
                       setVideoSearchResults(videoItems);
                       setVideoHasMore(!!res?.results?.hasMore?.videos);
                       setVideoOffset(videoItems.length);

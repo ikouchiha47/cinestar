@@ -69,12 +69,13 @@ export class SqliteVecDatabase {
       const arch = process.arch;
       
       // Determine base path for extensions
-      const isProduction = process.env.NODE_ENV === 'production' && process.resourcesPath && !process.env.VITE_DEV_SERVER_URL;
-      const basePath = isProduction 
-        ? path.join(process.resourcesPath || path.dirname(process.execPath), 'app.asar.unpacked')
-        : '.';
+      // Use VITE_DEV_SERVER_URL as the definitive indicator (same logic as getDataDir)
+      const isDev = !!process.env.VITE_DEV_SERVER_URL;
+      const basePath = isDev 
+        ? '.'
+        : path.join((process as any).resourcesPath || path.dirname(process.execPath), 'app.asar.unpacked');
       
-      console.log(`[SQLITE-VEC-DEBUG] isProduction: ${isProduction}, basePath: ${basePath}`);
+      console.log(`[SQLITE-VEC-DEBUG] isDev: ${isDev}, basePath: ${basePath}`);
       
       let extensionPath: string;
       if (platform === 'darwin' && arch === 'arm64') {

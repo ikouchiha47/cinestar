@@ -57,10 +57,13 @@ export class OllamaProvider implements LLMProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch('http://localhost:11434/api/tags');
+      const config = ConfigManager.getConfig();
+      const response = await fetch(`${config.ai.searchUrl}/api/tags`);
       if (!response.ok) return false;
       const data = await response.json();
-      return data.models && data.models.some((model: any) => model.name.includes('llava'));
+      // Check for configured vision model instead of hardcoded 'llava'
+      const visionModel = config.ai.visionModel;
+      return data.models && data.models.some((model: any) => model.name.includes(visionModel.split(':')[0]));
     } catch (error) {
       console.error('Ollama availability check failed:', error);
       return false;
@@ -71,7 +74,8 @@ export class OllamaProvider implements LLMProvider {
     const operation = async (): Promise<Float32Array> => {
       console.log(`Generating text embedding for "${text.substring(0, 30)}..." using ${this.embeddingModel}`);
 
-      const response = await fetch('http://localhost:11434/api/embeddings', {
+      const config = ConfigManager.getConfig();
+      const response = await fetch(`${config.ai.searchUrl}/api/embeddings`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -111,7 +115,8 @@ export class OllamaProvider implements LLMProvider {
       const imageBuffer = await fs.promises.readFile(imagePath);
       const base64Image = imageBuffer.toString('base64');
 
-      const response = await fetch('http://localhost:11434/api/generate', {
+      const config = ConfigManager.getConfig();
+      const response = await fetch(`${config.ai.indexingUrl}/api/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

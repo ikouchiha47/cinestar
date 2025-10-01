@@ -3,24 +3,21 @@ import { ConfigManager } from '../config.js';
 import fs from 'fs/promises';
 
 export class OllamaCaptioningService implements CaptioningService {
-  public name = 'ollama-vision';
+  public name = 'ollama-captioning';
   private baseUrl: string;
   private model: string;
 
-  constructor(baseUrl?: string) {
-    // PERFORMANCE: Use load balancer for Phase 1 captioning to distribute load
-    // This avoids blocking search embeddings which use direct Ollama instance
+  constructor(baseUrl?: string, model?: string) {
     const config = ConfigManager.getConfig();
-    this.baseUrl = baseUrl || config.ai.indexingUrl;
-    this.model = config.ai.visionModel;
-    
-    console.log(`[OLLAMA-CAPTIONING] Using Ollama URL for indexing: ${this.baseUrl}`);
+    // Use specialized captionUrl for vision model processing
+    this.baseUrl = (baseUrl || config.ai.captionUrl).replace(/\/$/, '');
+    this.model = model || config.ai.visionModel || 'moondream:v2';
+    console.log(`[OLLAMA-CAPTIONING] Using specialized caption URL: ${this.baseUrl}`);
   }
 
   async caption(imagePath: string, options: any = {}) {
     let imageBuffer = await fs.readFile(imagePath);
     
-    // Validate and resize image to prevent MTMD encoding errors
     try {
       const sharp = (await import('sharp')).default;
       // Always sanitize and standardize: convert to sRGB JPEG to strip

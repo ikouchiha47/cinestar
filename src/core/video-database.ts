@@ -399,6 +399,46 @@ export class VideoDatabase {
     stmt.run(...values);
   }
 
+  /**
+   * Upsert video segment - handles both insert and update cases
+   * @param segment Segment data (without id for new segments)
+   * @param options.updateExisting If true, updates existing segment by videoPath + time range
+   * @param options.existingId If provided, updates this specific segment ID
+   */
+  async upsertVideoSegment(
+    segment: Omit<VideoSegment, 'id' | 'createdAt'>, 
+    options: { 
+      updateExisting?: boolean; 
+      existingId?: string;
+    } = {}
+  ): Promise<{ id: string; wasUpdated: boolean }> {
+    
+    if (options.existingId) {
+      // Update specific segment by ID
+      await this.updateVideoSegment(options.existingId, segment);
+      return { id: options.existingId, wasUpdated: true };
+    }
+    
+    if (options.updateExisting) {
+      // Try to find existing segment by video path and time range
+      const existingSegment = this.db.prepare(`
+        SELECT id FROM video_segments 
+        WHERE video_path = ? AND start_time = ? AND end_time = ?
+        LIMIT 1
+      `).get(segment.videoPath, segment.startTime, segment.endTime) as { id: string } | undefined;
+      
+      if (existingSegment) {
+        // Update existing segment
+        await this.updateVideoSegment(existingSegment.id, segment);
+        return { id: existingSegment.id, wasUpdated: true };
+      }
+    }
+    
+    // Create new segment
+    const newId = await this.addVideoSegment(segment);
+    return { id: newId, wasUpdated: false };
+  }
+
   // Search operations
   async textSearch(query: string, limit = 10, offset = 0): Promise<SearchResult[]> {
     // Validate and sanitize query for FTS5
@@ -576,6 +616,20 @@ export class VideoDatabase {
 
   // Video Processing Jobs methods
 async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
+  // CRITICAL: Check if a job already exists for this video to prevent duplicates
+  const existingJob = this.db.prepare(`
+    SELECT id, status FROM video_processing_jobs 
+    WHERE video_path = ? 
+      AND refinement_pass = ? 
+      AND status IN ('scheduled', 'pending', 'processing')
+    LIMIT 1
+  `).get(job.videoPath, job.refinementPass || 1) as { id: string, status: string } | undefined;
+  
+  if (existingJob) {
+    console.log(`[VIDEO-DB-CREATE] ⚠️  Job already exists for ${job.videoPath} (${existingJob.id}, status: ${existingJob.status}), skipping duplicate`);
+    return existingJob.id;
+  }
+  
   const id = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = new Date().toISOString();
   
@@ -715,8 +769,8 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
       SELECT * FROM video_processing_jobs 
       WHERE status IN ('pending', 'scheduled') 
       ORDER BY 
-        CASE WHEN refinement_pass = 1 THEN 1 ELSE 2 END, -- Prioritize initial processing
-        created_at ASC -- FIFO within same priority
+        CASE WHEN refinement_pass = 1 THEN 1 ELSE 2 END, -- Prioritize initial processing over refinement
+        created_at DESC -- Most recent uploads first (DESC = newest first)
       LIMIT ?
     `);
     
@@ -749,6 +803,8 @@ async createJob(job: Omit<VideoProcessingJob, 'id' | 'createdAt' | 'updatedAt'>)
       parentJobId: row.parent_job_id,
       triggerCondition: row.trigger_condition,
       scheduledAt: row.scheduled_at ? new Date(row.scheduled_at) : undefined,
+      statusMessage: row.status_message, // Add the missing statusMessage field
+      metadata: row.metadata,
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at || row.created_at)
     };

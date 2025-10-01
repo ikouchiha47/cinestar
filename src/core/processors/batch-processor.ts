@@ -257,6 +257,17 @@ export class BatchProcessor {
     console.log(`[BATCH-PROCESSOR] Inserting batch record for video ${batch.video_id} (${batch.start_time}s-${batch.end_time}s)`);
     
     try {
+      // IDEMPOTENCY: Check if batch already exists for same video and time range
+      const existingBatch = this.videoDb.database.prepare(`
+        SELECT id FROM processing_batches 
+        WHERE video_id = ? AND start_time = ? AND end_time = ?
+      `).get(batch.video_id, batch.start_time, batch.end_time) as {id: string} | undefined;
+      
+      if (existingBatch) {
+        console.log(`[BATCH-PROCESSOR] 🔄 IDEMPOTENCY: Batch already exists for ${batch.video_id} (${batch.start_time}s-${batch.end_time}s), returning existing ID: ${existingBatch.id}`);
+        return existingBatch.id;
+      }
+
       const stmt = this.videoDb.database.prepare(`
         INSERT INTO processing_batches (
           id, video_id, batch_index, batch_type, start_time, end_time, duration,
@@ -277,7 +288,7 @@ export class BatchProcessor {
         batch.embedding
       );
       
-      console.log(`[BATCH-PROCESSOR] ✅ Inserted batch record with ID: ${batch.id}`);
+      console.log(`[BATCH-PROCESSOR] ✅ Inserted new batch record with ID: ${batch.id}`);
       return batch.id;
     } catch (error) {
       console.error(`[BATCH-PROCESSOR] ❌ Failed to insert batch record:`, error);

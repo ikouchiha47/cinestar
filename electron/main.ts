@@ -275,20 +275,43 @@ async function guardMedia<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function initializeVideoAPI() {
+  // Direct file logging for debugging (bypasses broken console logger)
+  const debugLog = (msg: string) => {
+    try {
+      const logPath = path.join(os.homedir(), '.clipwise', 'init-debug.txt');
+      fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+    } catch {}
+  };
+  
   try {
+    debugLog('initializeVideoAPI called');
     videoAPI = VideoMediaAPI.getInstance();
+    debugLog('VideoMediaAPI.getInstance() succeeded');
+    
     await videoAPI.initialize();
+    debugLog('videoAPI.initialize() succeeded');
+    
     // Attach partial writer to persist segments early for non-blocking search
     attachPartialSegmentWriter(videoAPI);
     console.log('VideoMediaAPI initialized in main process');
+    debugLog('VideoMediaAPI fully initialized');
     
     // Start the background job processor
     if (!videoJobProcessor) {
+      debugLog('Creating VideoJobProcessor...');
       videoJobProcessor = new VideoJobProcessor();
+      debugLog('VideoJobProcessor created, calling start()...');
+      
       await videoJobProcessor.start();
+      debugLog('VideoJobProcessor.start() succeeded');
+      
       console.log('VideoJobProcessor started in main process');
+      debugLog('VideoJobProcessor fully started');
+    } else {
+      debugLog('VideoJobProcessor already exists, skipping initialization');
     }
   } catch (error) {
+    debugLog(`ERROR in initializeVideoAPI: ${error}`);
     console.error('Failed to initialize VideoMediaAPI:', error);
   }
 }
@@ -455,10 +478,18 @@ ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: nu
   if (!mediaAPI) await initializeMediaAPI();
   
   try {
+    console.log(`[IPC-SEARCH] 🔍 Received search request: "${query.query}"`);
     const result = await MainMediaAPI.unifiedSearch(query.query || '', {
       types: query.types || ['image', 'video', 'audio'],
       limit: query.limit || 20,
       offset: query.offset || 0
+    });
+    
+    console.log(`[IPC-SEARCH] ✅ Returning to frontend:`, {
+      success: result.success,
+      imageCount: result.results?.images?.length || 0,
+      videoCount: result.results?.videos?.length || 0,
+      audioCount: result.results?.audio?.length || 0
     });
     
     return result;

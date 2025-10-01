@@ -13,9 +13,23 @@ export function getDataDir(): string {
     return envDir;
   }
 
-  const isProduction = process.env.NODE_ENV === 'production' || (process as any).resourcesPath;
-  if (isProduction) {
-    return path.join(os.homedir(), '.clipwise');
+  // SIMPLE APPROACH: If VITE_DEV_SERVER_URL is set, we're in dev mode
+  // Otherwise, we're in production (packaged app)
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  
+  const dataDir = isDev 
+    ? path.join(process.cwd(), 'data')
+    : path.join(os.homedir(), '.clipwise');
+  
+  // Write marker file to confirm this function was called and what it returned
+  try {
+    const fs = require('fs');
+    const markerPath = path.join(os.homedir(), '.clipwise', 'startup-marker.txt');
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, `getDataDir() called at ${new Date().toISOString()}\nVITE_DEV_SERVER_URL: ${process.env.VITE_DEV_SERVER_URL}\nisDev: ${isDev}\nReturning: ${dataDir}\n`, { flag: 'a' });
+  } catch (e) {
+    // Ignore errors
   }
-  return path.join(process.cwd(), 'data');
+  
+  return dataDir;
 }

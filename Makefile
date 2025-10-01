@@ -134,6 +134,8 @@ copy-assets: setup-release-dir ## Copy distribution assets to release directory
 	# Copy Docker setup for AI services
 	cp docker-compose.yml $(RELEASE_DIR)/docker/
 	cp nginx.conf $(RELEASE_DIR)/docker/
+	@echo "📝 Copying Docker documentation..."
+	@if [ -f docs/docker-setup.md ]; then cp docs/docker-setup.md $(RELEASE_DIR)/docker/README.md; fi
 	
 	# Copy environment templates
 	@if [ -f $(ENV_PROD) ]; then cp $(ENV_PROD) $(RELEASE_DIR)/.env.example; fi
