@@ -120,7 +120,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     captionUrl: 'http://localhost:11434', // Vision/captioning service via nginx
     transcriptionUrl: 'http://localhost:9001/asr', // Transcription service via nginx
     // Legacy URLs (deprecated but kept for backward compatibility)
-    searchUrl: 'http://localhost:9001/embed',      // Direct Ollama instance 1 (fast, no queuing)
+    searchUrl: 'http://localhost:11434',      // Direct Ollama instance (fast, no queuing)
     indexingUrl: 'http://localhost:9001',     // Nginx load balancer for Ollama (distributed)
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,

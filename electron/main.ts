@@ -435,6 +435,7 @@ ipcMain.handle('config:autoTune', async () => {
   return true;
 });
 
+
 ipcMain.handle('media:getRecentItems', async (_evt, params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number }) => {
   return await guardMedia(() => MainMediaAPI.getRecentItems(params));
 });
@@ -807,9 +808,58 @@ ipcMain.handle('config:get', async () => {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
-      return JSON.parse(configData);
+      const config = JSON.parse(configData);
+      
+      // If aiServices doesn't exist, initialize with defaults from ConfigManager
+      if (!config.aiServices) {
+        const { ConfigManager } = await import('../src/core/config');
+        const backendConfig = ConfigManager.getConfig();
+        
+        config.aiServices = {
+          transcription: {
+            baseUrl: backendConfig.ai.transcriptionUrl,
+            model: 'base.en',
+            enabled: true
+          },
+          captioning: {
+            baseUrl: backendConfig.ai.captionUrl,
+            model: backendConfig.ai.visionModel,
+            enabled: true
+          },
+          sceneReconstruction: {
+            baseUrl: backendConfig.ai.embedUrl,
+            model: backendConfig.ai.generalPurposeModel,
+            enabled: true
+          }
+        };
+      }
+      
+      return config;
     }
-    return {};
+    
+    // Return defaults if no config file exists
+    const { ConfigManager } = await import('../src/core/config');
+    const backendConfig = ConfigManager.getConfig();
+    
+    return {
+      aiServices: {
+        transcription: {
+          baseUrl: backendConfig.ai.transcriptionUrl,
+          model: 'base.en',
+          enabled: true
+        },
+        captioning: {
+          baseUrl: backendConfig.ai.captionUrl,
+          model: backendConfig.ai.visionModel,
+          enabled: true
+        },
+        sceneReconstruction: {
+          baseUrl: backendConfig.ai.embedUrl,
+          model: backendConfig.ai.generalPurposeModel,
+          enabled: true
+        }
+      }
+    };
   } catch (error) {
     console.error('Failed to read config:', error);
     return {};
@@ -834,7 +884,8 @@ ipcMain.handle('config:set', async (_, config) => {
     
     const mergedConfig = { ...existingConfig, ...config };
     await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2));
-    console.log('Config saved successfully');
+    
+    console.log('[CONFIG] Settings saved to config.json');
     return { success: true };
   } catch (error) {
     console.error('Failed to save config:', error);

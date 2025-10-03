@@ -26,18 +26,18 @@ interface AIServiceConfig {
 
 const DEFAULT_CONFIG: AIServiceConfig = {
   transcription: {
-    baseUrl: 'http://localhost:9001',
-    model: 'whisper-1',
+    baseUrl: 'http://localhost:9001/asr',
+    model: 'whisper-base.en',
     enabled: true
   },
   captioning: {
     baseUrl: 'http://localhost:11434',
-    model: 'llava:latest',
+    model: 'moondream:v2',
     enabled: true
   },
   sceneReconstruction: {
-    baseUrl: 'http://localhost:9001',
-    model: 'tinyllama:latest',
+    baseUrl: 'http://localhost:11434',
+    model: 'llama3.2:3b',
     enabled: true
   }
 };
@@ -58,21 +58,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       // @ts-ignore - exposed by preload
       const savedConfig = await window.ipcRenderer?.invoke('config:get');
       if (savedConfig?.aiServices) {
-        setConfig({ ...DEFAULT_CONFIG, ...savedConfig.aiServices });
+        console.log('[SETTINGS] Loaded config from backend:', savedConfig.aiServices);
+        setConfig(savedConfig.aiServices);
+      } else {
+        console.log('[SETTINGS] No saved config, using defaults');
+        setConfig(DEFAULT_CONFIG);
       }
     } catch (error) {
-      console.warn('Failed to load config:', error);
+      console.warn('[SETTINGS] Failed to load config, using defaults:', error);
+      setConfig(DEFAULT_CONFIG);
     }
   };
 
   const saveConfig = async () => {
     try {
       // @ts-ignore - exposed by preload
-      await window.ipcRenderer?.invoke('config:set', { aiServices: config });
-      setHasChanges(false);
-      console.log('Settings saved successfully');
+      const result = await window.ipcRenderer?.invoke('config:set', { aiServices: config });
+      if (result?.success) {
+        setHasChanges(false);
+        console.log('[SETTINGS] ✅ Settings saved successfully to backend config');
+        alert('Settings saved successfully! Changes will take effect immediately.');
+      }
     } catch (error) {
-      console.error('Failed to save config:', error);
+      console.error('[SETTINGS] ❌ Failed to save config:', error);
+      alert('Failed to save settings. Please try again.');
     }
   };
 

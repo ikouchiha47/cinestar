@@ -717,7 +717,7 @@ export class MainMediaAPI {
   /**
    * Delete a media item from the library (database only)
    */
-  static async deleteMediaItem(itemId: string): Promise<{ success: boolean; error?: string }> {
+  static async deleteMediaItem(itemId: string, deleteFile: boolean = false): Promise<{ success: boolean; error?: string }> {
     try {
       await this.ensureInitialized();
       
@@ -1370,33 +1370,52 @@ export class MainMediaAPI {
       const started = Date.now();
       console.log(`[SEARCH-TIMING] 🔍 Starting unified search for query: "${q}", types: [${requestedTypes.join(', ')}], limit: ${limit}, offset: ${offset}`);
 
-      // Check if this is a question-style query
+      // Multi-modal query classification and transformation
       let searchQuery = q;
       let enhancedEntities: string[] = [];
+      let queryClassification = null;
+      let multiModalQuery = null;
 
-      // Detect if this looks like a question
-      // const questionPatterns = [
-      //   /^which\s+.*\s+(?:have|has|contain|include)/i,
-      //   /^what\s+.*\s+(?:are|is|have|has)/i,
-      //   /^where\s+.*\s+(?:can|do|are)/i,
-      //   /^who\s+.*\s+(?:is|are|was|were)/i,
-      //   /^how\s+.*\s+(?:to|do|can)/i,
-      //   /\?$/
-      // ];
-
-      // if (questionPatterns.some(pattern => pattern.test(q))) {
-        if (searchQuery.length > 10) {
-        console.log(`[QA-DETECT] Detected question-style query: "${q}"`);
+      if (searchQuery.length > 3) {
+        console.log(`[MULTIMODAL-SEARCH] Processing query: "${q}"`);
         
         try {
-          // Transform question to optimized search query
-          searchQuery = await this.llm!.transformQuestionToQuery(q);
+          // Step 1: Classify query type (spatial, temporal, audio, action, mixed)
+          queryClassification = await this.llm!.classifyQueryType(q);
+          console.log(`[MULTIMODAL-SEARCH] Classified as: ${queryClassification.type} (${queryClassification.confidence})`);
+
+          // Step 2: Transform for multi-modal search
+          multiModalQuery = await this.llm!.transformMultiModalQuery(q, queryClassification);
+          searchQuery = multiModalQuery.transformed;
+          enhancedEntities = [
+            ...multiModalQuery.searchKeywords.text,
+            ...multiModalQuery.searchKeywords.visual,
+            ...multiModalQuery.searchKeywords.audio,
+            ...multiModalQuery.searchKeywords.temporal,
+            ...multiModalQuery.searchKeywords.action
+          ].filter(Boolean);
           
-          // Extract key entities for enhanced search
-          enhancedEntities = await this.llm!.extractSearchEntities(q);
-          console.log(`[QA-ENHANCED] Using transformed query: "${searchQuery}" with entities: [${enhancedEntities.join(', ')}]`);
+          console.log(`[MULTIMODAL-SEARCH] Transformed query: "${searchQuery}"`);
+          console.log(`[MULTIMODAL-SEARCH] Keywords by modality:`, {
+            text: multiModalQuery.searchKeywords.text,
+            visual: multiModalQuery.searchKeywords.visual,
+            audio: multiModalQuery.searchKeywords.audio,
+            temporal: multiModalQuery.searchKeywords.temporal,
+            action: multiModalQuery.searchKeywords.action
+          });
+          // console.log(`[MULTIMODAL-SEARCH] Embeddings text:`, {
+          //   text: multiModalQuery.embeddings.text,
+          //   visual: multiModalQuery.embeddings.visual,
+          //   audio: multiModalQuery.embeddings.audio
+          // });
         } catch (error) {
-          console.warn('[QA-ENHANCED] Question transformation failed, using original query:', error);
+          console.warn('[MULTIMODAL-SEARCH] Classification failed, using original query:', error);
+          // Fallback to simple entity extraction
+          try {
+            enhancedEntities = await this.llm!.extractSearchEntities(q);
+          } catch (fallbackError) {
+            enhancedEntities = q.split(' ').filter(word => word.length > 2);
+          }
         }
       }
 
@@ -1417,17 +1436,66 @@ export class MainMediaAPI {
           // Get more results to ensure we have enough for each type after grouping
           const searchLimit = limit * requestedTypes.length;
           
-          // Use transformed query for embedding if available
+          // Generate embeddings based on query classification
           const queryForEmbedding = searchQuery !== q ? searchQuery : q;
-          console.log(`[SEARCH-TIMING] 🔍 Generating embedding for: "${queryForEmbedding}"`);
-          const textEmbedding = await this.llm.generateEmbedding(queryForEmbedding);
-          console.log(`[SEARCH-TIMING] ⏱️  Embedding generation took: ${Date.now() - embeddingStart}ms`);
+          let embeddings = [];
           
+          console.log(`[SEARCH-TIMING] 🔍 Generating embeddings for: "${queryForEmbedding}"`);
+          
+          // Primary text embedding
+          const textEmbedding = await this.llm.generateEmbedding(queryForEmbedding);
+          embeddings.push(textEmbedding);
+          
+          console.log("[IS MULTIMODAL QUERY] ", multiModalQuery)
+          
+          // Additional modality-specific embeddings
+          // if (multiModalQuery) {
+          //   // Visual embedding - use embedding text or keywords
+          //   const visualKeywords = multiModalQuery.searchKeywords.visual;
+          //   if (visualKeywords && visualKeywords.length > 0) {
+          //     try {
+          //       const visualText = multiModalQuery.embeddings.visual || visualKeywords.join(' ');
+          //       const visualEmbedding = await this.llm.generateEmbedding(visualText);
+          //       embeddings.push(visualEmbedding);
+          //       console.log(`[SEARCH-TIMING] ✅ Added visual embedding: "${visualText}"`);
+          //     } catch (error) {
+          //       console.warn('[SEARCH-TIMING] ❌ Visual embedding failed:', error);
+          //     }
+          //   }
+            
+          //   // Audio embedding - use embedding text or keywords
+          //   const audioKeywords = multiModalQuery.searchKeywords.audio;
+          //   if (audioKeywords && audioKeywords.length > 0) {
+          //     try {
+          //       const audioText = multiModalQuery.embeddings.audio || audioKeywords.join(' ');
+          //       const audioEmbedding = await this.llm.generateEmbedding(audioText);
+          //       embeddings.push(audioEmbedding);
+          //       console.log(`[SEARCH-TIMING] ✅ Added audio embedding: "${audioText}"`);
+          //     } catch (error) {
+          //       console.warn('[SEARCH-TIMING] ❌ Audio embedding failed:', error);
+          //     }
+          //   }
+          // }
+          
+          // Combine embeddings (average for now, could be weighted)
+          const combinedEmbedding = embeddings.length > 1 
+            ? new Float32Array(embeddings[0].map((_, idx) => 
+                embeddings.reduce((sum, emb) => sum + emb[idx], 0) / embeddings.length
+              ))
+            : textEmbedding;
+            
+          console.log(`[SEARCH-TIMING] ⏱️  Embedding generation took: ${Date.now() - embeddingStart}ms (${embeddings.length} embeddings)`);
+          
+          // TODO: Apply temporal filters if specified (disabled for now - needs segment filtering logic)
+          if (multiModalQuery?.filters.timeRange) {
+            console.log(`[SEARCH-TIMING] 📅 Time filter detected: ${multiModalQuery.filters.timeRange[0]}s - ${multiModalQuery.filters.timeRange[1]}s (filtering disabled for now)`);
+          }
+
           const vectorSearchStart = Date.now();
-          const paginatedResults = await this.vecDb.searchSimilar(textEmbedding, searchLimit, 0, q);
+          const paginatedResults = await this.vecDb.searchSimilar(combinedEmbedding, searchLimit, 0, q);
           console.log(`[SEARCH-TIMING] ⏱️  Vector search took: ${Date.now() - vectorSearchStart}ms, found ${paginatedResults.results.length} results`);
           
-          // Transform and group results by media type
+          // Transform and group results by media type with enhanced scoring
           const transformStart = Date.now();
           const allItems = paginatedResults.results.map(r => {
             const mimeType = getMimeType(r.path);
@@ -1445,6 +1513,18 @@ export class MainMediaAPI {
               type = 'audio';
             }
             
+            // Enhanced scoring based on query classification
+            let enhancedScore = r.similarity || 0;
+            if (multiModalQuery && queryClassification) {
+              // Boost score based on query type matching content type
+              if (queryClassification.type === 'temporal' && r.path.includes('#t=')) {
+                enhancedScore *= 1.1; // Boost temporal queries for segments
+              }
+              if (queryClassification.type === 'spatial' && r.type === 'video') {
+                enhancedScore *= 1.05; // Boost spatial queries for videos
+              }
+            }
+            
             return {
               id: r.id,
               name: r.name,
@@ -1454,8 +1534,10 @@ export class MainMediaAPI {
               mimeType: mimeType || (type === 'video' ? 'video/mp4' : undefined),
               sourceId: r.sourceId,
               createdAt: new Date(),
-              score: r.similarity || 0,
+              score: enhancedScore,
               metadata: (r as any).metadata ? (typeof (r as any).metadata === 'string' ? JSON.parse((r as any).metadata) : (r as any).metadata) : undefined,
+              queryType: queryClassification?.type, // Store query type for debugging
+              matchingKeywords: enhancedEntities.slice(0, 3) // Top matching keywords
             };
           });
           console.log(`[SEARCH-TIMING] ⏱️  Result transformation took: ${Date.now() - transformStart}ms`);

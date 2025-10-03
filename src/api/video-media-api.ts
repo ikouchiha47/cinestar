@@ -482,7 +482,7 @@ export class VideoMediaAPI {
   /**
    * Check if file is a video file
    */
-  isVideoFile(filePath: string): boolean {
+  static isVideoFile(filePath: string): boolean {
     const videoExtensions = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v'];
     const ext = path.extname(filePath).toLowerCase();
     return videoExtensions.includes(ext);
@@ -491,7 +491,7 @@ export class VideoMediaAPI {
   /**
    * Check if file is an audio file
    */
-  isAudioFile(filePath: string): boolean {
+  static isAudioFile(filePath: string): boolean {
     const audioExtensions = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'];
     const ext = path.extname(filePath).toLowerCase();
     return audioExtensions.includes(ext);
