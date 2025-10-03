@@ -1,5 +1,6 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
 import fetch from 'node-fetch';
+import { ConfigManager } from '../config';
 
 export interface OptimizedSceneReconstructionConfig {
   enabled?: boolean;
@@ -51,8 +52,9 @@ export class OptimizedSceneReconstructionProcessor extends BaseVideoProcessor {
   constructor(config: OptimizedSceneReconstructionConfig = {}) {
     super();
     
+    const appConfig = ConfigManager.getConfig();
     this.baseUrl = config.baseUrl || process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-    this.model = config.model || 'tinyllama:latest';
+    this.model = config.model || appConfig.ai.generalPurposeModel;
     
     this.setConfig({
       enabled: true,

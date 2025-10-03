@@ -22,7 +22,7 @@ export interface AppConfig {
     useLoadBalancer: boolean;
     loadBalancerUrl: string;
     // Specialized service URLs for optimal performance
-    embedUrl: string;        // Embedding service (BGE-large, tinyllama) - /embed path
+    embedUrl: string;        // Embedding service (BGE-large, llama3.2 for text gen) - /embed path
     captionUrl: string;      // Vision/captioning service (moondream:v2) - /caption path  
     transcriptionUrl: string; // Transcription service (whisper) - /asr path
     // Legacy URLs (deprecated but kept for backward compatibility)
@@ -32,6 +32,7 @@ export interface AppConfig {
     embeddingDimensions: number;
     visionModel: string;
     visionModelDims: [number, number];
+    generalPurposeModel: string;  // For text generation tasks (scene reconstruction, Q&A)
     maxTokens: number;
     temperature: number;
   };
@@ -113,16 +114,19 @@ export const DEFAULT_CONFIG: AppConfig = {
     useLoadBalancer: false,
     loadBalancerUrl: 'http://localhost:9001',
     // Specialized service URLs for optimal performance
-    embedUrl: 'http://localhost:9001/embed',     // Embedding service via nginx
-    captionUrl: 'http://localhost:9001/caption', // Vision/captioning service via nginx
+    // embedUrl: 'http://localhost:9001/embed',     // Embedding service via nginx
+    embedUrl: 'http://localhost:11434', // Default to local ollama install
+    // captionUrl: 'http://localhost:9001/caption', // Vision/captioning service via nginx
+    captionUrl: 'http://localhost:11434', // Vision/captioning service via nginx
     transcriptionUrl: 'http://localhost:9001/asr', // Transcription service via nginx
     // Legacy URLs (deprecated but kept for backward compatibility)
-    searchUrl: 'http://localhost:11343',      // Direct Ollama instance 1 (fast, no queuing)
+    searchUrl: 'http://localhost:9001/embed',      // Direct Ollama instance 1 (fast, no queuing)
     indexingUrl: 'http://localhost:9001',     // Nginx load balancer for Ollama (distributed)
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',
     visionModelDims: [378, 378], // Moondream v2 dimensions
+    generalPurposeModel: 'llama3.2:3b', // For text generation (scene reconstruction, Q&A)
     maxTokens: 2048,
     temperature: 0.1,
   },

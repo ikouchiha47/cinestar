@@ -1370,6 +1370,36 @@ export class MainMediaAPI {
       const started = Date.now();
       console.log(`[SEARCH-TIMING] 🔍 Starting unified search for query: "${q}", types: [${requestedTypes.join(', ')}], limit: ${limit}, offset: ${offset}`);
 
+      // Check if this is a question-style query
+      let searchQuery = q;
+      let enhancedEntities: string[] = [];
+
+      // Detect if this looks like a question
+      // const questionPatterns = [
+      //   /^which\s+.*\s+(?:have|has|contain|include)/i,
+      //   /^what\s+.*\s+(?:are|is|have|has)/i,
+      //   /^where\s+.*\s+(?:can|do|are)/i,
+      //   /^who\s+.*\s+(?:is|are|was|were)/i,
+      //   /^how\s+.*\s+(?:to|do|can)/i,
+      //   /\?$/
+      // ];
+
+      // if (questionPatterns.some(pattern => pattern.test(q))) {
+        if (searchQuery.length > 10) {
+        console.log(`[QA-DETECT] Detected question-style query: "${q}"`);
+        
+        try {
+          // Transform question to optimized search query
+          searchQuery = await this.llm!.transformQuestionToQuery(q);
+          
+          // Extract key entities for enhanced search
+          enhancedEntities = await this.llm!.extractSearchEntities(q);
+          console.log(`[QA-ENHANCED] Using transformed query: "${searchQuery}" with entities: [${enhancedEntities.join(', ')}]`);
+        } catch (error) {
+          console.warn('[QA-ENHANCED] Question transformation failed, using original query:', error);
+        }
+      }
+
       // Initialize grouped results
       const grouped = {
         images: [] as any[],
@@ -1386,7 +1416,11 @@ export class MainMediaAPI {
           const embeddingStart = Date.now();
           // Get more results to ensure we have enough for each type after grouping
           const searchLimit = limit * requestedTypes.length;
-          const textEmbedding = await this.llm.generateEmbedding(q);
+          
+          // Use transformed query for embedding if available
+          const queryForEmbedding = searchQuery !== q ? searchQuery : q;
+          console.log(`[SEARCH-TIMING] 🔍 Generating embedding for: "${queryForEmbedding}"`);
+          const textEmbedding = await this.llm.generateEmbedding(queryForEmbedding);
           console.log(`[SEARCH-TIMING] ⏱️  Embedding generation took: ${Date.now() - embeddingStart}ms`);
           
           const vectorSearchStart = Date.now();

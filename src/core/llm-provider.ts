@@ -1,6 +1,5 @@
 import { RetryQueue } from './retry-queue';
 import { ConfigManager } from './config';
-import { SubprocessOllamaProvider } from './subprocess-ollama-provider';
 
 /**
  * Interface for LLM providers (Ollama, LiteLLM, etc.)
@@ -36,9 +35,19 @@ export interface LLMProvider {
    * Get the model being used
    */
   getModel(): string;
+
+  /**
+   * Transform natural language question into optimized search query
+   */
+  transformQuestionToQuery(question: string): Promise<string>;
+
+  /**
+   * Extract key entities and concepts from natural language query
+   */
+  extractSearchEntities(question: string): Promise<string[]>;
 }
 
-const CaptionQuery = "Describe the: Objects, Actions, Intent of Action and Scene in the image."
+const CaptionQuery = "Describe the: Objects, Actions, Intent of Action, Scene and Interractions between objects in the image."
 
 /**
  * Ollama LLM provider implementation
@@ -178,6 +187,150 @@ export class OllamaProvider implements LLMProvider {
   getModel(): string {
     return `Vision: ${this.visionModel}, Embedding: ${this.embeddingModel}`;
   }
+
+  async transformQuestionToQuery(question: string): Promise<string> {
+    const operation = async (): Promise<string> => {
+      console.log(`[QA-TRANSFORM] Transforming question: "${question}"`);
+      
+      const config = ConfigManager.getConfig();
+      
+      // Use general purpose model for question transformation
+      const model = config.ai.generalPurposeModel;
+      
+      const prompt = `Transform this question into search keywords. Remove question words, keep only important terms.
+
+Question: "${question}"
+
+Keywords:`;
+
+      let url = config.ai.embedUrl;
+      url = `${url}/api/generate`
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0.2,
+            num_predict: 30,
+            max_tokens: 50
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Query transformation failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      let transformed = data.response?.trim() || question;
+      
+      // Strip out common preamble patterns and clean up
+      transformed = transformed
+        .replace(/^Here are (?:some )?(?:key )?(?:search )?(?:terms?|keywords?).*?:\s*/i, '')
+        .replace(/^(?:Keywords?|Terms?|Query).*?:\s*/i, '')
+        .replace(/^\d+\.\s*/gm, '') // Remove numbered list markers
+        .replace(/\n/g, ' ') // Join multi-line into single line
+        .trim();
+      
+      // If result is empty or too long, fall back to original
+      if (!transformed || transformed.length > 150) {
+        transformed = question;
+      }
+      
+      console.log(`[QA-TRANSFORM] Transformed: "${question}" → "${transformed}"`);
+      return transformed;
+    };
+
+    try {
+      return await this.retryQueue.addTask(operation, `question-transform-${question.substring(0, 20)}`, 3);
+    } catch (error) {
+      console.warn('[QA-TRANSFORM] Falling back to original question:', error);
+      return question; // Fallback to original question
+    }
+  }
+
+  async extractSearchEntities(question: string): Promise<string[]> {
+    const operation = async (): Promise<string[]> => {
+      console.log(`[QA-ENTITIES] Extracting entities from: "${question}"`);
+      
+      const config = ConfigManager.getConfig();
+      const model = config.ai.generalPurposeModel;
+      
+      const prompt = `Extract keywords from: "${question}"
+
+Return ONLY a comma-separated list, no explanations:
+`;
+
+      let url = config.ai.embedUrl;
+      url = `${url}/api/generate`
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0.2,
+            num_predict: 50
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Entity extraction failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      let entitiesText = data.response?.trim() || '';
+      
+      // Strip out common preamble patterns
+      entitiesText = entitiesText
+        .replace(/^Here are (?:some )?(?:important )?keywords?.*?:\s*/i, '')
+        .replace(/^(?:Keywords?|Entities|Terms).*?:\s*/i, '')
+        .replace(/^\d+\.\s*/gm, '') // Remove numbered list markers
+        .trim();
+      
+      // Parse comma-separated entities or newline-separated
+      let entities: string[];
+      if (entitiesText.includes(',')) {
+        entities = entitiesText.split(',');
+      } else {
+        entities = entitiesText.split('\n');
+      }
+      
+      entities = entities
+        .map((e: string) => e.trim())
+        .filter((e: string) => e.length > 0 && e.length < 50) // Filter out long explanatory text
+        .slice(0, 5); // Limit to top 5 entities
+      
+      console.log(`[QA-ENTITIES] Extracted: [${entities.join(', ')}]`);
+      return entities.length > 0 ? entities : [question]; // Fallback to original
+    };
+
+    try {
+      return await this.retryQueue.addTask(operation, `entity-extract-${question.substring(0, 20)}`, 3);
+    } catch (error) {
+      console.warn('[QA-ENTITIES] Falling back to simple keywords:', error);
+      
+      // Fallback: simple keyword extraction
+      const keywords = question.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(word => word.length > 3 && !['which', 'what', 'have', 'with', 'about', 'videos', 'video'].includes(word));
+      
+      return keywords.length > 0 ? keywords : [question];
+    }
+  }
 }
 
 /**
@@ -228,6 +381,18 @@ export class LiteLLMProvider implements LLMProvider {
     return new Float32Array(randomArray);
   }
 
+  async transformQuestionToQuery(question: string): Promise<string> {
+    // LiteLLM implementation would use actual API
+    console.log(`[QA-TRANSFORM] LiteLLM transforming: "${question}"`);
+    return question; // Placeholder - implement with actual LiteLLM API
+  }
+
+  async extractSearchEntities(question: string): Promise<string[]> {
+    // LiteLLM implementation would use actual API
+    console.log(`[QA-ENTITIES] LiteLLM extracting from: "${question}"`);
+    return [question]; // Placeholder - implement with actual LiteLLM API
+  }
+
   getName(): string {
     return 'LiteLLM';
   }
@@ -245,8 +410,6 @@ export class LLMProviderFactory {
     switch (type) {
       case 'ollama':
         return new OllamaProvider(config?.visionModel, config?.embeddingModel);
-      case 'subprocess':
-        return new SubprocessOllamaProvider(config?.visionModel, config?.embeddingModel);
       case 'litellm':
         return new LiteLLMProvider(config);
       default:

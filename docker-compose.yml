@@ -33,15 +33,16 @@ services:
     # No external ports - nginx connects via internal Docker network
     environment:
       <<: *env
+      OLLAMA_KEEP_ALIVE: -1  # Keep models loaded indefinitely
       # Share the same models directory as other Ollama instances
     volumes:
       - ${OLLAMA_MODELS:-~/.ollama}:/root/.ollama
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 6G
         reservations:
-          memory: 2G
+          memory: 4G
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 15s
@@ -53,7 +54,11 @@ services:
       "ollama serve &
        sleep 10 &&
        ollama pull qllama/bge-large-en-v1.5:latest &&
-       ollama pull tinyllama:latest &&
+       ollama pull llama3.2:3b &&
+       sleep 5 &&
+       echo 'Preloading Llama 3.2:3b...' &&
+       curl -s http://localhost:11434/api/generate -d '{\"model\":\"llama3.2:3b\",\"prompt\":\"test\",\"stream\":false}' > /dev/null &&
+       echo 'Llama 3.2:3b loaded and ready' &&
        wait"
 
   # Vision/Captioning service Ollama (moondream:v2)

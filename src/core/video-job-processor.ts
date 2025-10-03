@@ -2616,7 +2616,7 @@ Scene Description:`;
       // PERFORMANCE: Use specialized embed service for text generation
       const config = ConfigManager.getConfig();
       const baseUrl = config.ai.embedUrl;
-      const model = 'tinyllama:latest';
+      const model = config.ai.generalPurposeModel;
       
       const response = await fetch(`${baseUrl}/api/generate`, {
         method: 'POST',
@@ -2743,7 +2743,7 @@ Scene Description:`;
       // PERFORMANCE: Use specialized embed service for text generation
       const config = ConfigManager.getConfig();
       const baseUrl = config.ai.embedUrl;
-      const model = 'tinyllama:latest';
+      const model = config.ai.generalPurposeModel;
       
       const response = await fetch(`${baseUrl}/api/generate`, {
         method: 'POST',
