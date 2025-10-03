@@ -59,7 +59,8 @@ export class DataMigrator {
    */
   static async cleanupTemporaryFiles(debugMode: boolean = false): Promise<void> {
     const cleanupPaths = [
-      './.cache',
+      './.cache',                                  // dev cache
+      path.join(os.homedir(), '.clipwise', 'cache'), // prod cache
       './debug-output',
       path.join(os.tmpdir(), 'driller-compressed'),
       './.temp_frames_batch'

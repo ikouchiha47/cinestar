@@ -1,9 +1,8 @@
-import { VideoFile, VideoSegment, SearchResult } from '../types/video';
+import { VideoFile, VideoSegment, SearchResult, VideoProcessingJob, VideoSearchQuery } from '../types/video';
 import { VideoDatabase } from '../core/video-database';
 import { EmbeddingService } from '../core/embedding-service';
 import { VideoPipeline } from '../core/video-pipeline';
-import { VideoProcessingJob, VideoSearchQuery } from '../types/video';
-import { getVideoDuration } from '../utils/video-utils';
+// import { getVideoDuration } from '../utils/video-utils';
 import { MainMediaAPI } from './main-media-api';
 import path from 'path';
 import fs from 'fs';
@@ -334,7 +333,7 @@ export class VideoMediaAPI {
   /**
    * Recover stalled video processing jobs on startup
    */
-  async recoverStalledVideoJobs(): Promise<{ success: boolean; recoveredCount: number; error?: string }> {
+  async recoverStalledVideoJobs(): Promise<{ success: boolean; recoveredCount: number; jobId?: string | null; error?: string }> {
     try {
       console.log('[VIDEO-JOB-RECOVERY] Checking for stalled video processing jobs...');
       
