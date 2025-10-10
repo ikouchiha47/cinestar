@@ -18,7 +18,7 @@ export class DataMigrator {
   ];
 
   private static readonly CURRENT_DATA_DIR = app?.getPath('userData') || 
-    path.join(os.homedir(), '.clipwise-app');
+    path.join(os.homedir(), '.cinestar-app');
 
   /**
    * Migrate data from previous installations
@@ -60,7 +60,7 @@ export class DataMigrator {
   static async cleanupTemporaryFiles(debugMode: boolean = false): Promise<void> {
     const cleanupPaths = [
       './.cache',                                  // dev cache
-      path.join(os.homedir(), '.clipwise', 'cache'), // prod cache
+      path.join(os.homedir(), '.cinestar', 'cache'), // prod cache
       './debug-output',
       path.join(os.tmpdir(), 'driller-compressed'),
       './.temp_frames_batch'

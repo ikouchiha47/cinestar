@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import PortalSplash from './components/PortalSplash';
+import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 const DrillerV2 = lazy(() => import('./components/v2/DrillerV2'));
 
 // Icon components (only what's used in this file)
@@ -19,10 +20,7 @@ const Icon = {
 };
 
 function App() {
-  const [showSplash, setShowSplash] = useState(true);
-  const [appReady, setAppReady] = useState(false);
-  const [componentLoaded, setComponentLoaded] = useState(false);
-  const [startReveal, setStartReveal] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
   const [indexDrawerOpen, setIndexDrawerOpen] = useState(false);
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
   const [indexLogs, setIndexLogs] = useState<string[]>([]);
@@ -30,6 +28,36 @@ function App() {
   // Track whether the indexing drawer is open to avoid log spam when closed
   const indexOpenRef = useRef<boolean>(false);
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
+  
+  // Check onboarding status on mount
+  useEffect(() => {
+    const checkOnboarding = async () => {
+      // Check for ENV variable to force show onboarding (for development)
+      const forceOnboarding = import.meta.env.VITE_FORCE_ONBOARDING === 'true';
+      
+      if (forceOnboarding) {
+        console.log('[APP] VITE_FORCE_ONBOARDING=true - Showing onboarding flow');
+        setOnboardingComplete(false);
+        return;
+      }
+      
+      try {
+        const result = await window.electronAPI.getUserPreferences();
+        if (result.success && result.preferences) {
+          setOnboardingComplete(result.preferences.onboardingComplete);
+        } else {
+          // If preferences don't exist, show onboarding
+          setOnboardingComplete(false);
+        }
+      } catch (error) {
+        console.error('[APP] Failed to check onboarding status:', error);
+        // Default to showing onboarding on error
+        setOnboardingComplete(false);
+      }
+    };
+    
+    checkOnboarding();
+  }, []);
   type JobInfo = { 
   id: string; 
   sourceId: string; 
@@ -184,16 +212,24 @@ function App() {
     const preloadComponent = async () => {
       try {
         await import('./components/v2/DrillerV2');
-        setComponentLoaded(true);
       } catch (error) {
         console.warn('Failed to preload component:', error);
-        setComponentLoaded(true); // Continue anyway
       }
     };
     
     preloadComponent();
   }, []);
 
+  // Show loading while checking onboarding status
+  if (onboardingComplete === null) {
+    return <PortalSplash visible={true} />;
+  }
+  
+  // Show onboarding if not complete
+  if (!onboardingComplete) {
+    return <OnboardingFlow onComplete={() => setOnboardingComplete(true)} />;
+  }
+  
   return (
     <motion.div 
       initial={{ opacity: 0 }}
@@ -224,14 +260,14 @@ function App() {
         <div className="min-h-screen flex items-center justify-center">
           <div className="rounded-2xl border border-neutral-700/50 bg-neutral-800/50 backdrop-blur-sm p-8 text-center text-neutral-300">
             <Icon.Spinner className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-400" />
-            <div className="text-lg font-medium mb-2">Loading Clipwise</div>
+            <div className="text-lg font-medium mb-2">Loading Cinestar</div>
             <div className="text-sm text-neutral-400">Preparing your media library…</div>
           </div>
         </div>
       }>
         <motion.div
           initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: startReveal ? 1 : 0, y: startReveal ? 0 : 10 }}
+          animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
         >
           <DrillerV2
@@ -414,23 +450,6 @@ function App() {
       )}
 
       {/* Footer removed: DrillerV2 renders a fixed bottom-right footer */}
-      <PortalSplash
-        visible={showSplash}
-        onReveal={() => {
-          console.log('[PORTAL] Reveal triggered, starting landing fade-in');
-          setStartReveal(true);
-        }}
-        onComplete={() => {
-          console.log('[PORTAL] Splash complete, hiding overlay');
-          setShowSplash(false);
-          setAppReady(true);
-          try {
-            // @ts-ignore - exposed by preload
-            window.ipcRenderer?.send('renderer:app-mounted');
-          } catch {}
-        }}
-        minDurationMs={2200}
-      />
     </motion.div>
   );
 }

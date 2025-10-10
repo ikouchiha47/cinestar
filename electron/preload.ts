@@ -28,6 +28,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   mkdir: (dirPath: string) => ipcRenderer.invoke('fs:mkdir', dirPath),
   getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
   getDataDir: () => ipcRenderer.invoke('app:getDataDir'),
+  
+  // User preferences
+  getUserPreferences: () => ipcRenderer.invoke('user:getPreferences'),
+  saveUserPreferences: (prefs: any) => ipcRenderer.invoke('user:savePreferences', prefs),
+  
+  // Whisper model download
+  downloadWhisperModel: (options: { modelName: string }) => ipcRenderer.invoke('whisper:downloadModel', options),
+  onWhisperDownloadProgress: (callback: (progress: number) => void) => {
+    const listener = (_: any, progress: number) => callback(progress);
+    ipcRenderer.on('whisper:downloadProgress', listener);
+    return () => ipcRenderer.removeListener('whisper:downloadProgress', listener);
+  },
 })
 
 // Expose MediaAPI for the renderer process
@@ -52,7 +64,14 @@ contextBridge.exposeInMainWorld('mediaAPI', {
     ipcRenderer.invoke('search:unified', { query, ...options }),
   getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
   getStats: () => ipcRenderer.invoke('media:getStats'),
-  getRecentItems: (params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }) => ipcRenderer.invoke('media:getRecentItems', params),
+  getRecentItems: (params?: { 
+    sourceIds?: string[]; 
+    types?: Array<'image'|'video'|'audio'>; 
+    limit?: number; 
+    cursor?: string;
+    orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+    orderDirection?: 'asc' | 'desc';
+  }) => ipcRenderer.invoke('media:getRecentItems', params),
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),

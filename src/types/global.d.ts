@@ -14,6 +14,14 @@ declare global {
       fileExists: (filePath: string) => Promise<boolean>;
       mkdir: (dirPath: string) => Promise<boolean>;
       getAppPath: (name: string) => Promise<string>;
+      
+      // User preferences
+      getUserPreferences: () => Promise<{ success: boolean; preferences?: any; error?: string }>;
+      saveUserPreferences: (prefs: any) => Promise<{ success: boolean; error?: string }>;
+      
+      // Whisper model download
+      downloadWhisperModel: (options: { modelName: string }) => Promise<{ success: boolean; error?: string }>;
+      onWhisperDownloadProgress: (callback: (progress: number) => void) => () => void;
     };
     
     mediaAPI: {
@@ -28,7 +36,16 @@ declare global {
         jobs?: Array<{ id: string; sourceId: string; status: string; progress: number; totalItems?: number; processedItems?: number; startedAt?: Date; completedAt?: Date; phase?: string }>;
         error?: string;
       }>;
-      getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
+      getItems: (sourceId?: string) => Promise<{ success: boolean; items?: any[]; total?: number; error?: string }>;
+      getVideosByPath: (videoPath: string) => Promise<{ success: boolean; items?: any[]; error?: string }>;
+      getRecentItems: (params?: { 
+        sourceIds?: string[]; 
+        types?: Array<'image'|'video'|'audio'>; 
+        limit?: number; 
+        cursor?: string;
+        orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+        orderDirection?: 'asc' | 'desc';
+      }) => Promise<{ success: boolean; items?: any[]; nextCursor?: string; hasMore?: boolean; error?: string }>;
       search: (query: SearchQuery) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       searchText: (text: string, limit?: number) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       unifiedSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number; offset?: number }) => Promise<{
@@ -48,7 +65,6 @@ declare global {
       getStats: () => Promise<{ success: boolean; stats?: { totalSources: number; totalItems: number; activeJobs: number }; error?: string }>;
       isOllamaAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>;
       selectDirectory: () => Promise<{ canceled: boolean; path?: string }>;
-      getRecentItems: (params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number; offset?: number }) => Promise<{ success: boolean; items?: any[]; error?: string }>;
     };
     
     videoAPI: {

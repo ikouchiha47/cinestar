@@ -125,7 +125,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
               className="text-5xl font-bold text-white mb-4 tracking-wider"
             >
               <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-blue-400 bg-clip-text text-transparent">
-                Clipwise
+                Cinestar
               </span>
             </motion.h1>
 

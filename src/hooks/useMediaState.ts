@@ -33,8 +33,12 @@ export function useMediaState(): UseMediaStateReturn {
     try {
       setState(prev => ({ ...prev, loading: true, error: null }));
       
-      console.log('[MEDIA-STATE-DEBUG] Fetching media items...');
-      const itemsRes = await window.mediaAPI.getItems();
+      console.log('[MEDIA-STATE-DEBUG] Fetching media items with cursor pagination...');
+      const itemsRes = await window.mediaAPI.getRecentItems({
+        limit: 100,
+        orderBy: 'createdAt',
+        orderDirection: 'desc'
+      });
       
       if (itemsRes.success && Array.isArray(itemsRes.items)) {
         console.log(`[MEDIA-STATE-DEBUG] Retrieved ${itemsRes.items.length} items from API`);

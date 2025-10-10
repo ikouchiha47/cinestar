@@ -30,3 +30,6 @@ release/
 
 data/*db*
 !data/.keep
+
+# Downloaded AI models (users download on-demand)
+resources/whisper/

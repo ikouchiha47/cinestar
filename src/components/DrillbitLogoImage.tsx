@@ -33,7 +33,7 @@ export const DrillbitLogoImage: React.FC<DrillbitLogoImageProps> = ({
       })}
     >
       <MotionImg
-        src="./icons/clipwise-transparent.png"
+        src="./cinestar-app.png"
         alt="Clipwise Logo"
         width={size}
         height={size}

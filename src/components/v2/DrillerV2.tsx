@@ -30,10 +30,12 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [places, setPlaces] = useState<Place[]>([]);
   const [searchResults, setSearchResults] = useState<MediaT[]>([]);
-  const [videoSearchResults, setVideoSearchResults] = useState<MediaT[]>([]);
-  const [videoHasMore, setVideoHasMore] = useState<boolean>(false);
-  const [videoOffset, setVideoOffset] = useState<number>(0);
+  // const [videoSearchResults, setVideoSearchResults] = useState<MediaT[]>([]);
+  // const [videoHasMore, setVideoHasMore] = useState<boolean>(false);
+  // const [videoOffset, setVideoOffset] = useState<number>(0);
   const [library, setLibrary] = useState<MediaT[]>([]);
+  const [libraryCursor, setLibraryCursor] = useState<string | undefined>();
+  const [libraryHasMore, setLibraryHasMore] = useState(false);
   const [searching, setSearching] = useState(false);
   const [expandedType, setExpandedType] = useState<'image' | 'video' | 'audio' | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,13 +69,18 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   }, []);
 
   // Remove demo media; show results only when searching
-  // Initial library load for start page (newest first)
+  // Initial library load for start page (newest first) - CURSOR PAGINATION
   useEffect(() => {
     (async () => {
-      console.log('[DRILLER] Starting library load at:', new Date().toISOString());
+      console.log('[DRILLER] Starting library load with cursor pagination at:', new Date().toISOString());
       try {
-        const res = await window.mediaAPI.getItems();
-        console.log('[DRILLER] getItems response:', res);
+        const res = await window.mediaAPI.getRecentItems({
+          limit: 50,
+          cursor: undefined, // First page
+          orderBy: 'createdAt',
+          orderDirection: 'desc'
+        });
+        console.log('[DRILLER] getRecentItems response:', res);
         if (res?.success && Array.isArray(res.items)) {
           const items: any[] = res.items;
           console.log('[UI-FILTER-DEBUG] Raw items from API:', items.length);
@@ -108,27 +115,36 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               thumb: it.metadata?.thumbnailPath || undefined,
             } as MediaT;
           });
-          // Sort by recency (modifiedAt or createdAt)
-          const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-          mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
           setLibrary(mapped);
-          console.log('[DRILLER] Library loaded:', mapped.length, 'items at', new Date().toISOString());
+          setLibraryCursor(res.nextCursor);
+          setLibraryHasMore(res.hasMore || false);
+          console.log('[DRILLER] Library loaded:', mapped.length, 'items, hasMore:', res.hasMore, 'at', new Date().toISOString());
         } else {
           setLibrary([]);
+          setLibraryCursor(undefined);
+          setLibraryHasMore(false);
           console.log('[DRILLER] No items found, setting empty library at:', new Date().toISOString());
         }
       } catch (e) {
         console.error('[DRILLER] Error loading library:', e, 'at:', new Date().toISOString());
         setLibrary([]);
+        setLibraryCursor(undefined);
+        setLibraryHasMore(false);
       }
     })();
   }, []);
 
-  // Refresh library when selected place changes
+  // Refresh library when selected place changes - CURSOR PAGINATION
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.mediaAPI.getItems();
+        const res = await window.mediaAPI.getRecentItems({
+          sourceIds: selectedPlace ? [selectedPlace] : undefined,
+          limit: 50,
+          cursor: undefined,
+          orderBy: 'createdAt',
+          orderDirection: 'desc'
+        });
         if (res?.success && Array.isArray(res.items)) {
           const items: any[] = res.items;
           
@@ -149,9 +165,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             }
             return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
           });
-          const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-          mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
           setLibrary(mapped);
+          setLibraryCursor(res.nextCursor);
+          setLibraryHasMore(res.hasMore || false);
         }
       } catch {}
     })();
@@ -170,7 +186,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           try {
             const [sourcesRes, itemsRes] = await Promise.all([
               window.mediaAPI.getSources(),
-              window.mediaAPI.getItems()
+              window.mediaAPI.getRecentItems({ limit: 50, cursor: undefined, orderBy: 'createdAt', orderDirection: 'desc' })
             ]);
             
             if (sourcesRes.success && Array.isArray(sourcesRes.sources)) {
@@ -223,9 +239,6 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                 return mappedItem;
               });
               
-              const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-              mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
-              
               // Final check for duplicates in UI
               const videoItems = mapped.filter(item => item.type === 'video');
               if (videoItems.length > 1) {
@@ -236,6 +249,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               }
               
               setLibrary(mapped);
+              setLibraryCursor(itemsRes.nextCursor);
+              setLibraryHasMore(itemsRes.hasMore || false);
             }
           } catch {}
         }
@@ -255,7 +270,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       if (!query || scope === 'folders') {
         if (alive) {
           setSearchResults([]);
-          setVideoSearchResults([]);
+          // setVideoSearchResults([]);
         }
         return;
       }
@@ -300,15 +315,16 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
         } as MediaT));
 
-        // Set results
-        setSearchResults(mediaItems);
-        setVideoSearchResults(videoItems);
-        setVideoHasMore(!!res?.results?.hasMore?.videos);
-        setVideoOffset(videoItems.length);
+        // Set results - combine images and videos into single searchResults array
+        const allResults = [...mediaItems, ...videoItems];
+        setSearchResults(allResults);
+        // setVideoSearchResults(videoItems);
+        // setVideoHasMore(!!res?.results?.hasMore?.videos);
+        // setVideoOffset(videoItems.length);
       } catch (error) {
         console.error('[SEARCH-ERROR]', error);
         setSearchResults([]);
-        setVideoSearchResults([]);
+        // setVideoSearchResults([]);
       } finally {
         if (alive) setSearching(false);
       }
@@ -330,30 +346,30 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   }, [q, scope]);
 
   // Load more video segment results using pagination from unifiedSearch
-  const loadMoreVideos = async () => {
-    const query = q.trim();
-    if (!query || !videoHasMore) return;
-    try {
-      setSearching(true);
-      const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: videoOffset });
-      const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
-      const more: MediaT[] = videos.map((r: any) => ({
-        id: String(r.id || Math.random().toString(36).slice(2)),
-        placeId: String(r.sourceId || ''),
-        type: 'video',
-        name: String(r.name || 'video'),
-        path: String(r.path || ''),
-        thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
-      } as MediaT));
-      setVideoSearchResults((prev) => [...prev, ...more]);
-      setVideoOffset((prev) => prev + more.length);
-      setVideoHasMore(!!res?.results?.hasMore?.videos);
-    } catch {
-      // ignore
-    } finally {
-      setSearching(false);
-    }
-  };
+  // const loadMoreVideos = async () => {
+  //   const query = q.trim();
+  //   if (!query || !videoHasMore) return;
+  //   try {
+  //     setSearching(true);
+  //     const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: videoOffset });
+  //     const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
+  //     const more: MediaT[] = videos.map((r: any) => ({
+  //       id: String(r.id || Math.random().toString(36).slice(2)),
+  //       placeId: String(r.sourceId || ''),
+  //       type: 'video',
+  //       name: String(r.name || 'video'),
+  //       path: String(r.path || ''),
+  //       thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
+  //     } as MediaT));
+  //     setVideoSearchResults((prev) => [...prev, ...more]);
+  //     setVideoOffset((prev) => prev + more.length);
+  //     setVideoHasMore(!!res?.results?.hasMore?.videos);
+  //   } catch {
+  //     // ignore
+  //   } finally {
+  //     setSearching(false);
+  //   }
+  // };
 
   const scopedMedia = useMemo(() => {
     // If search bar is empty, always show library
@@ -403,7 +419,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const handleItemDeleted = (itemId: string) => {
     setLibrary(prev => prev.filter(item => item.id !== itemId));
     setSearchResults(prev => prev.filter(item => item.id !== itemId));
-    setVideoSearchResults(prev => prev.filter(item => item.id !== itemId));
+    // setVideoSearchResults(prev => prev.filter(item => item.id !== itemId));
   };
 
   // Handle video item click - open video player
@@ -457,7 +473,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             </button>
           </div>
           <div className="text-center">
-            <div className="text-lg font-semibold tracking-tight">Clipwise</div>
+            <div className="text-lg font-semibold tracking-tight">Cinestar</div>
             <div className="text-[11px] text-neutral-400">Media Search</div>
           </div>
           <div className="flex items-center justify-end gap-2">
@@ -500,7 +516,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     if (!query || scope === 'folders') {
                       console.log(`[SEARCH-DEBUG] Exiting early - query="${query}", scope="${scope}"`);
                       setSearchResults([]);
-                      setVideoSearchResults([]);
+                      // setVideoSearchResults([]);
                       return;
                     }
                     try {
@@ -508,12 +524,16 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       console.log(`[SEARCH-DEBUG] Calling unifiedSearch with query: "${query}"`);
                       const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
                       console.log(`[SEARCH-DEBUG] Got response with ${res?.results?.images?.length || 0} images, ${res?.results?.videos?.length || 0} videos`);
+                      
                       const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
+                      
                       const mediaItems: MediaT[] = images.map((it: any) => {
                         const mime = (it.mimeType || '').toLowerCase();
                         let kind: 'image' | 'video' | 'audio' = 'image';
                         if (mime.startsWith('video/')) kind = 'video';
+
                         else if (mime.startsWith('audio/')) kind = 'audio';
+
                         else if (typeof it.type === 'string') {
                           const t = it.type.toLowerCase();
                           if (t.includes('video')) kind = 'video';
@@ -527,6 +547,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                         }
                         return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
                       });
+
                       const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
                       const videoItems: MediaT[] = videos.map((r: any) => ({
                         id: String(r.id || Math.random().toString(36).slice(2)),
@@ -539,12 +560,12 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       // Set results - COMBINE images and videos into searchResults
                       const allResults = [...mediaItems, ...videoItems];
                       setSearchResults(allResults);
-                      setVideoSearchResults(videoItems);
-                      setVideoHasMore(!!res?.results?.hasMore?.videos);
-                      setVideoOffset(videoItems.length);
+                      // setVideoSearchResults(videoItems);
+                      // setVideoHasMore(!!res?.results?.hasMore?.videos);
+                      // setVideoOffset(videoItems.length);
                     } catch {
                       setSearchResults([]);
-                      setVideoSearchResults([]);
+                      // setVideoSearchResults([]);
                     } finally {
                       setSearching(false);
                     }
@@ -753,7 +774,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     }
                     // Also refresh items so the new video shows up in the Videos group immediately
                     try {
-                      const itemsRes = await window.mediaAPI.getItems();
+                      const itemsRes = await window.mediaAPI.getRecentItems({ limit: 50, cursor: undefined, orderBy: 'createdAt', orderDirection: 'desc' });
                       if (itemsRes?.success && Array.isArray(itemsRes.items)) {
                         console.log(`[UPLOAD-CALLBACK-DEBUG] Processing ${itemsRes.items.length} items after upload`);
                         
@@ -781,9 +802,9 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                           }
                           return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
                         });
-                        const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-                        mappedItems.sort((a: any, b: any) => withDate(b) - withDate(a));
                         setLibrary(mappedItems);
+                        setLibraryCursor(itemsRes.nextCursor);
+                        setLibraryHasMore(itemsRes.hasMore || false);
                       }
                     } catch {}
                   } catch (error) {
@@ -844,19 +865,26 @@ function StackCard({ title }: { title: string }) {
 
 function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'video'|'audio'|null; placeId?: string; onBack: () => void }) {
   const [items, setItems] = useState<MediaT[]>([]);
-  const [total, setTotal] = useState<number>(0);
-  const [offset, setOffset] = useState<number>(0);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [cursor, setCursor] = useState<string | undefined>();
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
   const PAGE = 120;
   const PREFETCH_MULT = 1.5;
 
   useEffect(() => {
     let alive = true;
-    async function loadInitial() {
+    (async () => {
       if (!type) return;
       setLoading(true);
       try {
-        const res = await window.mediaAPI.getItems(placeId);
+        const res = await (window.mediaAPI as any).getRecentItems({
+          sourceIds: placeId ? [placeId] : undefined,
+          types: [type],
+          limit: PAGE,
+          cursor: undefined,
+          orderBy: 'createdAt',
+          orderDirection: 'desc'
+        });
         if (!alive) return;
         if (res?.success && Array.isArray(res.items)) {
           const mapped: MediaT[] = res.items.map((it: any) => {
@@ -872,19 +900,17 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
             return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
           });
           setItems(mapped);
-          setOffset(mapped.length);
-          setTotal(res.total || mapped.length);
+          setCursor(res.nextCursor);
+          setHasMore(res.hasMore || false);
         } else {
           setItems([]);
-          setOffset(0);
-          setTotal(0);
+          setCursor(undefined);
+          setHasMore(false);
         }
       } finally {
         if (alive) setLoading(false);
       }
-    }
-    setItems([]); setTotal(0); setOffset(0);
-    loadInitial();
+    })();
     return () => { alive = false; };
   }, [type, placeId]);
 
@@ -896,7 +922,7 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
           <div className="flex items-center justify-between mb-2 px-1">
             <div className="flex items-center gap-2 text-sm text-neutral-300">
               <b>{type === 'image' ? 'Images' : type === 'video' ? 'Videos' : 'Audio'}</b>
-              <span className="text-neutral-500">{total}</span>
+              <span className="text-neutral-500">{items.length}{hasMore ? '+' : ''}</span>
             </div>
             <div className="flex items-center gap-2">
               <button className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:border-neutral-700" onClick={onBack}>Back</button>
@@ -912,17 +938,22 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
                 const cardWidth = (width - gap * (perRow - 1)) / perRow;
                 const caption = 56; // approx caption + padding
                 const rowHeight = Math.ceil(cardWidth + caption);
-                const totalCount = total || items.length;
-                const rowCount = Math.max(1, Math.ceil(totalCount / perRow));
+                const rowCount = Math.max(1, Math.ceil(items.length / perRow));
 
-                // Prefetch logic based on visible rows
+                // Infinite scroll: Load more when scrolling near bottom
                 const rowsVisible = Math.ceil(height / rowHeight);
                 const wantCount = Math.ceil((rowsVisible * PREFETCH_MULT + 2) * perRow);
-                if (!loading && items.length < totalCount && items.length < wantCount) {
+                if (!loading && hasMore && items.length < wantCount && cursor) {
                   setLoading(true);
-                  const nextLimit = Math.floor(PAGE * PREFETCH_MULT);
-                  window.mediaAPI
-                    .getItems(placeId)
+                  (window.mediaAPI as any)
+                    .getRecentItems({
+                      sourceIds: placeId ? [placeId] : undefined,
+                      types: type ? [type] : undefined,
+                      limit: PAGE,
+                      cursor: cursor,
+                      orderBy: 'createdAt',
+                      orderDirection: 'desc'
+                    })
                     .then((res: any) => {
                       if (res?.success && Array.isArray(res.items)) {
                         const mapped: MediaT[] = res.items.map((it: any) => ({
@@ -935,10 +966,11 @@ function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'vide
                             : 'image'),
                           name: it.name || 'item',
                           path: it.path,
+                          thumb: it.metadata?.thumbnailPath || undefined,
                         }));
                         setItems((prev) => [...prev, ...mapped]);
-                        setOffset((prev) => prev + mapped.length);
-                        setTotal(res.total || offset + mapped.length);
+                        setCursor(res.nextCursor);
+                        setHasMore(res.hasMore || false);
                       }
                     })
                     .finally(() => setLoading(false));

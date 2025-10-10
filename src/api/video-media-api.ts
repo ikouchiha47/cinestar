@@ -4,6 +4,7 @@ import { EmbeddingService } from '../core/embedding-service';
 import { VideoPipeline } from '../core/video-pipeline';
 // import { getVideoDuration } from '../utils/video-utils';
 import { MainMediaAPI } from './main-media-api';
+import { UserPreferencesManager } from '../core/user-preferences';
 import path from 'path';
 import fs from 'fs';
 
@@ -101,6 +102,17 @@ export class VideoMediaAPI {
    * Process a video file
    */
   async processVideo(videoPath: string): Promise<string> {
+    // Check if video processing is enabled
+    const userPrefs = UserPreferencesManager.getInstance();
+    if (!userPrefs.isFeatureEnabled('videos')) {
+      throw new Error('Video processing is not enabled. Please enable it in Settings.');
+    }
+    
+    // Check if whisper model is downloaded
+    if (!userPrefs.isWhisperModelDownloaded()) {
+      throw new Error('Whisper model not downloaded. Please download it in Settings.');
+    }
+    
     try {
       console.log(`[VIDEO-API] Starting video processing for: ${videoPath}`);
       

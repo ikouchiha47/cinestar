@@ -11,6 +11,7 @@ import { VideoJobProcessor } from '../src/core/video-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 import { getMimeType } from '../src/core/utils'
+import { UserPreferencesManager, type UserPreferences } from '../src/core/user-preferences'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -23,9 +24,9 @@ const __dirname = path.dirname(__filename)
 // Reduce background throttling to avoid delayed paints in development
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 const IS_DEV = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true'
-const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.clipwise')
+const DEFAULT_DATA_DIR = IS_DEV ? path.resolve(process.cwd(), 'data') : path.join(os.homedir(), '.cinestar')
 const DATA_DIR = process.env.MAIN_DB_DIR || DEFAULT_DATA_DIR
-process.env.CLIPWISE_DATA_DIR = DATA_DIR
+process.env.CINESTAR_DATA_DIR = DATA_DIR
 
 // Default main DB backend to sqlite unless explicitly overridden
 if (!process.env.MAIN_DB_BACKEND) process.env.MAIN_DB_BACKEND = 'sqlite'
@@ -75,7 +76,7 @@ async function createWindow() {
     minHeight: 600,
     backgroundColor: '#0b0b0b',
     show: true,
-    title: 'Clipwise',
+    title: 'Cinestar',
     icon: path.join(process.env.VITE_PUBLIC, 'icons', 'icon-256.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -182,7 +183,7 @@ app.on('activate', () => {
 })
 
 // Database file operations
-const DB_PATH = path.join(app.getPath('userData'), 'clipwise-db');
+const DB_PATH = path.join(app.getPath('userData'), 'cinestar-db');
 
 // Ensure DB directory exists
 if (!fs.existsSync(DB_PATH)) {
@@ -278,7 +279,7 @@ async function initializeVideoAPI() {
   // Direct file logging for debugging (bypasses broken console logger)
   const debugLog = (msg: string) => {
     try {
-      const logPath = path.join(os.homedir(), '.clipwise', 'init-debug.txt');
+      const logPath = path.join(os.homedir(), '.cinestar', 'init-debug.txt');
       fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
     } catch {}
   };
@@ -889,6 +890,109 @@ ipcMain.handle('config:set', async (_, config) => {
     return { success: true };
   } catch (error) {
     console.error('Failed to save config:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+// User Preferences IPC handlers
+ipcMain.handle('user:getPreferences', async () => {
+  try {
+    const manager = UserPreferencesManager.getInstance();
+    return {
+      success: true,
+      preferences: manager.getPreferences()
+    };
+  } catch (error) {
+    console.error('[USER-PREFS] Failed to get preferences:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle('user:savePreferences', async (_, prefs: Partial<UserPreferences>) => {
+  try {
+    const manager = UserPreferencesManager.getInstance();
+    
+    if (prefs.featuresEnabled) {
+      manager.setFeaturesEnabled(prefs.featuresEnabled);
+    }
+    
+    if (prefs.onboardingComplete !== undefined && prefs.onboardingComplete) {
+      manager.completeOnboarding();
+    }
+    
+    if (prefs.whisperModelDownloaded !== undefined) {
+      manager.setWhisperModelDownloaded(prefs.whisperModelDownloaded);
+    }
+    
+    console.log('[USER-PREFS] Preferences saved');
+    return { success: true };
+  } catch (error) {
+    console.error('[USER-PREFS] Failed to save preferences:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+// Whisper model download handler
+ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string }) => {
+  try {
+    console.log(`[WHISPER-DOWNLOAD] Starting download for model: ${options.modelName}`);
+    
+    const { nodewhisper } = await import('nodejs-whisper');
+    const userPrefs = UserPreferencesManager.getInstance();
+    
+    // Get models path
+    const appDataPath = process.env.APPDATA || 
+                        path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
+    const modelsPath = path.join(appDataPath, 'Cinestar', 'whisper-models');
+    
+    // Create directory
+    await fs.promises.mkdir(modelsPath, { recursive: true });
+    
+    // Create dummy audio file to trigger download
+    const dummyAudioPath = path.join(modelsPath, 'dummy.wav');
+    const wavHeader = Buffer.from([
+      0x52, 0x49, 0x46, 0x46, 0x24, 0x7D, 0x00, 0x00,
+      0x57, 0x41, 0x56, 0x45, 0x66, 0x6D, 0x74, 0x20,
+      0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+      0x80, 0x3E, 0x00, 0x00, 0x00, 0x7D, 0x00, 0x00,
+      0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61,
+      0x00, 0x7D, 0x00, 0x00
+    ]);
+    const silence = Buffer.alloc(32000);
+    await fs.promises.writeFile(dummyAudioPath, Buffer.concat([wavHeader, silence]));
+    
+    // Simulate progress (nodejs-whisper doesn't provide real progress)
+    let progress = 0;
+    const progressInterval = setInterval(() => {
+      progress += 3;
+      if (progress <= 95) {
+        evt.sender.send('whisper:downloadProgress', progress);
+      }
+    }, 1000);
+    
+    // Set environment variable for models path
+    process.env.NODEJS_WHISPER_CACHE = modelsPath;
+    
+    // Trigger download
+    await nodewhisper(dummyAudioPath, {
+      modelName: options.modelName,
+      autoDownloadModelName: options.modelName,
+      whisperOptions: { outputInText: true }
+    });
+    
+    clearInterval(progressInterval);
+    evt.sender.send('whisper:downloadProgress', 100);
+    
+    // Clean up dummy file
+    await fs.promises.unlink(dummyAudioPath).catch(() => {});
+    
+    // Mark as downloaded
+    userPrefs.setWhisperModelDownloaded(true);
+    
+    console.log('[WHISPER-DOWNLOAD] Download complete');
+    return { success: true };
+  } catch (error) {
+    console.error('[WHISPER-DOWNLOAD] Download failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });

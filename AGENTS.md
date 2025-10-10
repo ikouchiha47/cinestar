@@ -3,6 +3,74 @@
 ## Core Principle
 **Never make assumptions about data structure or flow without logging first.** AI agents must see the actual data to debug effectively.
 
+### Memory
+
+Create a memory after every correct change, as a way to persist what we know about the system state.
+This would help to remember what we were doing, the next time we start from scratch
+
+```sh
+# all your memories are here
+mkdir -p ./memory
+```
+
+You can use sqlite and markdown to create a memory of the system state.
+
+```sh
+npm install sqlite-vec
+# or sqlite-utils install sqlite-utils-sqlite-vec
+sqlite3 ./memory/<context>.sqlite
+```
+
+- Maintain historical data, summarize content in a way we support cursor pagination
+- Maintain the summary in a way you can prompt it to get next and prev relevant items.
+- Keep a memory of the decisions taken to create the sqlite table structures
+- Leverage sqlite-vec for embeddings for search.
+- Keep the memory consumption low, with proper indexes, paginations, and summaries.
+- ONLY use CLI tools to interract with sqlite database. (sqlite3, sqlite-utils)
+
+#### Querying for data
+
+- Keep a list of queries to make in a markdown file, this should be done with properly checking the schema and the data. 
+- Seperate them by intent. Once done, they can be followed up by collection of queries as workflows. These can evolve as we learn more about the system.
+
+Example Template for ./memory/QUERIES.md:
+
+```markdown
+
+## Schema
+
+```sql
+
+```
+
+## Queries
+
+### GetRecentItems
+
+```sql
+SELECT * FROM media_items ORDER BY created_at DESC LIMIT 50;
+```
+
+### GetUsers
+
+```sql
+SELECT * FROM users ORDER BY created_at DESC LIMIT 50;
+```
+
+### GetRecentItemsForUser
+
+```sql
+SELECT * FROM media_items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50;
+```
+
+## Aggregates
+
+### Get recent items for user
+
+1. GetUsers
+2. GetRecentItemsForUser
+```
+
 ## Essential Logging Strategies
 
 ### 1. Data Structure Logging

@@ -2,13 +2,15 @@
  * useMediaLibrary - Custom hook for managing media library state
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { MediaT, Place } from '../types';
 
 export function useMediaLibrary() {
   const [library, setLibrary] = useState<MediaT[]>([]);
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [hasMore, setHasMore] = useState(false);
 
   // Filter out video_segment items - only show parent videos
   const filterMediaItems = (items: any[]): MediaT[] => {
@@ -45,30 +47,58 @@ export function useMediaLibrary() {
     });
   };
 
-  // Load initial library
-  const loadLibrary = async () => {
+  // Load initial library with cursor-based pagination
+  const loadLibrary = async (reset = true) => {
     console.log('[DRILLER] Starting library load at:', new Date().toISOString());
     setLoading(true);
     try {
-      const res = await window.mediaAPI.getItems();
-      console.log('[DRILLER] getItems response:', res);
+      // Use cursor-based pagination for better performance
+      const res = await window.mediaAPI.getRecentItems({
+        cursor: reset ? undefined : nextCursor,
+        limit: 50,
+        orderBy: 'createdAt',
+        orderDirection: 'desc'
+      });
+      console.log('[DRILLER] getRecentItems response:', res);
+      
       if (res?.success && Array.isArray(res.items)) {
         const mapped = filterMediaItems(res.items);
-        // Sort by recency (modifiedAt or createdAt)
-        const withDate = (it: any) => new Date(it.modifiedAt || it.lastModified || it.createdAt || 0).getTime();
-        mapped.sort((a: any, b: any) => withDate(b) - withDate(a));
-        setLibrary(mapped);
-        console.log('[DRILLER] Library loaded:', mapped.length, 'items at', new Date().toISOString());
+        
+        if (reset) {
+          setLibrary(mapped);
+        } else {
+          // Append to existing library for infinite scroll
+          setLibrary(prev => [...prev, ...mapped]);
+        }
+        
+        setNextCursor(res.nextCursor);
+        setHasMore(res.hasMore || false);
+        
+        console.log('[DRILLER] Library loaded:', mapped.length, 'items, hasMore:', res.hasMore, 'at', new Date().toISOString());
       } else {
-        setLibrary([]);
+        if (reset) {
+          setLibrary([]);
+          setNextCursor(undefined);
+          setHasMore(false);
+        }
         console.log('[DRILLER] No items found, setting empty library at:', new Date().toISOString());
       }
     } catch (e) {
       console.error('[DRILLER] Error loading library:', e, 'at:', new Date().toISOString());
-      setLibrary([]);
+      if (reset) {
+        setLibrary([]);
+        setNextCursor(undefined);
+        setHasMore(false);
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  // Load more items for infinite scroll
+  const loadMore = async () => {
+    if (!hasMore || loading) return;
+    await loadLibrary(false);
   };
 
   // Load places/sources
@@ -138,8 +168,11 @@ export function useMediaLibrary() {
     library,
     places,
     loading,
+    hasMore,
+    nextCursor,
     refresh,
     loadLibrary,
     loadPlaces,
+    loadMore,
   };
 }

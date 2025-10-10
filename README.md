@@ -1,12 +1,11 @@
-# DrillBit
+# Cinestar.app
 
-Search through image, videos backed by local LLMs
+AI-powered video search and analysis backed by local LLMs
 
 ## Infra
 
 - ollama
 - sqlite3, vector
-- electron
 - docker to run openwhisper
 
 models:

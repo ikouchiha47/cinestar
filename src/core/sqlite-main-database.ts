@@ -149,6 +149,175 @@ export class SqliteMainDatabase {
     }));
   }
 
+  // Get media items by path and type (optimized for video processing)
+  async getMediaItemsByPath(path: string, type?: string): Promise<MediaItem[]> {
+    const query = type 
+      ? `SELECT * FROM media_items WHERE path=? AND type=? ORDER BY datetime(created_at) DESC`
+      : `SELECT * FROM media_items WHERE path=? ORDER BY datetime(created_at) DESC`;
+    const params = type ? [path, type] : [path];
+    
+    const rows = this.db.prepare(query).all(...params) as any[];
+    console.log(`[SqliteMainDatabase] getMediaItemsByPath(${path}, ${type || 'ANY'}) ->`, rows.length, 'rows');
+    
+    return rows.map(r => ({
+      id: r.id, sourceId: r.source_id, name: r.name, path: r.path, size: r.size, type: r.type, mimeType: r.mime_type,
+      createdAt: new Date(r.created_at), modifiedAt: new Date(r.modified_at), description: r.caption || undefined,
+      embedding: r.embedding ? new Float32Array((r.embedding as Buffer).buffer, (r.embedding as Buffer).byteOffset, (r.embedding as Buffer).byteLength / 4) : undefined,
+      metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+    }));
+  }
+
+  // Get media items with cursor-based pagination (efficient and consistent)
+  async getMediaItemsPaginated(params: {
+    sourceIds?: string[];
+    types?: string[];
+    limit?: number;
+    cursor?: string; // ISO timestamp cursor for pagination
+    orderBy?: 'created_at' | 'modified_at' | 'name' | 'size';
+    orderDirection?: 'ASC' | 'DESC';
+  }): Promise<{ items: MediaItem[]; nextCursor?: string; hasMore: boolean }> {
+    const { sourceIds, types, limit = 50, cursor, orderBy = 'created_at', orderDirection = 'DESC' } = params;
+    
+    // Build WHERE clause
+    const whereClauses: string[] = [];
+    const whereParams: any[] = [];
+    
+    if (sourceIds?.length) {
+      whereClauses.push(`source_id IN (${sourceIds.map(() => '?').join(', ')})`);
+      whereParams.push(...sourceIds);
+    }
+    
+    if (types?.length) {
+      // Handle type filtering by mime type
+      const typeConditions: string[] = [];
+      for (const type of types) {
+        switch (type) {
+          case 'video':
+            typeConditions.push(`mime_type LIKE 'video/%'`);
+            break;
+          case 'audio':
+            typeConditions.push(`mime_type LIKE 'audio/%'`);
+            break;
+          case 'image':
+            typeConditions.push(`(mime_type LIKE 'image/%' OR mime_type IS NULL OR mime_type = '')`);
+            break;
+        }
+      }
+      if (typeConditions.length > 0) {
+        whereClauses.push(`(${typeConditions.join(' OR ')})`);
+      }
+    }
+    
+    // Add cursor-based pagination
+    if (cursor && (orderBy === 'created_at' || orderBy === 'modified_at')) {
+      const operator = orderDirection === 'DESC' ? '<' : '>';
+      whereClauses.push(`datetime(${orderBy}) ${operator} datetime(?)`);
+      whereParams.push(cursor);
+    }
+    
+    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    
+    // Build ORDER BY clause
+    const orderColumn = orderBy === 'created_at' || orderBy === 'modified_at' 
+      ? `datetime(${orderBy})` 
+      : orderBy;
+    const orderClause = `ORDER BY ${orderColumn} ${orderDirection}`;
+    
+    // Get items with one extra to check if there are more
+    const itemsQuery = `SELECT * FROM media_items ${whereClause} ${orderClause} LIMIT ?`;
+    const rows = this.db.prepare(itemsQuery).all(...whereParams, limit + 1) as any[];
+    
+    // Check if there are more items
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    
+    // Generate next cursor from the last item
+    let nextCursor: string | undefined;
+    if (hasMore && items.length > 0) {
+      const lastItem = items[items.length - 1];
+      if (orderBy === 'created_at' || orderBy === 'modified_at') {
+        nextCursor = lastItem[orderBy];
+      }
+    }
+    
+    console.log(`[SqliteMainDatabase] getMediaItemsPaginated -> ${items.length} items (cursor: ${cursor || 'none'}, hasMore: ${hasMore})`);
+    
+    const mappedItems = items.map(r => ({
+      id: r.id, sourceId: r.source_id, name: r.name, path: r.path, size: r.size, type: r.type, mimeType: r.mime_type,
+      createdAt: new Date(r.created_at), modifiedAt: new Date(r.modified_at), description: r.caption || undefined,
+      embedding: r.embedding ? new Float32Array((r.embedding as Buffer).buffer, (r.embedding as Buffer).byteOffset, (r.embedding as Buffer).byteLength / 4) : undefined,
+      metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+    }));
+    
+    return { items: mappedItems, nextCursor, hasMore };
+  }
+
+  // Legacy method for backward compatibility (still uses offset but warns)
+  async getMediaItemsWithOffset(params: {
+    sourceIds?: string[];
+    types?: string[];
+    limit?: number;
+    offset?: number;
+    orderBy?: 'created_at' | 'modified_at' | 'name' | 'size';
+    orderDirection?: 'ASC' | 'DESC';
+  }): Promise<{ items: MediaItem[]; hasMore: boolean }> {
+    console.warn(`[SqliteMainDatabase] getMediaItemsWithOffset is deprecated - use cursor-based getMediaItemsPaginated instead`);
+    
+    const { sourceIds, types, limit = 50, offset = 0, orderBy = 'created_at', orderDirection = 'DESC' } = params;
+    
+    // Build WHERE clause (same as before)
+    const whereClauses: string[] = [];
+    const whereParams: any[] = [];
+    
+    if (sourceIds?.length) {
+      whereClauses.push(`source_id IN (${sourceIds.map(() => '?').join(', ')})`);
+      whereParams.push(...sourceIds);
+    }
+    
+    if (types?.length) {
+      const typeConditions: string[] = [];
+      for (const type of types) {
+        switch (type) {
+          case 'video':
+            typeConditions.push(`mime_type LIKE 'video/%'`);
+            break;
+          case 'audio':
+            typeConditions.push(`mime_type LIKE 'audio/%'`);
+            break;
+          case 'image':
+            typeConditions.push(`(mime_type LIKE 'image/%' OR mime_type IS NULL OR mime_type = '')`);
+            break;
+        }
+      }
+      if (typeConditions.length > 0) {
+        whereClauses.push(`(${typeConditions.join(' OR ')})`);
+      }
+    }
+    
+    const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const orderColumn = orderBy === 'created_at' || orderBy === 'modified_at' ? `datetime(${orderBy})` : orderBy;
+    const orderClause = `ORDER BY ${orderColumn} ${orderDirection}`;
+    
+    // No more COUNT() query - use LIMIT + 1 approach
+    const itemsQuery = `SELECT * FROM media_items ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
+    const rows = this.db.prepare(itemsQuery).all(...whereParams, limit + 1, offset) as any[];
+    
+    // Check if there are more items
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    
+    console.log(`[SqliteMainDatabase] getMediaItemsWithOffset -> ${items.length} items (hasMore: ${hasMore}, offset: ${offset})`);
+    
+    const mappedItems = items.map(r => ({
+      id: r.id, sourceId: r.source_id, name: r.name, path: r.path, size: r.size, type: r.type, mimeType: r.mime_type,
+      createdAt: new Date(r.created_at), modifiedAt: new Date(r.modified_at), description: r.caption || undefined,
+      embedding: r.embedding ? new Float32Array((r.embedding as Buffer).buffer, (r.embedding as Buffer).byteOffset, (r.embedding as Buffer).byteLength / 4) : undefined,
+      metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
+    }));
+    
+    return { items: mappedItems, hasMore };
+  }
+
   // Update embedding blob in main items table
   async updateItemEmbedding(itemId: string, embedding: Float32Array): Promise<void> {
     const buffer = Buffer.alloc(embedding.length * 4);

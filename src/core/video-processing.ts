@@ -262,7 +262,7 @@ export function getCacheDir(videoFile: string): string {
   
   // Use user data directory in production, project directory in development
   const baseDir = isPackaged() 
-    ? path.join(os.homedir(), '.clipwise', 'cache')
+    ? path.join(os.homedir(), '.cinestar', 'cache')
     : path.join(process.cwd(), '.cache');
     
   return path.join(baseDir, 'video', `${basename}_${hash.slice(0, 8)}`);

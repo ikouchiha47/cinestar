@@ -1,13 +1,13 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.clipwise.app",
+  "appId": "com.cinestar.app",
   "asar": true,
-  "productName": "Clipwise",
+  "productName": "Cinestar",
   "directories": {
     "output": "release/${version}"
   },
-  "icon": "public/icons/clipwise-transparent.png",
+  "icon": "public/icons/cinestar-app.png",
   "files": [
     "dist",
     "dist-electron",
@@ -26,7 +26,7 @@
     "target": [
       "dmg"
     ],
-    "icon": "public/icons/clipwise-transparent.png",
+    "icon": "public/icons/cinestar-app.png",
     "artifactName": "${productName}-${version}-mac.${ext}"
   },
   "win": {
@@ -38,7 +38,7 @@
         ]
       }
     ],
-    "icon": "public/icons/clipwise-transparent.png",
+    "icon": "public/icons/cinestar-app.png",
     "artifactName": "${productName}-${version}-win.${ext}"
   },
   "nsis": {
@@ -54,7 +54,7 @@
         "arch": ["x64", "arm64"]
       }
     ],
-    "icon": "public/icons/clipwise-transparent.png",
+    "icon": "public/icons/cinestar-app.png",
     "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
   }
 }

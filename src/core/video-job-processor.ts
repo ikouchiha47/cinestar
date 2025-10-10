@@ -1035,15 +1035,12 @@ export class VideoJobProcessor {
       let mainDbVideos: any[] = [];
       try {
         const { MainMediaAPI } = await import('../api/main-media-api');
-        const itemsResult = await MainMediaAPI.getItems();
+        const itemsResult = await MainMediaAPI.getVideosByPath(videoPath);
         if (itemsResult.success && itemsResult.items) {
-          mainDbVideos = itemsResult.items.filter((item: any) => 
-            item.path === videoPath && item.type === 'video'
-          );
-          console.log(`[VIDEO-INDEXING-DEBUG] - Main DB videos found: ${mainDbVideos.length}`);
+          mainDbVideos = itemsResult.items;
         }
       } catch (error) {
-        console.warn(`[VIDEO-INDEXING-DEBUG] Could not check main database:`, error);
+        console.error(`[VIDEO-INDEXING-DEBUG] Failed to query main database:`, error);
       }
       
       const totalExistingVideos = existingVideos.length + mainDbVideos.length;
@@ -1863,9 +1860,9 @@ export class VideoJobProcessor {
       
       // Query the main database (vector.db) for the parent video
       const { MainMediaAPI } = await import('../api/main-media-api');
-      console.log(`[DB-PATH-DEBUG] 📞 Calling MainMediaAPI.getItems('ALL')`);
+      console.log(`[DB-PATH-DEBUG] 📞 Calling MainMediaAPI.getVideosByPath('${videoPath}')`);
       
-      const result = await MainMediaAPI.getItems('ALL');
+      const result = await MainMediaAPI.getVideosByPath(videoPath);
       console.log(`[DB-PATH-DEBUG] 📊 MainMediaAPI returned:`, {
         success: result.success,
         itemCount: result.items?.length || 0,

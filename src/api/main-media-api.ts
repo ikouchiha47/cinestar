@@ -145,46 +145,41 @@ export class MainMediaAPI {
     sourceIds?: string[]; 
     types?: Array<'image'|'video'|'audio'>; 
     limit?: number; 
-    offset?: number 
-  }): Promise<{ success: boolean; items?: any[]; total?: number; error?: string }> {
+    cursor?: string; // ISO timestamp cursor for efficient pagination
+    orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+    orderDirection?: 'asc' | 'desc';
+  }): Promise<{ success: boolean; items?: any[]; nextCursor?: string; hasMore?: boolean; error?: string }> {
     try {
       await this.ensureInitialized();
-      console.log(`[MainMediaAPI] getRecentItems using backend=${this.backendType}`);
-      const allItems: any[] = await this.db.getMediaItems();
+      console.log(`[MainMediaAPI] getRecentItems using backend=${this.backendType}`, params);
       
-      let filteredItems = allItems;
+      // Map camelCase to snake_case for database
+      const orderByMap: Record<string, 'created_at' | 'modified_at' | 'name' | 'size'> = {
+        'createdAt': 'created_at',
+        'modifiedAt': 'modified_at',
+        'name': 'name',
+        'size': 'size'
+      };
       
-      // Filter by source IDs if provided
-      if (params?.sourceIds?.length) {
-        const sourceIdSet = new Set(params.sourceIds);
-        filteredItems = filteredItems.filter((item: any) => sourceIdSet.has(item.sourceId));
-      }
+      const dbOrderBy = params?.orderBy ? orderByMap[params.orderBy] || 'created_at' : 'created_at';
       
-      // Filter by types if provided
-      if (params?.types?.length) {
-        const typeSet = new Set(params.types);
-        filteredItems = filteredItems.filter((item: any) => {
-          const mime: string = (item.mimeType || '').toLowerCase();
-          if (mime.startsWith('video/')) return typeSet.has('video');
-          if (mime.startsWith('audio/')) return typeSet.has('audio');
-          return typeSet.has('image');
-        });
-      }
-      
-      // Sort by creation date (most recent first)
-      filteredItems.sort((a: any, b: any) => {
-        const aDate = new Date(a.createdAt || 0);
-        const bDate = new Date(b.createdAt || 0);
-        return bDate.getTime() - aDate.getTime();
+      // Use cursor-based pagination - efficient and consistent
+      const result = await this.db.getMediaItemsPaginated({
+        sourceIds: params?.sourceIds,
+        types: params?.types,
+        limit: params?.limit || 50,
+        cursor: params?.cursor,
+        orderBy: dbOrderBy,
+        orderDirection: params?.orderDirection === 'asc' ? 'ASC' : 'DESC'
       });
       
-      const total = filteredItems.length;
-      const offset = params?.offset || 0;
-      const limit = params?.limit || 50;
-      
-      const items = filteredItems.slice(offset, offset + limit);
-      
-      return { success: true, items, total };
+      console.log(`[MainMediaAPI] getRecentItems returning ${result.items.length} items (hasMore: ${result.hasMore})`);
+      return { 
+        success: true, 
+        items: result.items, 
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore 
+      };
     } catch (error) {
       console.error('Failed to get recent items:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -192,54 +187,85 @@ export class MainMediaAPI {
   }
 
   /**
-   * Get media items, optionally filtered by sourceId
+   * Legacy method with offset pagination (deprecated but kept for compatibility)
    */
-  static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; error?: string }> {
+  static async getRecentItemsWithOffset(params?: { 
+    sourceIds?: string[]; 
+    types?: Array<'image'|'video'|'audio'>; 
+    limit?: number; 
+    offset?: number;
+    orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+    orderDirection?: 'asc' | 'desc';
+  }): Promise<{ success: boolean; items?: any[]; hasMore?: boolean; error?: string }> {
     try {
       await this.ensureInitialized();
-      console.log(`[MainMediaAPI] getItems(${sourceId ?? 'ALL'}) using backend=${this.backendType}`);
-      // Fix: Don't pass 'ALL' as sourceId - pass undefined to get all items
-      const actualSourceId = sourceId === 'ALL' ? undefined : sourceId;
-      const items = await this.db.getMediaItems(actualSourceId);
+      console.warn(`[MainMediaAPI] getRecentItemsWithOffset is deprecated - use cursor-based getRecentItems instead`);
       
-      // [DEBUG] Log actual data structure and detect duplicates
-      console.log(`[ITEMS-DEBUG] Retrieved ${items.length} items from database`);
-      const videoItems = items.filter((item: any) => item.type === 'video' || item.type === 'video_segment');
-      if (videoItems.length > 0) {
-        console.log(`[ITEMS-DEBUG] Video items found: ${videoItems.length}`);
-        videoItems.forEach((item: any, index: number) => {
-          console.log(`[ITEMS-DEBUG] Video ${index + 1}:`, {
-            id: item.id,
-            name: item.name,
-            type: item.type,
-            path: item.path,
-            sourceId: item.sourceId
-          });
-        });
-        
-        // Check for potential duplicates
-        const nameGroups = videoItems.reduce((groups: any, item: any) => {
-          const key = item.name || 'unnamed';
-          groups[key] = (groups[key] || 0) + 1;
-          return groups;
-        }, {});
-        
-        Object.entries(nameGroups).forEach(([name, count]) => {
-          if ((count as number) > 1) {
-            console.warn(`[ITEMS-DEBUG] ⚠️ Potential duplicate detected: "${name}" appears ${count} times`);
-            // Show which items are duplicated for debugging
-            const duplicatedItems = videoItems.filter((item: any) => (item.name || 'unnamed') === name);
-            console.warn(`[ITEMS-DEBUG] Duplicate items:`, duplicatedItems.map((item: any) => ({
-              id: item.id,
-              type: item.type,
-              sourceId: item.sourceId,
-              path: item.path
-            })));
-          }
-        });
+      // Use legacy offset-based pagination (no more COUNT queries)
+      const result = await this.db.getMediaItemsWithOffset({
+        sourceIds: params?.sourceIds,
+        types: params?.types,
+        limit: params?.limit || 50,
+        offset: params?.offset || 0,
+        orderBy: params?.orderBy || 'created_at',
+        orderDirection: params?.orderDirection === 'asc' ? 'ASC' : 'DESC'
+      });
+      
+      console.log(`[MainMediaAPI] getRecentItemsWithOffset returning ${result.items.length} items (hasMore: ${result.hasMore})`);
+      return { success: true, items: result.items, hasMore: result.hasMore };
+    } catch (error) {
+      console.error('Failed to get recent items with offset:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get specific video items by path (optimized for video processing)
+   */
+  static async getVideosByPath(videoPath: string): Promise<{ success: boolean; items?: any[]; error?: string }> {
+    try {
+      await this.ensureInitialized();
+      console.log(`[MainMediaAPI] getVideosByPath: ${videoPath}`);
+      
+      // Use database-level filtering - no more SELECT *
+      const videoItems = await this.db.getMediaItemsByPath(videoPath, 'video');
+      
+      console.log(`[MainMediaAPI] Found ${videoItems.length} video items for path: ${videoPath}`);
+      return { success: true, items: videoItems };
+    } catch (error) {
+      console.error('Failed to get videos by path:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get media items, optionally filtered by sourceId
+   */
+  static async getItems(sourceId?: string): Promise<{ success: boolean; items?: any[]; total?: number; error?: string }> {
+    try {
+      // Convert single sourceId to sourceIds array for getRecentItemsWithOffset
+      // Handle 'ALL' as undefined (get all items)
+      const actualSourceId = sourceId === 'ALL' ? undefined : sourceId;
+      const params = actualSourceId ? { sourceIds: [actualSourceId] } : undefined;
+      
+      // Use legacy offset-based method but simulate 'total' for backward compatibility
+      const result = await this.getRecentItemsWithOffset(params);
+      
+      if (!result.success) {
+        return result as any;
       }
       
-      return { success: true, items };
+      // Simulate total count for backward compatibility
+      // This is not accurate but prevents breaking existing code
+      const estimatedTotal = result.items?.length || 0;
+      const total = result.hasMore ? estimatedTotal + 1 : estimatedTotal;
+      
+      console.log(`[MainMediaAPI] getItems returning ${result.items?.length || 0} items (estimated total: ${total})`);
+      return { 
+        success: true, 
+        items: result.items, 
+        total // Estimated total for backward compatibility
+      };
     } catch (error) {
       console.error('Failed to get items:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
