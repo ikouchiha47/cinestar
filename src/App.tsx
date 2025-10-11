@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
-import PortalSplash from './components/PortalSplash';
-import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
+import { SimplifiedOnboarding } from './components/SimplifiedOnboarding';
 const DrillerV2 = lazy(() => import('./components/v2/DrillerV2'));
 
 // Icon components (only what's used in this file)
@@ -28,37 +27,55 @@ function App() {
   // Track whether the indexing drawer is open to avoid log spam when closed
   const indexOpenRef = useRef<boolean>(false);
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
+
+  // Log viewport dimensions on mount and resize
+  // useEffect(() => {
+  //   const logViewportDimensions = () => {
+  //     console.log('[REACT-VIEWPORT] window.innerWidth:', window.innerWidth);
+  //     console.log('[REACT-VIEWPORT] window.innerHeight:', window.innerHeight);
+  //     console.log('[REACT-VIEWPORT] document.documentElement.clientWidth:', document.documentElement.clientWidth);
+  //     console.log('[REACT-VIEWPORT] document.documentElement.clientHeight:', document.documentElement.clientHeight);
+  //     console.log('[REACT-VIEWPORT] window.outerWidth:', window.outerWidth);
+  //     console.log('[REACT-VIEWPORT] window.outerHeight:', window.outerHeight);
+  //     console.log('[REACT-VIEWPORT] window.devicePixelRatio:', window.devicePixelRatio);
+  //     console.log('[REACT-VIEWPORT] screen.width:', window.screen.width);
+  //     console.log('[REACT-VIEWPORT] screen.height:', window.screen.height);
+  //   };
+
+  //   // Log on mount
+  //   logViewportDimensions();
+
+  //   // Log on resize
+  //   window.addEventListener('resize', logViewportDimensions);
+  //   return () => window.removeEventListener('resize', logViewportDimensions);
+  // }, []);
   
-  // Check onboarding status on mount
-  useEffect(() => {
-    const checkOnboarding = async () => {
-      // Check for ENV variable to force show onboarding (for development)
-      const forceOnboarding = import.meta.env.VITE_FORCE_ONBOARDING === 'true';
-      
-      if (forceOnboarding) {
-        console.log('[APP] VITE_FORCE_ONBOARDING=true - Showing onboarding flow');
-        setOnboardingComplete(false);
-        return;
-      }
-      
-      try {
-        // Check onboarding status from config.json
-        const config = await window.ipcRenderer.invoke('config:get');
-        if (config && config.onboarding) {
-          setOnboardingComplete(config.onboarding.complete);
-        } else {
-          // If config doesn't exist, show onboarding
-          setOnboardingComplete(false);
-        }
-      } catch (error) {
-        console.error('[APP] Failed to check onboarding status:', error);
-        // Default to showing onboarding on error
-        setOnboardingComplete(false);
-      }
-    };
+  // Check onboarding status - moved to simplified onboarding component
+  // Returns TRUE if onboarding is needed, FALSE if already complete
+  const checkOnboardingStatus = async (): Promise<boolean> => {
+    // Check for ENV variable to force show onboarding (for development)
+    const forceOnboarding = import.meta.env.VITE_FORCE_ONBOARDING === 'true';
     
-    checkOnboarding();
-  }, []);
+    if (forceOnboarding) {
+      console.log('[APP] VITE_FORCE_ONBOARDING=true - Showing onboarding flow');
+      return true; // Needs onboarding
+    }
+    
+    try {
+      // Check onboarding status from config.json
+      const config = await window.ipcRenderer.invoke('config:get');
+      if (config && config.onboarding) {
+        return !config.onboarding.complete; // Return TRUE if NOT complete (needs onboarding)
+      } else {
+        // If config doesn't exist, show onboarding
+        return true; // Needs onboarding
+      }
+    } catch (error) {
+      console.error('[APP] Failed to check onboarding status:', error);
+      // Default to showing onboarding on error
+      return true; // Needs onboarding
+    }
+  };
   type JobInfo = { 
   id: string; 
   sourceId: string; 
@@ -221,14 +238,19 @@ function App() {
     preloadComponent();
   }, []);
 
-  // Show loading while checking onboarding status
-  if (onboardingComplete === null) {
-    return <PortalSplash visible={true} />;
-  }
-  
   // Show onboarding if not complete
+  console.log('[APP] onboardingComplete state:', onboardingComplete);
   if (!onboardingComplete) {
-    return <OnboardingFlow onComplete={() => setOnboardingComplete(true)} />;
+    console.log('[APP] Rendering SimplifiedOnboarding component');
+    return (
+      <SimplifiedOnboarding 
+        onComplete={() => {
+          console.log('[APP] onboardingComplete set to true');
+          setOnboardingComplete(true);
+        }} 
+        onCheckOnboarding={checkOnboardingStatus} 
+      />
+    );
   }
   
   return (

@@ -95,8 +95,17 @@ async function createWindow() {
 
   // Helper to compute content bounds for views
   const getContentBounds = () => {
-    const [width, height] = win!.getContentSize();
-    return { x: 0, y: 0, width, height } as const;
+    // Get the actual window bounds (includes frame)
+    const windowBounds = win!.getBounds();
+    // Get content size (excludes frame)
+    const [contentWidth, contentHeight] = win!.getContentSize();
+    
+    console.log('[ELECTRON-BOUNDS] Window bounds (with frame):', windowBounds);
+    console.log('[ELECTRON-BOUNDS] Content size (without frame):', { width: contentWidth, height: contentHeight });
+    
+    // BrowserView uses logical pixels, which should match content size
+    // The browser will handle devicePixelRatio internally
+    return { x: 0, y: 0, width: contentWidth, height: contentHeight } as const;
   };
 
   // No separate splash view needed - React component handles splash
@@ -105,7 +114,14 @@ async function createWindow() {
   // Keep current views fitted on resize
   win.on('resize', () => {
     const bounds = getContentBounds();
-    try { win?.getBrowserViews()?.forEach(v => v.setBounds(bounds)); } catch {}
+    console.log('[ELECTRON-RESIZE] Setting BrowserView bounds:', bounds);
+    try { 
+      win?.getBrowserViews()?.forEach(v => {
+        v.setBounds(bounds);
+        // Disable auto-resize to prevent scaling issues on Retina displays
+        v.setAutoResize({ width: false, height: false });
+      }); 
+    } catch {}
   });
 
   // Prepare the main app BrowserView; swap when page fully loads to avoid black gap
@@ -118,48 +134,99 @@ async function createWindow() {
     const ok = await waitForUrl(VITE_DEV_SERVER_URL);
     if (ok) {
       console.log('[MAIN-PROCESS] Dev server reachable. Loading main URL at:', new Date().toISOString());
-      await appView.webContents.loadURL(VITE_DEV_SERVER_URL);
-      console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
       
-      // Open dev tools on the app view in development
-      console.log('[MAIN-PROCESS] IS_DEV:', IS_DEV, 'NODE_ENV:', process.env.NODE_ENV, 'DEBUG_MODE:', process.env.DEBUG_MODE);
-      if (IS_DEV) {
-        console.log('[MAIN-PROCESS] Opening DevTools for appView...');
-        appView.webContents.openDevTools({ mode: 'detach' });
-        console.log('[MAIN-PROCESS] DevTools opened');
-      } else {
-        console.log('[MAIN-PROCESS] Skipping DevTools (not in dev mode)');
-      }
+      // FIRST: Add BrowserView to window and set bounds BEFORE loading content
       try {
-        // Add app view - React splash component will handle the transition
+        console.log('[ELECTRON-INIT] Adding appView to window BEFORE loading...');
         win?.setBrowserView(appView);
-        appView.setBounds(getContentBounds());
-        appView.setAutoResize({ width: true, height: true });
+        const initialBounds = getContentBounds();
+        console.log('[ELECTRON-INIT] Setting initial appView bounds:', initialBounds);
+        appView.setBounds(initialBounds);
+        // Disable auto-resize to prevent scaling issues on Retina displays
+        appView.setAutoResize({ width: false, height: false });
+        console.log('[ELECTRON-INIT] Auto-resize DISABLED (manual resize handling)');
       } catch (e) {
         console.warn('[MAIN-PROCESS] Failed to add app view:', e);
       }
+      
+      // SECOND: Set up DevTools listeners
+      console.log('[MAIN-PROCESS] IS_DEV:', IS_DEV, 'NODE_ENV:', process.env.NODE_ENV, 'DEBUG_MODE:', process.env.DEBUG_MODE);
+      if (IS_DEV) {
+        console.log('[MAIN-PROCESS] Setting up DevTools for appView (before load)...');
+        // Attach listener BEFORE loading to ensure we catch the event
+        appView.webContents.once('did-finish-load', () => {
+          console.log('[MAIN-PROCESS] Content loaded, opening DevTools for appView...');
+          if (appView) {
+            appView.webContents.openDevTools({ mode: 'detach' });
+            console.log('[MAIN-PROCESS] DevTools opened for appView');
+          }
+        });
+        
+        // Also set up DevTools for main window
+        if (win) {
+          win.webContents.once('did-finish-load', () => {
+            console.log('[MAIN-PROCESS] Main window loaded, opening DevTools...');
+            if (win) {
+              win.webContents.openDevTools({ mode: 'detach' });
+              console.log('[MAIN-PROCESS] DevTools opened for main window');
+            }
+          });
+        }
+      } else {
+        console.log('[MAIN-PROCESS] Skipping DevTools (not in dev mode)');
+      }
+
+      // THIRD: Now load the URL - React will see correct viewport dimensions
+      await appView.webContents.loadURL(VITE_DEV_SERVER_URL);
+      console.log('[MAIN-PROCESS] Main load completed at:', new Date().toISOString());
     } else {
       console.warn('[MAIN-PROCESS] Dev server not reachable within timeout. Keeping splash visible.', new Date().toISOString());
     }
   } else {
     console.log('[MAIN-PROCESS] Loading production index.html at:', new Date().toISOString());
-    await appView.webContents.loadFile(path.join(RENDERER_DIST, 'index.html'))
-    console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
     
-    // Open dev tools on the app view in development
-    console.log('[MAIN-PROCESS] (production path) IS_DEV:', IS_DEV);
-    if (IS_DEV) {
-      console.log('[MAIN-PROCESS] (production path) Opening DevTools for appView...');
-      appView.webContents.openDevTools({ mode: 'detach' });
-      console.log('[MAIN-PROCESS] (production path) DevTools opened');
-    }
+    // FIRST: Add BrowserView to window and set bounds BEFORE loading content
     try {
+      console.log('[ELECTRON-INIT-PROD] Adding appView to window BEFORE loading...');
       win?.setBrowserView(appView);
-      appView.setBounds(getContentBounds());
-      appView.setAutoResize({ width: true, height: true });
+      const initialBounds = getContentBounds();
+      console.log('[ELECTRON-INIT-PROD] Setting initial appView bounds:', initialBounds);
+      appView.setBounds(initialBounds);
+      // Disable auto-resize to prevent scaling issues on Retina displays
+      appView.setAutoResize({ width: false, height: false });
+      console.log('[ELECTRON-INIT-PROD] Auto-resize DISABLED (manual resize handling)');
     } catch (e) {
       console.warn('[MAIN-PROCESS] Failed to add app view (prod):', e);
     }
+    
+    // SECOND: Set up DevTools listeners
+    console.log('[MAIN-PROCESS] (production path) IS_DEV:', IS_DEV);
+    if (IS_DEV) {
+      console.log('[MAIN-PROCESS] (production path) Setting up DevTools for appView (before load)...');
+      // Attach listener BEFORE loading to ensure we catch the event
+      appView.webContents.once('did-finish-load', () => {
+        console.log('[MAIN-PROCESS] (production path) Content loaded, opening DevTools for appView...');
+        if (appView) {
+          appView.webContents.openDevTools({ mode: 'detach' });
+          console.log('[MAIN-PROCESS] (production path) DevTools opened for appView');
+        }
+      });
+      
+      // Also set up DevTools for main window
+      if (win) {
+        win.webContents.once('did-finish-load', () => {
+          console.log('[MAIN-PROCESS] (production path) Main window loaded, opening DevTools...');
+          if (win) {
+            win.webContents.openDevTools({ mode: 'detach' });
+            console.log('[MAIN-PROCESS] (production path) DevTools opened for main window');
+          }
+        });
+      }
+    }
+    
+    // THIRD: Now load the file - React will see correct viewport dimensions
+    await appView.webContents.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    console.log('[MAIN-PROCESS] Main load completed at:', new Date().toISOString());
   }
 
   // When the renderer signals it's mounted, ensure app view is properly sized
@@ -168,8 +235,11 @@ async function createWindow() {
       console.log('[MAIN-PROCESS] Renderer reported app-mounted at:', new Date().toISOString());
       // Ensure appView is visible and sized
       try {
-        appView.setBounds(getContentBounds());
-        appView.setAutoResize({ width: true, height: true });
+        const mountBounds = getContentBounds();
+        console.log('[ELECTRON-MOUNT] Setting appView bounds on mount:', mountBounds);
+        appView.setBounds(mountBounds);
+        // Disable auto-resize to prevent scaling issues on Retina displays
+        appView.setAutoResize({ width: false, height: false });
       } catch {}
     } catch (e) {
       console.warn('[MAIN-PROCESS] Failed to finalize app setup:', e);
