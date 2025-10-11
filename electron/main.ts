@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
 import { VideoJobProcessor } from '../src/core/video-job-processor'
+import { ImageJobProcessor } from '../src/core/image-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 import { getMimeType } from '../src/core/utils'
@@ -46,6 +47,13 @@ process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 🚧 Use ['ENV_NAME'] avoid vite:define plugin - Vite@2.x
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+
+// Store appView at module level for IPC event routing
+let appView: BrowserView | null = null;
+
+// Track active search for cancellation
+let activeSearchController: AbortController | null = null;
+
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
@@ -102,7 +110,7 @@ async function createWindow() {
   });
 
   // Prepare the main app BrowserView; swap when page fully loads to avoid black gap
-  const appView = new BrowserView({ webPreferences: { preload: path.join(__dirname, 'preload.mjs'), backgroundThrottling: false } });
+  appView = new BrowserView({ webPreferences: { preload: path.join(__dirname, 'preload.mjs'), backgroundThrottling: false } });
 
   // React component handles splash - no need for separate splash view
 
@@ -115,8 +123,13 @@ async function createWindow() {
       console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
       
       // Open dev tools on the app view in development
+      console.log('[MAIN-PROCESS] IS_DEV:', IS_DEV, 'NODE_ENV:', process.env.NODE_ENV, 'DEBUG_MODE:', process.env.DEBUG_MODE);
       if (IS_DEV) {
-        appView.webContents.openDevTools();
+        console.log('[MAIN-PROCESS] Opening DevTools for appView...');
+        appView.webContents.openDevTools({ mode: 'detach' });
+        console.log('[MAIN-PROCESS] DevTools opened');
+      } else {
+        console.log('[MAIN-PROCESS] Skipping DevTools (not in dev mode)');
       }
       try {
         // Add app view - React splash component will handle the transition
@@ -135,8 +148,11 @@ async function createWindow() {
     console.log('[MAIN-PROCESS] Main load initiated at:', new Date().toISOString());
     
     // Open dev tools on the app view in development
+    console.log('[MAIN-PROCESS] (production path) IS_DEV:', IS_DEV);
     if (IS_DEV) {
-      appView.webContents.openDevTools();
+      console.log('[MAIN-PROCESS] (production path) Opening DevTools for appView...');
+      appView.webContents.openDevTools({ mode: 'detach' });
+      console.log('[MAIN-PROCESS] (production path) DevTools opened');
     }
     try {
       win?.setBrowserView(appView);
@@ -242,6 +258,7 @@ ipcMain.handle('app:getDataDir', async () => {
 let mediaAPI: typeof MainMediaAPI | null = null;
 let videoAPI: VideoMediaAPI | null = null;
 let videoJobProcessor: VideoJobProcessor | null = null;
+let imageJobProcessor: ImageJobProcessor | null = null;
 let mediaInitAttempted = false;
 let mediaInitFailed = false;
 let mediaInitErrorMessage = '';
@@ -258,6 +275,28 @@ async function initializeMediaAPI() {
     mediaInitFailed = false;
     mediaInitErrorMessage = '';
     console.log('MainMediaAPI initialized in main process');
+    
+    // Set main window reference for IPC events - use appView for BrowserView architecture
+    if (appView) {
+      MainMediaAPI.setMainWindow(appView);
+      console.log('[MainMediaAPI] Main window reference set for IPC events (using appView)');
+      console.log('[MainMediaAPI] appView webContents ID:', appView.webContents.id);
+    }
+    
+    // Start the background image job processor
+    if (!imageJobProcessor) {
+      console.log('[IMAGE-JOB-PROCESSOR] Creating ImageJobProcessor...');
+      const { SqliteMainDatabase } = await import('../src/core/sqlite-main-database');
+      const { SqliteVecDatabase } = await import('../src/core/sqlite-vec-database');
+      
+      const dbPath = path.join(DATA_DIR, 'vector.db');
+      const db = new SqliteMainDatabase(dbPath);
+      const vecDb = new SqliteVecDatabase(dbPath);
+      
+      imageJobProcessor = new ImageJobProcessor(db, vecDb);
+      await imageJobProcessor.start();
+      console.log('[IMAGE-JOB-PROCESSOR] ✅ ImageJobProcessor started');
+    }
   } catch (error: any) {
     mediaAPI = null;
     mediaInitFailed = true;
@@ -475,16 +514,28 @@ ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
   return await guardMedia(() => MainMediaAPI.getImageThumbnail(imagePath));
 });
 
-// Unified search IPC handler - now uses the new unifiedSearch method
+// Unified search IPC handler - now uses the new unifiedSearch method with cancellation
 ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: number; offset?: number; types?: ('image' | 'video' | 'audio')[] }) => {
   if (!mediaAPI) await initializeMediaAPI();
   
+  // Cancel previous search if exists
+  if (activeSearchController) {
+    activeSearchController.abort();
+    console.log(`[SEARCH-CANCEL] 🚫 Cancelled previous search`);
+  }
+  
+  // Create new abort controller for this search
+  activeSearchController = new AbortController();
+  const signal = activeSearchController.signal;
+  
   try {
     console.log(`[IPC-SEARCH] 🔍 Received search request: "${query.query}"`);
+    
     const result = await MainMediaAPI.unifiedSearch(query.query || '', {
       types: query.types || ['image', 'video', 'audio'],
       limit: query.limit || 20,
-      offset: query.offset || 0
+      offset: query.offset || 0,
+      signal
     });
     
     console.log(`[IPC-SEARCH] ✅ Returning to frontend:`, {
@@ -495,12 +546,27 @@ ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: nu
     });
     
     return result;
-  } catch (error) {
+  } catch (error: any) {
+    // Check if this was an abort
+    if (error.name === 'AbortError' || signal.aborted) {
+      console.log(`[SEARCH-CANCEL] ⏹️  Search aborted`);
+      return {
+        success: false,
+        cancelled: true,
+        error: 'Search cancelled'
+      };
+    }
+    
     console.error('[UNIFIED-SEARCH] Failed:', error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown search error'
     };
+  } finally {
+    // Clear the controller if this was the active one
+    if (activeSearchController?.signal === signal) {
+      activeSearchController = null;
+    }
   }
 });
 
@@ -998,16 +1064,22 @@ ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string
 });
 
 app.whenReady().then(async () => {
-  // Run data migration first
-  try {
-    const { DataMigrator } = await import('../src/core/data-migrator');
-    const migrationResult = await DataMigrator.migrateFromPreviousInstallations();
-    
-    if (migrationResult.migratedFiles.length > 0) {
-      console.log(`[MAIN-PROCESS] Migrated ${migrationResult.migratedFiles.length} files from previous installations`);
+  // Run data migration ONLY in production (never in dev mode)
+  const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
+  
+  if (!isDev) {
+    try {
+      const { DataMigrator } = await import('../src/core/data-migrator');
+      const migrationResult = await DataMigrator.migrateFromPreviousInstallations();
+      
+      if (migrationResult.migratedFiles.length > 0) {
+        console.log(`[MAIN-PROCESS] Migrated ${migrationResult.migratedFiles.length} files from previous installations`);
+      }
+    } catch (error) {
+      console.error('[MAIN-PROCESS] Data migration failed:', error);
     }
-  } catch (error) {
-    console.warn('[MAIN-PROCESS] Data migration failed:', error);
+  } else {
+    console.log('[MAIN-PROCESS] Skipping data migration in development mode');
   }
 
   // Create browser window (unless explicitly disabled)

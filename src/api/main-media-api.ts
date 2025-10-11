@@ -23,6 +23,14 @@ export class MainMediaAPI {
   private static llm: LLMProvider | null = null;
   private static vecDb: SqliteVecDatabase | null = null;
   private static reconciliationInterval: NodeJS.Timeout | null = null;
+  private static mainWindow: any = null; // BrowserWindow reference for IPC events
+
+  /**
+   * Set the main window reference for IPC events
+   */
+  static setMainWindow(window: any): void {
+    this.mainWindow = window;
+  }
 
   static async initialize(dbPath?: string): Promise<void> {
     if (this.initialized) return;
@@ -434,11 +442,16 @@ export class MainMediaAPI {
         targetFile: source.path
       });
       
+      console.log(`[INDEXING-START] Created job ${jobId}, calling performIndexing for source ${sourceId}`);
+      
       // Start indexing in background (simplified version)
       this.performIndexing(jobId, sourceId, false).catch(error => {
-        console.error('Indexing failed:', error);
+        console.error('[INDEXING-ERROR] Indexing failed:', error);
+        console.error('[INDEXING-ERROR] Stack:', error.stack);
         this.db.updateJobStatus(jobId, 'failed', 0);
       });
+      
+      console.log(`[INDEXING-START] performIndexing called (async), returning jobId ${jobId}`);
       
       return { success: true, jobId };
     } catch (error) {
@@ -1225,53 +1238,46 @@ export class MainMediaAPI {
    * Simplified indexing implementation
    */
   private static async performIndexing(jobId: string, sourceId: string, forceReindex: boolean = false): Promise<void> {
+    console.log(`[PERFORM-INDEXING] 🚀 ENTERED performIndexing - jobId: ${jobId}, sourceId: ${sourceId}, forceReindex: ${forceReindex}`);
     try {
-      console.log(`Starting indexing job ${jobId} for source ${sourceId}`);
+      console.log(`[PERFORM-INDEXING] ✅ Inside try block, starting indexing job ${jobId} for source ${sourceId}`);
       
       const source = await this.db.getSource(sourceId);
+      console.log(`[PERFORM-INDEXING] 📁 Got source:`, source ? `${source.name} (${source.path})` : 'null');
+      
       if (!source) {
         throw new Error(`Source not found: ${sourceId}`);
       }
       
+      console.log(`[PERFORM-INDEXING] 📝 Updating job status to 'running'`);
       await this.db.updateJobStatus(jobId, 'running');
       
+      console.log(`[PERFORM-INDEXING] 📦 Importing file scanner...`);
       // Import file scanner
       const { scanDirectory } = await import('../core/file-scanner');
+      console.log(`[PERFORM-INDEXING] ✅ File scanner imported successfully`);
       
+      console.log(`[PERFORM-INDEXING] 🔍 Scanning directory: ${source.path}, recursive: ${source.config?.recursive !== false}`);
       // Scan for media files
       const mediaFiles = await scanDirectory(source.path, source.config?.recursive !== false);
-      console.log(`Found ${mediaFiles.length} media files`);
+      console.log(`[PERFORM-INDEXING] 📊 Found ${mediaFiles.length} media files`);
       
       if (mediaFiles.length === 0) {
         await this.db.updateJobStatus(jobId, 'completed', 100);
         return;
       }
       
-      // Process files: add to SQLite and (if available) generate captions + embeddings
-      let processedCount = 0;
+      // NEW APPROACH: Add all files to DB immediately, create background jobs for processing
+      const { generateDeterministicId } = await import('../core/utils/crypto-utils');
+      let addedCount = 0;
+      let jobsCreated = 0;
       
       for (const file of mediaFiles) {
         try {
-          // 0) Optional compression for vision models
-          let inferencePath = file.path;
-          try {
-            const cfg = ConfigManager.getConfig();
-            if (cfg.compression.enabled && ImageCompressor.shouldCompress(file.path, file.size)) {
-              const tempDir = path.join(os.tmpdir(), 'driller-compressed');
-              const settings = ImageCompressor.getOptimalSettings(file.path, file.size, cfg.ai.visionModelDims);
-              const res = await ImageCompressor.compressImage(file.path, tempDir, settings);
-              inferencePath = res.compressedPath;
-              console.log(`[INDEX] Using compressed image for inference: ${path.basename(inferencePath)}`);
-            }
-          } catch (e) {
-            console.warn('[INDEX] Compression step failed, falling back to original:', e);
-          }
-
-          // Generate deterministic ID based on path hash for consistent duplicate detection
-          const { generateDeterministicId } = await import('../core/utils/crypto-utils');
+          // Generate deterministic ID based on path hash
           const itemId = await generateDeterministicId(file.path);
 
-          // 2) Persist to main items table (upsert by sourceId+path)
+          // 1) Add to main DB immediately - INSTANT VISIBILITY
           await this.db.addMediaItem({
             id: itemId,
             sourceId,
@@ -1286,7 +1292,7 @@ export class MainMediaAPI {
             metadata: {}
           });
 
-          // 3) Persist to sqlite-vec media_items (preserves existing status if already exists)
+          // 2) Add to vector DB with status='pending' - SEARCHABLE LATER
           if (this.vecDb) {
             try {
               await this.vecDb.addMediaItemWithIdAsync(itemId, {
@@ -1304,65 +1310,69 @@ export class MainMediaAPI {
                 embeddingGeneratedAt: undefined,
                 embeddingStatus: 'pending',
               } as any);
-              console.log(`[INDEX] Staged item in sqlite-vec with ID ${itemId}: ${file.name}`);
             } catch (e) {
-              console.warn('[INDEX] Failed to stage item in sqlite-vec media_items:', e);
+              console.warn('[INDEX] Failed to stage item in sqlite-vec:', e);
             }
           }
 
-          // 4) If LLM available, generate caption + embeddings (skip status check if force re-index)
-          if (this.llm && this.vecDb) {
-            // Check current status after insert/update (skip if forcing re-index)
-            const currentItem = this.vecDb.getMediaItem(itemId);
-            const needsCaption = forceReindex || !currentItem || currentItem.captionStatus !== 'completed';
-            const needsEmbedding = forceReindex || !currentItem || currentItem.embeddingStatus !== 'completed';
-            
-            console.log(`[INDEX] Item ${file.name} status check (forceReindex=${forceReindex}): caption=${currentItem?.captionStatus}, embedding=${currentItem?.embeddingStatus}, needsCaption=${needsCaption}, needsEmbedding=${needsEmbedding}`);
-            
-            if (needsCaption) {
-              try {
-                const caption = await this.llm.generateImageDescription(inferencePath, file.path);
-                this.vecDb.updateCaption(itemId, caption, 'completed');
-                console.log(`[INDEX] Generated caption for ${file.name}: "${caption.substring(0, 80)}..."`);
-              } catch (e) {
-                console.warn('[INDEX] Caption generation failed:', e);
-                try { this.vecDb.updateStatus(itemId, 'failed', undefined); } catch {}
-              }
-            } else {
-              console.log(`[INDEX] Skipping caption generation for ${file.name} (already completed)`);
-            }
-            
-            if (needsEmbedding) {
-              try {
-                const embedding = await this.llm!.generateImageEmbedding(inferencePath);
-                this.vecDb.updateEmbedding(itemId, embedding, 'completed');
-                if (typeof (this.db as any).updateItemEmbedding === 'function') {
-                  try { await (this.db as any).updateItemEmbedding(itemId, embedding); } catch {}
-                }
-                console.log(`[INDEX] Generated embedding for ${file.name} (${embedding.length} dims)`);
-              } catch (e) {
-                console.warn('[INDEX] Embedding generation failed (no fallback):', e);
-                try { this.vecDb.updateStatus(itemId, undefined, 'failed'); } catch {}
-              }
-            } else {
-              console.log(`[INDEX] Skipping embedding generation for ${file.name} (already completed)`);
-            }
-          }
+          // 3) Create background job for caption+embedding - ASYNC PROCESSING
+          const imageJobId = `img_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          await this.db.createImageProcessingJob({
+            id: imageJobId,
+            sourceId,
+            filePath: file.path,
+            fileName: file.name,
+            fileSize: file.size,
+            status: 'pending',
+            jobType: 'image_processing',
+            retryCount: 0
+          });
           
-          processedCount++;
-          const progress = Math.floor((processedCount / mediaFiles.length) * 100);
+          addedCount++;
+          jobsCreated++;
+          
+          // Update scan job progress
+          const progress = Math.floor((addedCount / mediaFiles.length) * 100);
           await this.db.updateJobStatus(jobId, 'running', progress);
           
         } catch (error) {
-          console.error(`Failed to process file ${file.name}:`, error);
+          console.error(`[INDEX] Failed to add file ${file.name}:`, error);
         }
       }
       
+      console.log(`[INDEXING] ✅ Added ${addedCount} images to DB - visible immediately`);
+      console.log(`[INDEXING] 🔄 Created ${jobsCreated} background jobs for caption/embedding`);
+      
       await this.db.updateJobStatus(jobId, 'completed', 100);
-      console.log(`Indexing job ${jobId} completed. Processed ${processedCount}/${mediaFiles.length} files`);
+      console.log(`[INDEXING] Scan job ${jobId} completed. Added ${addedCount}/${mediaFiles.length} files, created ${jobsCreated} background jobs`);
+      
+      // Emit IPC event to trigger UI refresh immediately
+      console.log(`[INDEXING-IPC-DEBUG] Checking IPC send conditions:`, {
+        hasMainWindow: !!this.mainWindow,
+        addedCount,
+        isDestroyed: this.mainWindow?.webContents?.isDestroyed?.() ?? 'N/A',
+        webContentsId: this.mainWindow ? this.mainWindow.webContents.id : 'N/A'
+      });
+      
+      if (this.mainWindow && addedCount > 0) {
+        console.log(`[INDEXING] 📡 Sending media:scan-completed event to renderer (${addedCount} items)`);
+        try {
+          this.mainWindow.webContents.send('media:scan-completed', {
+            sourceId,
+            itemsAdded: addedCount,
+            jobsCreated: jobsCreated
+          });
+          console.log(`[INDEXING] 📡 Sent scan-completed event to UI (${addedCount} items)`);
+        } catch (error) {
+          console.error(`[INDEXING-IPC-ERROR] Failed to send IPC event:`, error);
+        }
+      } else {
+        console.log(`[INDEXING-IPC-DEBUG] Skipping IPC send - mainWindow: ${!!this.mainWindow}, addedCount: ${addedCount}`);
+      }
       
     } catch (error) {
-      console.error(`Indexing job ${jobId} failed:`, error);
+      console.error(`[PERFORM-INDEXING] ❌ Indexing job ${jobId} failed:`, error);
+      console.error(`[PERFORM-INDEXING] ❌ Error stack:`, error instanceof Error ? error.stack : 'No stack');
       await this.db.updateJobStatus(jobId, 'failed', 0);
     }
   }
@@ -1374,6 +1384,7 @@ export class MainMediaAPI {
     types?: ('image' | 'video' | 'audio')[];
     limit?: number;
     offset?: number;
+    signal?: AbortSignal;
   } = {}): Promise<{
     success: boolean;
     results?: {
@@ -1393,8 +1404,14 @@ export class MainMediaAPI {
       const limit = options.limit || 20;
       const offset = options.offset || 0;
       const requestedTypes = options.types || ['image', 'video', 'audio'];
+      const signal = options.signal;
       const started = Date.now();
       console.log(`[SEARCH-TIMING] 🔍 Starting unified search for query: "${q}", types: [${requestedTypes.join(', ')}], limit: ${limit}, offset: ${offset}`);
+
+      // Check cancellation before starting
+      if (signal?.aborted) {
+        throw new Error('Search cancelled before starting');
+      }
 
       // Multi-modal query classification and transformation
       let searchQuery = q;
@@ -1404,6 +1421,11 @@ export class MainMediaAPI {
 
       if (searchQuery.length > 3) {
         console.log(`[MULTIMODAL-SEARCH] Processing query: "${q}"`);
+        
+        // Check cancellation before expensive LLM operations
+        if (signal?.aborted) {
+          throw new Error('Search cancelled before query classification');
+        }
         
         try {
           // Step 1: Classify query type (spatial, temporal, audio, action, mixed)

@@ -168,10 +168,12 @@ export function MediaCard({ item, places, placeLabel, onDeleted, onVideoClick }:
         )}
       </div>
 
-      {/* Type indicator */}
-      <div className="absolute top-2 right-2 bg-black/70 rounded-md px-1.5 py-0.5 text-xs text-white">
-        {item.type}
-      </div>
+      {/* Type indicator - only show for video/audio */}
+      {(item.type === 'video' || item.type === 'audio') && (
+        <div className="absolute top-2 right-2 bg-black/70 rounded-md px-1.5 py-0.5 text-xs text-white capitalize">
+          {item.type}
+        </div>
+      )}
 
       {/* Delete button */}
       <div className="absolute top-2 left-2">

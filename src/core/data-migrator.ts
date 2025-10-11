@@ -14,11 +14,17 @@ export class DataMigrator {
   private static readonly LEGACY_PATHS = [
     path.join(os.homedir(), '.driller'),
     path.join(os.homedir(), '.clipwise'),
-    './data', // Development path
+    // NOTE: './data' is NOT a legacy path in dev mode - it's the CURRENT path!
   ];
 
-  private static readonly CURRENT_DATA_DIR = app?.getPath('userData') || 
-    path.join(os.homedir(), '.cinestar-app');
+  private static readonly CURRENT_DATA_DIR = (() => {
+    // Respect dev mode - use ./data in development
+    const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
+    if (isDev) {
+      return path.join(process.cwd(), 'data');
+    }
+    return app?.getPath('userData') || path.join(os.homedir(), '.cinestar-app');
+  })();
 
   /**
    * Migrate data from previous installations

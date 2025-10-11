@@ -121,7 +121,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     transcriptionUrl: 'http://localhost:9001/asr', // Transcription service via nginx
     // Legacy URLs (deprecated but kept for backward compatibility)
     searchUrl: 'http://localhost:11434',      // Direct Ollama instance (fast, no queuing)
-    indexingUrl: 'http://localhost:9001',     // Nginx load balancer for Ollama (distributed)
+    indexingUrl: 'http://localhost:11434',    // Direct Ollama (load balancer removed)
     embeddingModel: 'qllama/bge-large-en-v1.5:latest',
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',

@@ -1,6 +1,6 @@
 import { CaptioningService } from './captioning-processor';
 import { ConfigManager } from '../config.js';
-import fs from 'fs/promises';
+import { ImageProcessingUtils } from '../image-processing-utils.js';
 
 export class OllamaCaptioningService implements CaptioningService {
   public name = 'ollama-captioning';
@@ -16,37 +16,19 @@ export class OllamaCaptioningService implements CaptioningService {
   }
 
   async caption(imagePath: string, options: any = {}) {
-    let imageBuffer = await fs.readFile(imagePath);
+    // Use ImageProcessingUtils for consistent image processing with dynamic quality optimization
+    const config = ConfigManager.getConfig();
+    let imageBuffer: Buffer;
     
     try {
-      const sharp = (await import('sharp')).default;
-      // Always sanitize and standardize: convert to sRGB JPEG to strip
-      // problematic PNG ancillary chunks (e.g. cICP) and alpha channel.
-      // This prevents Ollama "unable to encode mtmd image chunk" errors.
-      let img = sharp(imageBuffer).rotate().toColorspace('srgb');
-
-      const metadata = await img.metadata();
-
-      // Skip corrupted or invalid images
-      if (!metadata.width || !metadata.height) {
-        throw new Error('Invalid image metadata');
-      }
-
-      // Use configurable vision model dimensions
-      const config = ConfigManager.getConfig();
-      const [maxWidth, maxHeight] = config.ai.visionModelDims;
-
-      // Resize if larger than vision model constraints
-      if (metadata.width > maxWidth || metadata.height > maxHeight) {
-        img = img.resize(maxWidth, maxHeight, { fit: 'inside', withoutEnlargement: true });
-      }
-
-      // JPEG has no alpha: flatten against black to avoid artifacts
-      img = img.flatten({ background: { r: 0, g: 0, b: 0 } })
-             .jpeg({ quality: 85, progressive: false, mozjpeg: true });
-
-      imageBuffer = await img.toBuffer();
-      
+      imageBuffer = await ImageProcessingUtils.prepareForVisionModel(
+        imagePath,
+        config.ai.visionModelDims,
+        {
+          forceQuality: options.quality, // Allow quality override for testing
+          format: 'jpeg'
+        }
+      );
     } catch (imageError) {
       throw new Error(`Image processing failed: ${imageError instanceof Error ? imageError.message : 'Unknown error'}`);
     }
@@ -57,9 +39,16 @@ export class OllamaCaptioningService implements CaptioningService {
 
     // Build payload with plain base64 (no data URI), JPEG only
     const base64 = imageBuffer.toString('base64');
+    const defaultPrompt = `Describe this image in details in a structured format:
+
+**Scene:** [Overall setting, time of day, lighting, atmosphere]
+**Objects:** [List main objects, people, animals visible]
+**Actions:** [What's happening, activities, movements]
+**Tags:** [Keywords for search: colors, mood, style, location type]`;
+
     const payload = {
       model: this.model,
-      prompt: options.prompt || 'Describe this image in detail.',
+      prompt: options.prompt || defaultPrompt,
       images: [base64],
       stream: false
     } as any;

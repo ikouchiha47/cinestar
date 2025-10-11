@@ -1,3 +1,22 @@
+/**
+ * @deprecated This class is deprecated and will be removed in a future version.
+ * 
+ * Use `ImageProcessingUtils` instead for all image processing needs:
+ * - Vision model preparation: `ImageProcessingUtils.prepareForVisionModel()`
+ * - Thumbnail generation: `ImageProcessingUtils.createThumbnail()`
+ * - General compression: `ImageProcessingUtils.compressImage()`
+ * 
+ * Reasons for deprecation:
+ * 1. Missing critical operations (rotate, colorspace conversion, alpha flattening)
+ * 2. Incomplete implementation for current needs
+ * 3. Code duplication with captioning service
+ * 4. Not integrated into any existing workflows
+ * 
+ * Migration: See docs/ADR-IMAGE-PROCESSING-REFACTOR.md
+ * 
+ * @see ImageProcessingUtils
+ */
+
 import sharp from 'sharp';
 import { promises as fs } from 'fs';
 import path from 'path';

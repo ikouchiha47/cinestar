@@ -9,6 +9,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  server: {
+    watch: {
+      // Ignore data directory to prevent hot reload when DB/preferences change
+      ignored: ['**/data/**', '**/node_modules/**']
+    }
+  },
   plugins: [
     react(),
     tailwindcss(),

@@ -39,6 +39,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const [searching, setSearching] = useState(false);
   const [expandedType, setExpandedType] = useState<'image' | 'video' | 'audio' | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentSearchIdRef = useRef<string | null>(null);
 
   // Load places from real sources, fall back to demo
   useEffect(() => {
@@ -173,6 +174,62 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     })();
   }, [selectedPlace]);
 
+  // Listen for scan completion events to refresh UI immediately
+  useEffect(() => {
+    console.log('[DRILLER-IPC] Setting up media:scan-completed listener');
+    console.log('[DRILLER-IPC] window.ipcRenderer available:', !!window.ipcRenderer);
+    
+    const handleScanCompleted = async (_event: any, data: { sourceId: string; itemsAdded: number }) => {
+      console.log(`[DRILLER-IPC] ✅ Scan completed event RECEIVED: ${data.itemsAdded} items added`);
+      
+      // Refresh sources and items immediately
+      (async () => {
+        try {
+          const res = await (window.mediaAPI as any).getRecentItems({
+            limit: 50,
+            cursor: undefined,
+            orderBy: 'createdAt',
+            orderDirection: 'desc'
+          });
+          
+          if (res?.success && Array.isArray(res.items)) {
+            const items: any[] = res.items;
+            const displayableItems = items.filter((it: any) => (it.type || '').toLowerCase() !== 'video_segment');
+            
+            const mapped: MediaT[] = displayableItems.map((it: any) => {
+              const kind: MediaT['type'] = (it.type === 'video' || it.type === 'video_segment') ? 'video' : (it.type === 'audio' ? 'audio' : 'image');
+              return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
+            });
+            
+            setLibrary(mapped);
+            setLibraryCursor(res.nextCursor);
+            setLibraryHasMore(res.hasMore || false);
+            console.log(`[DRILLER] Refreshed library: ${mapped.length} items`);
+          }
+        } catch (error) {
+          console.error('[DRILLER] Failed to refresh after scan:', error);
+        }
+      })();
+    };
+    
+    // @ts-ignore - Electron IPC
+    if (window.ipcRenderer) {
+      console.log('[DRILLER-IPC] Registering listener for media:scan-completed');
+      window.ipcRenderer.on('media:scan-completed', handleScanCompleted);
+      console.log('[DRILLER-IPC] Listener registered successfully');
+    } else {
+      console.error('[DRILLER-IPC] ❌ window.ipcRenderer is NOT available!');
+    }
+    
+    return () => {
+      // @ts-ignore
+      if (window.ipcRenderer) {
+        console.log('[DRILLER-IPC] Removing listener for media:scan-completed');
+        window.ipcRenderer.off('media:scan-completed', handleScanCompleted);
+      }
+    };
+  }, []);
+
   // Poll indexing status; when jobs finish, refresh places and library
   useEffect(() => {
     let mounted = true;
@@ -274,16 +331,28 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         }
         return;
       }
+      
+      // Generate unique search ID
+      const searchId = `search_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      currentSearchIdRef.current = searchId;
+      
       try {
         setSearching(true);
         // Unified search across media (images via vec) and videos (segments FTS)
-        console.log('[SEARCH-DEBUG] Calling unifiedSearch with query:', query);
+        console.log(`[SEARCH-CANCEL] Starting search ${searchId} for: "${query}"`);
         const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
-        console.log('[SEARCH-DEBUG] unifiedSearch response:', res);
-        console.log('[SEARCH-DEBUG] Images array:', res?.results?.images);
-        console.log('[SEARCH-DEBUG] Videos array:', res?.results?.videos);
+        
+        // Check if this search is still current
+        if (currentSearchIdRef.current !== searchId) {
+          console.log(`[SEARCH-CANCEL] Ignoring stale results for search ${searchId} (current: ${currentSearchIdRef.current})`);
+          return;
+        }
         
         if (!alive) return;
+        
+        console.log(`[SEARCH-CANCEL] Search ${searchId} completed - applying results`);
+        console.log('[SEARCH-DEBUG] Images array:', res?.results?.images);
+        console.log('[SEARCH-DEBUG] Videos array:', res?.results?.videos);
 
         // Map images (media/vector)
         const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
@@ -323,10 +392,16 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         // setVideoOffset(videoItems.length);
       } catch (error) {
         console.error('[SEARCH-ERROR]', error);
-        setSearchResults([]);
+        // Only clear results if this is still the current search
+        if (currentSearchIdRef.current === searchId) {
+          setSearchResults([]);
+        }
         // setVideoSearchResults([]);
       } finally {
-        if (alive) setSearching(false);
+        // Only clear searching state if this is still the current search
+        if (alive && currentSearchIdRef.current === searchId) {
+          setSearching(false);
+        }
       }
     };
 
@@ -465,10 +540,10 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       <header className="sticky top-0 z-20 border-b app-border tokyo-bg backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 py-3 grid grid-cols-3 items-center">
           <div className="flex items-center gap-2">
-            <button onClick={() => setConnectOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
+            <button onClick={() => setConnectOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-blue-800/50 bg-blue-950/30 px-3 py-2 text-sm text-blue-300 hover:bg-blue-900/40 transition-colors">
               <Icon.Plus /> Connect a place
             </button>
-            <button onClick={() => setUploadModalOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
+            <button onClick={() => setUploadModalOpen(true)} className="inline-flex items-center gap-2 rounded-xl border border-purple-800/50 bg-purple-950/30 px-3 py-2 text-sm text-purple-300 hover:bg-purple-900/40 transition-colors">
               <Icon.Video /> Upload Media
             </button>
           </div>
@@ -477,16 +552,22 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             <div className="text-[11px] text-neutral-400">Media Search</div>
           </div>
           <div className="flex items-center justify-end gap-2">
-            {overallProgress >= 0 && (
-              <span className="inline-flex items-center rounded-full border border-emerald-800 bg-emerald-950/50 p-2 animate-pulse">
-                <Icon.Bolt className="text-emerald-400 w-4 h-4" />
-              </span>
-            )}
-            <button onClick={() => setSettingsOpen(true)} className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
-              <Icon.Settings className="w-4 h-4" />
+            <button 
+              onClick={onOpenIndexing} 
+              className={`inline-flex items-center gap-2 rounded-xl border backdrop-blur-sm px-3 py-2 text-sm transition-all ${
+                overallProgress >= 0 
+                  ? 'border-emerald-500/50 bg-emerald-950/30 text-emerald-200 hover:bg-emerald-900/40 hover:border-emerald-400/70 shadow-lg shadow-emerald-500/20' 
+                  : 'border-neutral-600/40 bg-neutral-900/40 hover:bg-neutral-800/50 hover:border-neutral-500/60'
+              }`}
+              title={overallProgress >= 0 ? "Processing media..." : "View activity"}
+            >
+              {overallProgress >= 0 && (
+                <Icon.Bolt className="w-4 h-4 animate-pulse" />
+              )}
+              Activity Panel
             </button>
-            <button onClick={onOpenIndexing} className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800">
-              Open Indexing
+            <button onClick={() => setSettingsOpen(true)} className="rounded-xl border border-neutral-800 bg-neutral-900 p-2 hover:bg-neutral-800 transition-colors">
+              <Icon.Settings className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -662,6 +743,15 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           </section>
         ) : (
           <>
+            {/* Search results header */}
+            {q.trim().length > 0 && searchResults.length > 0 && (
+              <div className="mb-6 px-1">
+                <div className="text-xl text-neutral-300">
+                  Search results for: <span className="text-base text-white font-semibold">"{q.trim().split(' ').slice(0, 10).join(' ')}{q.trim().split(' ').length > 10 ? '...' : ''}"</span>
+                </div>
+              </div>
+            )}
+            
             <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 220px)' }}>
               {expandedType === null ? (
                 <>

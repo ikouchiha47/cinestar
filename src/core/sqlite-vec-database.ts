@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { distanceToSimilarity, getSimilarityScorer } from './similarity-scorers';
 import { ConfigManager } from './config';
 
 export interface MediaItem {
@@ -552,10 +553,20 @@ export class SqliteVecDatabase {
       
       // Debug: show raw distance values from sqlite-vec
       if (rows.length > 0) {
-        console.log(`🔍 [SQLITE-VEC-DEBUG] Raw distances from sqlite-vec:`);
-        rows.slice(0, 3).forEach((row: any, i: number) => {
-          console.log(`  ${i + 1}. ${row.name}: distance=${row.distance.toFixed(6)}`);
+        const scorerName = getSimilarityScorer().name || 'custom';
+        console.log(`🔍 [SQLITE-VEC-DEBUG] Raw distances from sqlite-vec (showing all ${rows.length} results, scorer: ${scorerName}):`);
+        rows.forEach((row: any, i: number) => {
+          const similarity = distanceToSimilarity(row.distance).toFixed(4);
+          console.log(`  ${i + 1}. ${row.name}: distance=${row.distance.toFixed(6)}, similarity=${similarity}`);
         });
+        
+        // Show distance distribution
+        const distances = rows.map((r: any) => r.distance);
+        const min = Math.min(...distances);
+        const max = Math.max(...distances);
+        const avg = distances.reduce((a: number, b: number) => a + b, 0) / distances.length;
+        console.log(`🔍 [SQLITE-VEC-STATS] Distance range: ${min.toFixed(3)} - ${max.toFixed(3)}, avg: ${avg.toFixed(3)}`);
+        console.log(`🔍 [SQLITE-VEC-CUTOFF] Suggested cutoffs: <15.0 (strict), <16.0 (moderate), <17.0 (loose)`);
       }
     } catch (error) {
       console.error(`🔍 [SQLITE-VEC-ERROR] Search failed:`, error);
@@ -563,11 +574,21 @@ export class SqliteVecDatabase {
     }
 
     // Convert distance to similarity and build results
+    // Apply distance threshold to filter out poor matches
+    const DISTANCE_THRESHOLD = 15.0; // Strict cutoff - only high-quality matches (15.0=strict, 16.0=moderate, 17.0=loose)
     const results: SearchResult[] = [];
     
     for (const row of rows) {
+      const rowData = row as any;
+      
+      // Skip results beyond distance threshold
+      if (rowData.distance > DISTANCE_THRESHOLD) {
+        console.log(`🔍 [SQLITE-VEC-FILTER] Skipping ${rowData.name}: distance ${rowData.distance.toFixed(3)} > threshold ${DISTANCE_THRESHOLD}`);
+        continue;
+      }
+      
       // Convert cosine distance to similarity (1 - distance)
-      const baseSimilarity = 1 - (row as any).distance;
+      const baseSimilarity = 1 - rowData.distance;
       
       results.push({
         id: (row as any).id,

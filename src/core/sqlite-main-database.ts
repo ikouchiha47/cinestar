@@ -4,7 +4,7 @@ import fs from 'fs';
 import { MediaItem, MediaSource, IndexingJob } from './types';
 
 export class SqliteMainDatabase {
-  private db: Database.Database;
+  public db: Database.Database; // Public for direct SQL access in processors
   private initialized = false;
   private dbFilePath: string;
 
@@ -385,22 +385,34 @@ export class SqliteMainDatabase {
     }
   }
   async getActiveJobs(): Promise<IndexingJob[]> {
-    const rows = this.db.prepare(`SELECT * FROM indexing_jobs WHERE status IN ('running') ORDER BY datetime(started_at) DESC`).all() as any[];
+    // Get regular running jobs (scans, etc.)
+    const rows = this.db.prepare(`
+      SELECT * FROM indexing_jobs 
+      WHERE status IN ('running') 
+      AND (job_type IS NULL OR job_type = 'scan' OR job_type = 'media_scan')
+      ORDER BY datetime(started_at) DESC
+    `).all() as any[];
+    
+    // Get aggregate stats for image processing jobs (background jobs)
+    const imageJobStats = this.db.prepare(`
+      SELECT 
+        source_id,
+        COUNT(*) as total,
+        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+        MIN(created_at) as started_at
+      FROM indexing_jobs
+      WHERE job_type = 'image_processing'
+      GROUP BY source_id
+      HAVING pending > 0 OR (completed + failed < total)
+    `).all() as any[];
     
     // [DEBUG] Log raw database rows
-    console.log(`[DB-ACTIVE-JOBS-DEBUG] Found ${rows.length} active jobs in database:`);
-    rows.forEach((row, index) => {
-      console.log(`[DB-ACTIVE-JOBS-DEBUG] Row ${index + 1}:`, {
-        id: row.id,
-        status: row.status,
-        job_title: row.job_title,
-        job_description: row.job_description,
-        operation_type: row.operation_type,
-        target_file: row.target_file
-      });
-    });
+    console.log(`[DB-ACTIVE-JOBS-DEBUG] Found ${rows.length} running jobs, ${imageJobStats.length} image processing groups`);
     
-    return rows.map(r => ({ 
+    // Map regular jobs
+    const regularJobs = rows.map(r => ({ 
       id: r.id, 
       sourceId: r.source_id, 
       status: r.status, 
@@ -414,6 +426,26 @@ export class SqliteMainDatabase {
       operationType: r.operation_type || 'media_scan',
       targetFile: r.target_file || undefined
     }));
+    
+    // Create synthetic aggregate jobs for image processing
+    const imageJobs = imageJobStats.map((stats: any) => ({
+      id: `image_processing_${stats.source_id}`,
+      sourceId: stats.source_id,
+      status: 'running' as const,
+      progress: Math.floor(((stats.completed || 0) / (stats.total || 1)) * 100),
+      totalItems: stats.total,
+      processedItems: stats.completed || 0,
+      startedAt: stats.started_at ? new Date(stats.started_at) : undefined,
+      completedAt: undefined,
+      title: 'Processing Images',
+      description: `${stats.completed || 0}/${stats.total} images indexed (${stats.failed || 0} failed)`,
+      operationType: 'image_processing',
+      targetFile: undefined
+    }));
+    
+    console.log(`[DB-ACTIVE-JOBS-DEBUG] Returning ${regularJobs.length} regular + ${imageJobs.length} image jobs`);
+    
+    return [...regularJobs, ...imageJobs];
   }
   async getJobs(sourceId?: string): Promise<IndexingJob[]> {
     const rows = sourceId ? (this.db.prepare(`SELECT * FROM indexing_jobs WHERE source_id=?`).all(sourceId) as any[]) : (this.db.prepare(`SELECT * FROM indexing_jobs`).all() as any[]);
@@ -489,6 +521,74 @@ export class SqliteMainDatabase {
   }
   async removeJob(jobId: string): Promise<void> {
     this.db.prepare(`DELETE FROM indexing_jobs WHERE id=?`).run(jobId);
+  }
+
+  // Image Processing Jobs
+  async createImageProcessingJob(job: {
+    id: string;
+    sourceId: string;
+    filePath: string;
+    fileName: string;
+    fileSize: number;
+    status: string;
+    jobType: string;
+    retryCount?: number;
+  }): Promise<void> {
+    this.db.prepare(`
+      INSERT INTO indexing_jobs(
+        id, source_id, status, job_type, file_path, file_name, file_size, retry_count, created_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+    `).run(
+      job.id,
+      job.sourceId,
+      job.status,
+      job.jobType,
+      job.filePath,
+      job.fileName,
+      job.fileSize,
+      job.retryCount || 0,
+      new Date().toISOString()
+    );
+  }
+
+  async updateJobStatusWithError(jobId: string, status: string, progress: number, error?: string): Promise<void> {
+    const sets: string[] = ['status=?', 'progress=?'];
+    const vals: any[] = [status, progress];
+    
+    if (error) {
+      sets.push('last_error=?');
+      vals.push(error);
+    }
+    
+    if (status === 'running') {
+      sets.push('started_at=?');
+      vals.push(new Date().toISOString());
+    }
+    
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      sets.push('completed_at=?');
+      vals.push(new Date().toISOString());
+    }
+    
+    vals.push(jobId);
+    this.db.prepare(`UPDATE indexing_jobs SET ${sets.join(', ')} WHERE id=?`).run(...vals);
+  }
+
+  async getPendingImageJobs(limit: number): Promise<any[]> {
+    return this.db.prepare(`
+      SELECT id, source_id, file_path, file_name, file_size, status, retry_count
+      FROM indexing_jobs
+      WHERE job_type = 'image_processing'
+        AND status = 'pending'
+        AND retry_count < 3
+      ORDER BY priority DESC, created_at ASC
+      LIMIT ?
+    `).all(limit) as any[];
+  }
+
+  async getItemIdByPath(filePath: string): Promise<string | null> {
+    const row = this.db.prepare('SELECT id FROM media_items WHERE path = ?').get(filePath) as any;
+    return row ? row.id : null;
   }
 
   // Stats

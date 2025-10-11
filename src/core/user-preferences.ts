@@ -41,13 +41,24 @@ export class UserPreferencesManager {
 
   private constructor() {
     // Store preferences in app data directory
-    // macOS: ~/Library/Application Support/Cinestar/preferences.json
-    // Linux: ~/.config/Cinestar/preferences.json
-    // Windows: %APPDATA%/Cinestar/preferences.json
-    const appDataPath = process.env.APPDATA || 
-                        path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
+    // Development: ./data/preferences.json
+    // Production:
+    //   macOS: ~/Library/Application Support/Cinestar/preferences.json
+    //   Linux: ~/.config/Cinestar/preferences.json
+    //   Windows: %APPDATA%/Cinestar/preferences.json
     
-    const appDir = path.join(appDataPath, 'Cinestar');
+    const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
+    
+    let appDir: string;
+    if (isDev) {
+      // Development: use project data directory
+      appDir = path.join(process.cwd(), 'data');
+    } else {
+      // Production: use system app data directory
+      const appDataPath = process.env.APPDATA || 
+                          path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
+      appDir = path.join(appDataPath, 'Cinestar');
+    }
     
     // Create directory if it doesn't exist
     if (!fs.existsSync(appDir)) {
@@ -55,6 +66,7 @@ export class UserPreferencesManager {
     }
     
     this.preferencesPath = path.join(appDir, 'preferences.json');
+    console.log(`[UserPreferences] Using preferences path: ${this.preferencesPath}`);
     this.preferences = this.load();
   }
 
