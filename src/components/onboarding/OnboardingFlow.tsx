@@ -22,16 +22,20 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     console.log('[ONBOARDING] Feature selection:', features);
     setSelectedFeatures(features);
     
-    // Save preferences
+    // Save feature preferences to config.json
     try {
       console.log('[ONBOARDING] Saving feature preferences...');
-      await window.electronAPI.saveUserPreferences({
-        featuresEnabled: {
+      const config = await window.ipcRenderer.invoke('config:get');
+      const updatedConfig = {
+        ...config,
+        features: {
           images: true,
           videos: features.videos,
           audio: features.audio
-        }
-      });
+        },
+        lastModified: new Date().toISOString()
+      };
+      await window.ipcRenderer.invoke('config:set', updatedConfig);
       console.log('[ONBOARDING] Feature preferences saved');
     } catch (error) {
       console.error('[ONBOARDING] Failed to save preferences:', error);
@@ -65,11 +69,7 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
       unsubscribe();
 
       if (result.success) {
-        // Mark model as downloaded
-        await window.electronAPI.saveUserPreferences({
-          whisperModelDownloaded: true
-        });
-        
+        // Model download handler already updates config.json with modelDownloaded=true
         setDownloadProgress(100);
       } else {
         console.error('[Onboarding] Model download failed:', result.error);
@@ -84,9 +84,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   const completeOnboarding = async () => {
     try {
       console.log('[ONBOARDING] Completing onboarding...');
-      await window.electronAPI.saveUserPreferences({
-        onboardingComplete: true
-      });
+      const config = await window.ipcRenderer.invoke('config:get');
+      const updatedConfig = {
+        ...config,
+        onboarding: {
+          ...config.onboarding,
+          complete: true,
+          firstLaunchDate: config.onboarding.firstLaunchDate || new Date().toISOString()
+        },
+        lastModified: new Date().toISOString()
+      };
+      await window.ipcRenderer.invoke('config:set', updatedConfig);
       console.log('[ONBOARDING] Onboarding marked complete, calling onComplete callback');
       onComplete();
     } catch (error) {

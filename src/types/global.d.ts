@@ -15,10 +15,6 @@ declare global {
       mkdir: (dirPath: string) => Promise<boolean>;
       getAppPath: (name: string) => Promise<string>;
       
-      // User preferences
-      getUserPreferences: () => Promise<{ success: boolean; preferences?: any; error?: string }>;
-      saveUserPreferences: (prefs: any) => Promise<{ success: boolean; error?: string }>;
-      
       // Whisper model download
       downloadWhisperModel: (options: { modelName: string }) => Promise<{ success: boolean; error?: string }>;
       onWhisperDownloadProgress: (callback: (progress: number) => void) => () => void;

@@ -351,53 +351,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   )}
                 </div>
 
-                {/* Transcription Service URL - Hidden, keeping for backward compatibility */}
-                {/* <div className="bg-neutral-800 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="font-medium text-white">Transcription Service</h4>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => testConnection('transcription')}
-                        className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors"
-                      >
-                        Test
-                      </button>
-                      <label className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={config.aiServices.transcription.enabled}
-                          onChange={(e) => updateService('transcription', 'enabled', e.target.checked)}
-                          className="rounded"
-                        />
-                        <span className="text-sm text-neutral-300">Enabled</span>
-                      </label>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm text-neutral-300 mb-1">Base URL</label>
-                      <input
-                        type="url"
-                        value={config.aiServices.transcription.baseUrl}
-                        onChange={(e) => updateService('transcription', 'baseUrl', e.target.value)}
-                        placeholder="http://localhost:9001"
-                        className="w-full px-3 py-2 bg-neutral-700 border border-neutral-600 rounded text-white placeholder-neutral-400 focus:border-blue-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-neutral-300 mb-1">Model</label>
-                      <input
-                        type="text"
-                        value={config.aiServices.transcription.model}
-                        onChange={(e) => updateService('transcription', 'model', e.target.value)}
-                        placeholder="whisper-1"
-                        className="w-full px-3 py-2 bg-neutral-700 border border-neutral-600 rounded text-white placeholder-neutral-400 focus:border-blue-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                </div> */}
-
                 {/* Captioning Service */}
                 <div className="bg-neutral-800 rounded-lg p-4">
                   <div className="flex items-center justify-between mb-3">

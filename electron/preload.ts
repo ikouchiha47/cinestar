@@ -29,10 +29,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: (name: string) => ipcRenderer.invoke('app:getPath', name),
   getDataDir: () => ipcRenderer.invoke('app:getDataDir'),
   
-  // User preferences
-  getUserPreferences: () => ipcRenderer.invoke('user:getPreferences'),
-  saveUserPreferences: (prefs: any) => ipcRenderer.invoke('user:savePreferences', prefs),
-  
   // Whisper model download
   downloadWhisperModel: (options: { modelName: string }) => ipcRenderer.invoke('whisper:downloadModel', options),
   onWhisperDownloadProgress: (callback: (progress: number) => void) => {

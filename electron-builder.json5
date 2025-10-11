@@ -20,6 +20,7 @@
     "node_modules/ffprobe-static/**/*",
     "node_modules/sqlite-vec*/**/*",
     "node_modules/better-sqlite3/**/*",
+    "node_modules/nodejs-whisper/**/*",
     "migrations_flat/**/*"
   ],
   "mac": {

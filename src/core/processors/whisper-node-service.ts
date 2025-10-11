@@ -27,21 +27,30 @@ export class NodeJsWhisperService implements TranscriptionService {
   
   /**
    * Get the whisper models directory path
-   * Uses app data directory to store downloaded models (like games do)
+   * Uses app data directory in production, project data directory in development
    */
   private getWhisperModelsPath(): string {
     if (this.config.whisperCachePath) {
       return this.config.whisperCachePath;
     }
     
-    // Use app data directory (persistent across updates)
-    // macOS: ~/Library/Application Support/Cinestar/whisper-models/
-    // Linux: ~/.config/Cinestar/whisper-models/
-    // Windows: %APPDATA%/Cinestar/whisper-models/
-    const appDataPath = process.env.APPDATA || 
-                        path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
+    // Check if running in development mode
+    const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
     
-    return path.join(appDataPath, 'Cinestar', 'whisper-models');
+    if (isDev) {
+      // Development: use project data directory
+      const dataDir = process.env.CINESTAR_DATA_DIR || path.join(process.cwd(), 'data');
+      return path.join(dataDir, 'whisper-models');
+    } else {
+      // Production: use app data directory (persistent across updates)
+      // macOS: ~/Library/Application Support/Cinestar/whisper-models/
+      // Linux: ~/.config/Cinestar/whisper-models/
+      // Windows: %APPDATA%/Cinestar/whisper-models/
+      const appDataPath = process.env.APPDATA || 
+                          path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
+      
+      return path.join(appDataPath, 'Cinestar', 'whisper-models');
+    }
   }
   
   /**

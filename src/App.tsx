@@ -42,11 +42,12 @@ function App() {
       }
       
       try {
-        const result = await window.electronAPI.getUserPreferences();
-        if (result.success && result.preferences) {
-          setOnboardingComplete(result.preferences.onboardingComplete);
+        // Check onboarding status from config.json
+        const config = await window.ipcRenderer.invoke('config:get');
+        if (config && config.onboarding) {
+          setOnboardingComplete(config.onboarding.complete);
         } else {
-          // If preferences don't exist, show onboarding
+          // If config doesn't exist, show onboarding
           setOnboardingComplete(false);
         }
       } catch (error) {

@@ -12,7 +12,6 @@ import { ImageJobProcessor } from '../src/core/image-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 import { getMimeType } from '../src/core/utils'
-import { UserPreferencesManager, type UserPreferences } from '../src/core/user-preferences'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -869,7 +868,10 @@ ipcMain.handle('dialog:selectAudioFile', async () => {
 });
 
 // Configuration management
-const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+// Use separate config files for dev and production to avoid conflicts
+const CONFIG_FILE = IS_DEV 
+  ? path.join(DATA_DIR, 'config.dev.json')
+  : path.join(DATA_DIR, 'config.json');
 
 ipcMain.handle('config:get', async () => {
   try {
@@ -970,100 +972,103 @@ ipcMain.handle('config:set', async (_, config) => {
   }
 });
 
-// User Preferences IPC handlers
-ipcMain.handle('user:getPreferences', async () => {
-  try {
-    const manager = UserPreferencesManager.getInstance();
-    return {
-      success: true,
-      preferences: manager.getPreferences()
-    };
-  } catch (error) {
-    console.error('[USER-PREFS] Failed to get preferences:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-});
-
-ipcMain.handle('user:savePreferences', async (_, prefs: Partial<UserPreferences>) => {
-  try {
-    const manager = UserPreferencesManager.getInstance();
-    
-    if (prefs.featuresEnabled) {
-      manager.setFeaturesEnabled(prefs.featuresEnabled);
-    }
-    
-    if (prefs.onboardingComplete !== undefined && prefs.onboardingComplete) {
-      manager.completeOnboarding();
-    }
-    
-    if (prefs.whisperModelDownloaded !== undefined) {
-      manager.setWhisperModelDownloaded(prefs.whisperModelDownloaded);
-    }
-    
-    console.log('[USER-PREFS] Preferences saved');
-    return { success: true };
-  } catch (error) {
-    console.error('[USER-PREFS] Failed to save preferences:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-});
+// User Preferences - now handled via config.json (see config:get and config:set handlers above)
 
 // Whisper model download handler
 ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string }) => {
   try {
     console.log(`[WHISPER-DOWNLOAD] Starting download for model: ${options.modelName}`);
     
-    const { nodewhisper } = await import('nodejs-whisper');
-    const userPrefs = UserPreferencesManager.getInstance();
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
     
-    // Get models path
-    const appDataPath = process.env.APPDATA || 
-                        path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
-    const modelsPath = path.join(appDataPath, 'Cinestar', 'whisper-models');
+    // Find nodejs-whisper installation path
+    let whisperCppPath: string;
+    if (IS_DEV) {
+      // Development: use node_modules
+      whisperCppPath = path.join(process.cwd(), 'node_modules', 'nodejs-whisper', 'cpp', 'whisper.cpp');
+    } else {
+      // Production: use unpacked asar
+      whisperCppPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'nodejs-whisper', 'cpp', 'whisper.cpp');
+    }
     
-    // Create directory
-    await fs.promises.mkdir(modelsPath, { recursive: true });
+    const modelsDir = path.join(whisperCppPath, 'models');
+    const modelFileName = `ggml-${options.modelName}.bin`;
+    const modelPath = path.join(modelsDir, modelFileName);
     
-    // Create dummy audio file to trigger download
-    const dummyAudioPath = path.join(modelsPath, 'dummy.wav');
-    const wavHeader = Buffer.from([
-      0x52, 0x49, 0x46, 0x46, 0x24, 0x7D, 0x00, 0x00,
-      0x57, 0x41, 0x56, 0x45, 0x66, 0x6D, 0x74, 0x20,
-      0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
-      0x80, 0x3E, 0x00, 0x00, 0x00, 0x7D, 0x00, 0x00,
-      0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61,
-      0x00, 0x7D, 0x00, 0x00
-    ]);
-    const silence = Buffer.alloc(32000);
-    await fs.promises.writeFile(dummyAudioPath, Buffer.concat([wavHeader, silence]));
+    console.log(`[WHISPER-DOWNLOAD] Whisper.cpp path: ${whisperCppPath}`);
+    console.log(`[WHISPER-DOWNLOAD] Models directory: ${modelsDir}`);
+    console.log(`[WHISPER-DOWNLOAD] Model file: ${modelPath}`);
     
-    // Simulate progress (nodejs-whisper doesn't provide real progress)
+    // Check if model already exists
+    if (fs.existsSync(modelPath)) {
+      console.log(`[WHISPER-DOWNLOAD] Model ${options.modelName} already exists, skipping download`);
+      evt.sender.send('whisper:downloadProgress', 100);
+      
+      // Mark as downloaded in config.json
+      if (fs.existsSync(CONFIG_FILE)) {
+        const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+        const config = JSON.parse(configData);
+        config.aiServices.transcription.modelDownloaded = true;
+        config.lastModified = new Date().toISOString();
+        await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+        console.log('[WHISPER-DOWNLOAD] Updated config.json with modelDownloaded=true');
+      }
+      
+      return { success: true };
+    }
+    
+    // Simulate progress updates
     let progress = 0;
     const progressInterval = setInterval(() => {
-      progress += 3;
+      progress += 2;
       if (progress <= 95) {
         evt.sender.send('whisper:downloadProgress', progress);
       }
     }, 1000);
     
-    // Set environment variable for models path
-    process.env.NODEJS_WHISPER_CACHE = modelsPath;
+    // Download the model using the shell script
+    const scriptName = process.platform === 'win32' ? 'download-ggml-model.cmd' : 'download-ggml-model.sh';
+    const scriptPath = path.join(modelsDir, scriptName);
     
-    // Trigger download
-    await nodewhisper(dummyAudioPath, {
-      modelName: options.modelName,
-      autoDownloadModelName: options.modelName,
-      whisperOptions: { outputInText: true }
+    console.log(`[WHISPER-DOWNLOAD] Running download script: ${scriptPath}`);
+    console.log(`[WHISPER-DOWNLOAD] Model name: ${options.modelName}`);
+    
+    // Make script executable on Unix
+    if (process.platform !== 'win32') {
+      await execAsync(`chmod +x "${scriptPath}"`);
+    }
+    
+    // Run the download script
+    const { stdout, stderr } = await execAsync(`cd "${modelsDir}" && ./${scriptName} ${options.modelName}`, {
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large downloads
     });
+    
+    console.log(`[WHISPER-DOWNLOAD] Download output:`, stdout);
+    if (stderr) {
+      console.log(`[WHISPER-DOWNLOAD] Download stderr:`, stderr);
+    }
     
     clearInterval(progressInterval);
     evt.sender.send('whisper:downloadProgress', 100);
     
-    // Clean up dummy file
-    await fs.promises.unlink(dummyAudioPath).catch(() => {});
+    // Verify model was downloaded
+    if (!fs.existsSync(modelPath)) {
+      throw new Error(`Model file not found after download: ${modelPath}`);
+    }
     
-    // Mark as downloaded
-    userPrefs.setWhisperModelDownloaded(true);
+    console.log(`[WHISPER-DOWNLOAD] Model downloaded successfully to: ${modelPath}`);
+    
+    // Mark as downloaded in config.json
+    if (fs.existsSync(CONFIG_FILE)) {
+      const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+      const config = JSON.parse(configData);
+      config.aiServices.transcription.modelDownloaded = true;
+      config.lastModified = new Date().toISOString();
+      await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
+      console.log('[WHISPER-DOWNLOAD] Updated config.json with modelDownloaded=true');
+    }
     
     console.log('[WHISPER-DOWNLOAD] Download complete');
     return { success: true };

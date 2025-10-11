@@ -29,6 +29,9 @@ dist-electron/
 release/
 
 data/*db*
+data/config.dev.json
+data/config.json
+data/preferences.json
 !data/.keep
 
 # Downloaded AI models (users download on-demand)
