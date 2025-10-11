@@ -1540,8 +1540,13 @@ export class MainMediaAPI {
           }
 
           const vectorSearchStart = Date.now();
-          const paginatedResults = await this.vecDb.searchSimilar(combinedEmbedding, searchLimit, 0, q);
-          console.log(`[SEARCH-TIMING] ⏱️  Vector search took: ${Date.now() - vectorSearchStart}ms, found ${paginatedResults.results.length} results`);
+          // Use hybrid search (combines vector + FTS) for better results
+          const paginatedResults = await this.vecDb.searchHybrid(q, combinedEmbedding, {
+            limit: searchLimit,
+            offset: 0,
+            alpha: 0.7 // 70% vector, 30% FTS - configurable
+          });
+          console.log(`[SEARCH-TIMING] ⏱️  Hybrid search took: ${Date.now() - vectorSearchStart}ms, found ${paginatedResults.results.length} results`);
           
           // Transform and group results by media type with enhanced scoring
           const transformStart = Date.now();

@@ -873,47 +873,35 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
 ipcMain.handle('config:get', async () => {
   try {
+    // Load existing config.json if it exists
     if (fs.existsSync(CONFIG_FILE)) {
       const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
       const config = JSON.parse(configData);
-      
-      // If aiServices doesn't exist, initialize with defaults from ConfigManager
-      if (!config.aiServices) {
-        const { ConfigManager } = await import('../src/core/config');
-        const backendConfig = ConfigManager.getConfig();
-        
-        config.aiServices = {
-          transcription: {
-            baseUrl: backendConfig.ai.transcriptionUrl,
-            model: 'base.en',
-            enabled: true
-          },
-          captioning: {
-            baseUrl: backendConfig.ai.captionUrl,
-            model: backendConfig.ai.visionModel,
-            enabled: true
-          },
-          sceneReconstruction: {
-            baseUrl: backendConfig.ai.embedUrl,
-            model: backendConfig.ai.generalPurposeModel,
-            enabled: true
-          }
-        };
-      }
-      
+      console.log('[CONFIG] Loaded config from:', CONFIG_FILE);
       return config;
     }
     
-    // Return defaults if no config file exists
+    // Initialize defaults from ConfigManager if no config exists
     const { ConfigManager } = await import('../src/core/config');
     const backendConfig = ConfigManager.getConfig();
     
-    return {
+    const defaultConfig = {
+      version: 1,
+      onboarding: {
+        complete: false,
+        firstLaunchDate: null
+      },
+      features: {
+        images: true,
+        videos: false,
+        audio: false
+      },
       aiServices: {
         transcription: {
           baseUrl: backendConfig.ai.transcriptionUrl,
-          model: 'base.en',
-          enabled: true
+          model: 'whisper-base.en',
+          enabled: false,
+          modelDownloaded: false
         },
         captioning: {
           baseUrl: backendConfig.ai.captionUrl,
@@ -925,8 +913,15 @@ ipcMain.handle('config:get', async () => {
           model: backendConfig.ai.generalPurposeModel,
           enabled: true
         }
-      }
+      },
+      lastModified: new Date().toISOString()
     };
+    
+    // Save default config
+    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2), 'utf8');
+    console.log('[CONFIG] Created default config at:', CONFIG_FILE);
+    
+    return defaultConfig;
   } catch (error) {
     console.error('Failed to read config:', error);
     return {};
@@ -939,7 +934,7 @@ ipcMain.handle('config:set', async (_, config) => {
     await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
     
     // Read existing config and merge
-    let existingConfig = {};
+    let existingConfig: any = {};
     if (fs.existsSync(CONFIG_FILE)) {
       try {
         const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
@@ -949,10 +944,25 @@ ipcMain.handle('config:set', async (_, config) => {
       }
     }
     
-    const mergedConfig = { ...existingConfig, ...config };
-    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2));
+    // Deep merge to preserve nested structures
+    const mergedConfig = {
+      ...existingConfig,
+      ...config,
+      onboarding: { ...existingConfig.onboarding, ...config.onboarding },
+      features: { ...existingConfig.features, ...config.features },
+      aiServices: {
+        ...existingConfig.aiServices,
+        ...config.aiServices,
+        transcription: { ...existingConfig.aiServices?.transcription, ...config.aiServices?.transcription },
+        captioning: { ...existingConfig.aiServices?.captioning, ...config.aiServices?.captioning },
+        sceneReconstruction: { ...existingConfig.aiServices?.sceneReconstruction, ...config.aiServices?.sceneReconstruction }
+      },
+      lastModified: new Date().toISOString()
+    };
     
-    console.log('[CONFIG] Settings saved to config.json');
+    await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2), 'utf8');
+    
+    console.log('[CONFIG] Settings saved to unified config.json');
     return { success: true };
   } catch (error) {
     console.error('Failed to save config:', error);

@@ -587,8 +587,8 @@ export class SqliteVecDatabase {
         continue;
       }
       
-      // Convert cosine distance to similarity (1 - distance)
-      const baseSimilarity = 1 - rowData.distance;
+      // Convert L2 distance to similarity using the scorer
+      const similarity = distanceToSimilarity(rowData.distance);
       
       results.push({
         id: (row as any).id,
@@ -598,7 +598,7 @@ export class SqliteVecDatabase {
         sourceId: (row as any).source_id,
         type: (row as any).type,
         size: (row as any).size,
-        similarity: Math.max(0, Math.min(1, baseSimilarity)),
+        similarity: similarity,
         distance: (row as any).distance
       });
     }
@@ -612,6 +612,181 @@ export class SqliteVecDatabase {
       total: totalCount,
       hasMore
     };
+  }
+
+  /**
+   * Search using FTS (Full-Text Search) for text-based queries
+   */
+  async searchFTS(
+    query: string,
+    limit: number = 20,
+    offset: number = 0
+  ): Promise<{ results: SearchResult[]; total: number; hasMore: boolean }> {
+    console.log(`🔍 [FTS-SEARCH] Starting FTS search for: "${query}"`);
+    
+    try {
+      // Prepare FTS query (escape special characters, use OR for multiple terms)
+      const ftsQuery = query.trim().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).join(' OR ');
+      
+      // Count total matches
+      const countStmt = this.db.prepare(`
+        SELECT COUNT(DISTINCT m.id) as total
+        FROM media_fts f
+        JOIN media_items m ON f.item_id = m.id
+        WHERE media_fts MATCH ?
+      `);
+      const countResult = countStmt.get(ftsQuery) as { total: number };
+      const totalCount = countResult?.total || 0;
+      
+      // Get paginated results with BM25 ranking
+      const stmt = this.db.prepare(`
+        SELECT 
+          m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
+          bm25(media_fts) as fts_score
+        FROM media_fts f
+        JOIN media_items m ON f.item_id = m.id
+        WHERE media_fts MATCH ?
+        ORDER BY fts_score ASC
+        LIMIT ? OFFSET ?
+      `);
+      
+      const rows = stmt.all(ftsQuery, limit, offset);
+      console.log(`🔍 [FTS-SEARCH] Found ${rows.length} results (${offset}-${offset + rows.length} of ${totalCount} total)`);
+      
+      // Convert FTS scores to 0-1 similarity range
+      // BM25 scores are negative (lower = better match), so we normalize them
+      const results: SearchResult[] = [];
+      if (rows.length > 0) {
+        const scores = rows.map((r: any) => r.fts_score);
+        const minScore = Math.min(...scores);
+        const maxScore = Math.max(...scores);
+        const scoreRange = maxScore - minScore || 1;
+        
+        for (const row of rows) {
+          const rowData = row as any;
+          // Normalize BM25 score to 0-1 (invert so higher is better)
+          const normalizedScore = 1 - ((rowData.fts_score - minScore) / scoreRange);
+          
+          results.push({
+            id: rowData.id,
+            name: rowData.name,
+            path: rowData.path,
+            caption: rowData.caption || '',
+            sourceId: rowData.source_id,
+            type: rowData.type,
+            size: rowData.size,
+            similarity: normalizedScore,
+            distance: 0 // FTS doesn't use distance
+          });
+        }
+      }
+      
+      console.log(`🔍 [FTS-SEARCH] Returning ${results.length} results`);
+      return {
+        results,
+        total: totalCount,
+        hasMore: offset + results.length < totalCount
+      };
+    } catch (error) {
+      console.error(`🔍 [FTS-ERROR] Search failed:`, error);
+      return { results: [], total: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Hybrid search: Combines vector similarity and FTS text matching
+   * Uses weighted scoring: final_score = α * vector_sim + (1 - α) * fts_score
+   */
+  async searchHybrid(
+    query: string,
+    queryEmbedding: Float32Array,
+    options: {
+      limit?: number;
+      offset?: number;
+      alpha?: number; // Weight for vector similarity (0-1), default 0.7
+    } = {}
+  ): Promise<{ results: SearchResult[]; total: number; hasMore: boolean }> {
+    const limit = options.limit || 20;
+    const offset = options.offset || 0;
+    const alpha = options.alpha !== undefined ? options.alpha : 0.7; // Default: 70% vector, 30% FTS
+    
+    console.log(`🔍 [HYBRID-SEARCH] Starting hybrid search for: "${query}" (α=${alpha})`);
+    
+    try {
+      // Run both searches in parallel
+      const [vectorResults, ftsResults] = await Promise.all([
+        this.searchSimilar(queryEmbedding, limit * 2, 0, query), // Get more results for merging
+        this.searchFTS(query, limit * 2, 0)
+      ]);
+      
+      // Create a map of combined scores
+      const scoreMap = new Map<string, { item: SearchResult; vectorScore: number; ftsScore: number }>();
+      
+      // Add vector results
+      console.log(`🔍 [HYBRID-DEBUG] Processing ${vectorResults.results.length} vector results:`);
+      for (const item of vectorResults.results) {
+        console.log(`  - ${item.name}: vector_sim=${item.similarity.toFixed(4)}, distance=${(item as any).distance?.toFixed(3)}`);
+        scoreMap.set(item.id, {
+          item,
+          vectorScore: item.similarity,
+          ftsScore: 0
+        });
+      }
+      
+      // Add/merge FTS results
+      console.log(`🔍 [HYBRID-DEBUG] Processing ${ftsResults.results.length} FTS results:`);
+      for (const item of ftsResults.results) {
+        const existing = scoreMap.get(item.id);
+        if (existing) {
+          console.log(`  - ${item.name}: fts_score=${item.similarity.toFixed(4)} (MERGED with vector=${existing.vectorScore.toFixed(4)})`);
+          existing.ftsScore = item.similarity;
+        } else {
+          console.log(`  - ${item.name}: fts_score=${item.similarity.toFixed(4)} (FTS-only)`);
+          scoreMap.set(item.id, {
+            item,
+            vectorScore: 0,
+            ftsScore: item.similarity
+          });
+        }
+      }
+      
+      // Calculate hybrid scores and sort
+      console.log(`🔍 [HYBRID-DEBUG] Calculating hybrid scores with α=${alpha}:`);
+      const hybridResults = Array.from(scoreMap.values())
+        .map(({ item, vectorScore, ftsScore }) => {
+          const hybridScore = alpha * vectorScore + (1 - alpha) * ftsScore;
+          console.log(`  - ${item.name}: hybrid=${hybridScore.toFixed(4)} (${alpha}*${vectorScore.toFixed(4)} + ${1-alpha}*${ftsScore.toFixed(4)})`);
+          return {
+            ...item,
+            similarity: hybridScore,
+            _debug: { vectorScore, ftsScore, hybridScore, alpha }
+          };
+        })
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(offset, offset + limit);
+      
+      console.log(`🔍 [HYBRID-DEBUG] After sorting, top 5:`);
+      hybridResults.slice(0, 5).forEach((r, i) => {
+        console.log(`  ${i+1}. ${r.name}: final_score=${r.similarity.toFixed(4)}`);
+      });
+      
+      console.log(`🔍 [HYBRID-SEARCH] Combined ${vectorResults.results.length} vector + ${ftsResults.results.length} FTS results into ${scoreMap.size} unique items`);
+      console.log(`🔍 [HYBRID-SEARCH] Top 3 hybrid scores:`, hybridResults.slice(0, 3).map(r => ({
+        name: r.name,
+        hybrid: r.similarity.toFixed(4),
+        vector: (r as any)._debug.vectorScore.toFixed(4),
+        fts: (r as any)._debug.ftsScore.toFixed(4)
+      })));
+      
+      return {
+        results: hybridResults,
+        total: scoreMap.size,
+        hasMore: offset + hybridResults.length < scoreMap.size
+      };
+    } catch (error) {
+      console.error(`🔍 [HYBRID-ERROR] Search failed:`, error);
+      return { results: [], total: 0, hasMore: false };
+    }
   }
 
   /**
