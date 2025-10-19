@@ -4,7 +4,7 @@
   "version": "0.1.53",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/reset-preferences.js && vite",
     "build": "vite build",
     "build:check": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
@@ -16,7 +16,7 @@
     "preview": "vite preview",
     "postinstall": "npx electron-rebuild -f -w better-sqlite3 && npm rebuild sharp",
     "clean:db": "rm -f data/*.db data/*.db-shm data/*.db-wal",
-    "restart": "npm run clean:db; npm run postinstall; npm run dev"
+    "restart": "npm run clean:db && npm run postinstall && node scripts/reset-preferences.js && npm run dev"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

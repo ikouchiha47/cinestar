@@ -36,6 +36,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('whisper:downloadProgress', listener);
     return () => ipcRenderer.removeListener('whisper:downloadProgress', listener);
   },
+  
+  // New whisper setup (non-interactive)
+  setupWhisper: (options: { modelName?: string; useCuda?: boolean } = {}) => ipcRenderer.invoke('whisper:setup', options),
+  onWhisperSetupProgress: (callback: (progress: number) => void) => {
+    const listener = (_: any, progress: number) => callback(progress);
+    ipcRenderer.on('whisper:setup:progress', listener);
+    return () => ipcRenderer.removeListener('whisper:setup:progress', listener);
+  },
+  onWhisperSetupSignal: (callback: (data: { status: string; error?: string }) => void) => {
+    const listener = (_: any, data: { status: string; error?: string }) => callback(data);
+    ipcRenderer.on('whisper:setup:signal', listener);
+    return () => ipcRenderer.removeListener('whisper:setup:signal', listener);
+  },
 })
 
 // Expose MediaAPI for the renderer process

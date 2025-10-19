@@ -11,7 +11,8 @@
   "files": [
     "dist",
     "dist-electron",
-    "migrations_flat"
+    "migrations_flat",
+    "scripts"
   ],
   "asarUnpack": [
     "node_modules/sharp/**/*",
@@ -21,6 +22,7 @@
     "node_modules/sqlite-vec*/**/*",
     "node_modules/better-sqlite3/**/*",
     "node_modules/nodejs-whisper/**/*",
+    "scripts/**/*",
     "migrations_flat/**/*"
   ],
   "mac": {

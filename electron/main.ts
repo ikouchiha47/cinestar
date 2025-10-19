@@ -950,6 +950,17 @@ ipcMain.handle('config:get', async () => {
       const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
       const config = JSON.parse(configData);
       console.log('[CONFIG] Loaded config from:', CONFIG_FILE);
+      // Merge modelDownloaded from preferences.json (single source of truth)
+      try {
+        const preferencesPath = path.join(DATA_DIR, 'preferences.json');
+        if (fs.existsSync(preferencesPath)) {
+          const prefsData = await fs.promises.readFile(preferencesPath, 'utf8');
+          const prefs = JSON.parse(prefsData);
+          if (!config.aiServices) (config as any).aiServices = {};
+          if (!config.aiServices.transcription) (config as any).aiServices.transcription = {};
+          (config as any).aiServices.transcription.modelDownloaded = !!prefs.whisperModelDownloaded;
+        }
+      } catch {}
       return config;
     }
     
@@ -988,7 +999,16 @@ ipcMain.handle('config:get', async () => {
       },
       lastModified: new Date().toISOString()
     };
-    
+    // Override modelDownloaded from preferences.json when available
+    try {
+      const preferencesPath = path.join(DATA_DIR, 'preferences.json');
+      if (fs.existsSync(preferencesPath)) {
+        const prefsData = await fs.promises.readFile(preferencesPath, 'utf8');
+        const prefs = JSON.parse(prefsData);
+        (defaultConfig as any).aiServices.transcription.modelDownloaded = !!prefs.whisperModelDownloaded;
+      }
+    } catch {}
+
     // Save default config
     await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2), 'utf8');
     console.log('[CONFIG] Created default config at:', CONFIG_FILE);
@@ -1076,14 +1096,18 @@ ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string
       console.log(`[WHISPER-DOWNLOAD] Model ${options.modelName} already exists, skipping download`);
       evt.sender.send('whisper:downloadProgress', 100);
       
-      // Mark as downloaded in config.json
-      if (fs.existsSync(CONFIG_FILE)) {
-        const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
-        const config = JSON.parse(configData);
-        config.aiServices.transcription.modelDownloaded = true;
-        config.lastModified = new Date().toISOString();
-        await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
-        console.log('[WHISPER-DOWNLOAD] Updated config.json with modelDownloaded=true');
+      // Mark as downloaded in preferences.json (source of truth)
+      try {
+        const preferencesPath = path.join(DATA_DIR, 'preferences.json');
+        let prefs: any = {};
+        if (fs.existsSync(preferencesPath)) {
+          prefs = JSON.parse(await fs.promises.readFile(preferencesPath, 'utf8'));
+        }
+        prefs.whisperModelDownloaded = true;
+        await fs.promises.writeFile(preferencesPath, JSON.stringify(prefs, null, 2), 'utf8');
+        console.log('[WHISPER-DOWNLOAD] Updated preferences.json with whisperModelDownloaded=true');
+      } catch (e) {
+        console.warn('[WHISPER-DOWNLOAD] Failed to update preferences.json:', e);
       }
       
       return { success: true };
@@ -1130,20 +1154,114 @@ ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string
     
     console.log(`[WHISPER-DOWNLOAD] Model downloaded successfully to: ${modelPath}`);
     
-    // Mark as downloaded in config.json
-    if (fs.existsSync(CONFIG_FILE)) {
-      const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
-      const config = JSON.parse(configData);
-      config.aiServices.transcription.modelDownloaded = true;
-      config.lastModified = new Date().toISOString();
-      await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2));
-      console.log('[WHISPER-DOWNLOAD] Updated config.json with modelDownloaded=true');
+    // Mark as downloaded in preferences.json (source of truth)
+    try {
+      const preferencesPath = path.join(DATA_DIR, 'preferences.json');
+      let prefs: any = {};
+      if (fs.existsSync(preferencesPath)) {
+        prefs = JSON.parse(await fs.promises.readFile(preferencesPath, 'utf8'));
+      }
+      prefs.whisperModelDownloaded = true;
+      await fs.promises.writeFile(preferencesPath, JSON.stringify(prefs, null, 2), 'utf8');
+      console.log('[WHISPER-DOWNLOAD] Updated preferences.json with whisperModelDownloaded=true');
+    } catch (e) {
+      console.warn('[WHISPER-DOWNLOAD] Failed to update preferences.json:', e);
     }
     
     console.log('[WHISPER-DOWNLOAD] Download complete');
     return { success: true };
   } catch (error) {
     console.error('[WHISPER-DOWNLOAD] Download failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+// Whisper setup handler - spawn ESM script with Node and stream progress
+ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCuda?: boolean } = {}) => {
+  try {
+    const modelName = options.modelName || 'base.en';
+    const useCuda = options.useCuda !== undefined ? String(options.useCuda) : '';
+    const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
+    
+    const { spawn } = await import('child_process');
+
+    // Resolve script path for dev vs packaged
+    const devScriptPath = path.join(process.cwd(), 'scripts', 'whisper-setup.js');
+    // Prefer unpacked in production so Node can execute it directly
+    const prodUnpackedScriptPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'whisper-setup.js');
+    const prodAsarScriptPath = path.join(process.resourcesPath, 'app.asar', 'scripts', 'whisper-setup.js');
+    const scriptPath = isDev
+      ? devScriptPath
+      : (fs.existsSync(prodUnpackedScriptPath) ? prodUnpackedScriptPath : prodAsarScriptPath);
+
+    console.log(`[WHISPER-SETUP] Spawning setup for model: ${modelName}, CUDA: ${useCuda}, scriptPath: ${scriptPath}`);
+
+    // Choose executable: in dev use system node; in prod use Electron as Node runtime
+    const cmd = isDev ? 'node' : process.execPath;
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    if (!isDev) env.ELECTRON_RUN_AS_NODE = '1';
+
+    const args = [scriptPath, modelName];
+    if (useCuda !== '') args.push(useCuda);
+
+    const child = spawn(cmd, args, { cwd: path.dirname(scriptPath), env });
+
+    // Buffer stdout and parse JSON progress messages
+    let stdoutBuf = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      try {
+        const text = chunk.toString();
+        stdoutBuf += text;
+        let idx;
+        while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+          const line = stdoutBuf.slice(0, idx).trim();
+          stdoutBuf = stdoutBuf.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type === 'whisper:setup:progress' && typeof obj.progress === 'number') {
+              evt.sender.send('whisper:setup:progress', obj.progress);
+            } else if (obj.type === 'whisper:setup:signal' && obj.status) {
+              evt.sender.send('whisper:setup:signal', { status: obj.status, error: obj.error });
+            }
+          } catch {
+            // Non-JSON line; ignore
+          }
+        }
+      } catch {}
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      // Forward important stderr as signals? For now, log only.
+      console.log('[WHISPER-SETUP][stderr]', chunk.toString());
+    });
+
+    const exitCode: number = await new Promise((resolve) => {
+      child.on('close', (code) => resolve(code ?? 1));
+      child.on('error', () => resolve(1));
+    });
+
+    if (exitCode === 0) {
+      // Update preferences.json on success
+      const preferencesPath = path.join(DATA_DIR, 'preferences.json');
+      try {
+        let prefs: any = {};
+        if (fs.existsSync(preferencesPath)) {
+          prefs = JSON.parse(await fs.promises.readFile(preferencesPath, 'utf8'));
+        }
+        prefs.whisperModelDownloaded = true;
+        prefs.onboardingComplete = true;
+        await fs.promises.writeFile(preferencesPath, JSON.stringify(prefs, null, 2));
+      } catch (e) {
+        console.warn('[WHISPER-SETUP] Failed updating preferences after setup:', e);
+      }
+      return { success: true, model: modelName };
+    } else {
+      evt.sender.send('whisper:setup:signal', { status: 'failed' });
+      return { success: false, error: `Setup process exited with code ${exitCode}` };
+    }
+  } catch (error) {
+    console.error('[WHISPER-SETUP] Setup failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });

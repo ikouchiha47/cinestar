@@ -1,0 +1,10 @@
+{
+  "onboardingComplete": false,
+  "featuresEnabled": {
+    "images": true,
+    "videos": true,
+    "audio": true
+  },
+  "whisperModelDownloaded": false,
+  "version": 1
+}

@@ -97,28 +97,32 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
 
   const startModelDownload = async () => {
     try {
-      // Listen for progress updates
-      const unsubscribe = window.electronAPI.onWhisperDownloadProgress((progress: number) => {
+      // Listen for setup progress (download + build)
+      const offProgress = window.electronAPI.onWhisperSetupProgress((progress: number) => {
         setDownloadProgress(progress);
       });
-      
-      // Trigger model download via IPC
-      const result = await window.electronAPI.downloadWhisperModel({
-        modelName: 'base.en'
+      // Listen for setup status signals
+      const offSignal = window.electronAPI.onWhisperSetupSignal((data: { status: string; error?: string }) => {
+        if (data.status === 'completed') {
+          setDownloadProgress(100);
+          setTimeout(() => {
+            completeOnboarding();
+          }, 500);
+        } else if (data.status === 'failed') {
+          console.error('[SIMPLIFIED-ONBOARDING] Whisper setup failed:', data.error);
+          // TODO: Show error UI
+        }
       });
 
-      // Clean up listener
-      unsubscribe();
+      // Trigger full setup (download + CMake build)
+      const result = await window.electronAPI.setupWhisper({ modelName: 'base.en' });
 
-      if (result.success) {
-        // Model download handler already updates config.json with modelDownloaded=true
-        setDownloadProgress(100);
-        // Auto-complete after a brief delay to show completion
-        setTimeout(() => {
-          completeOnboarding();
-        }, 1000);
-      } else {
-        console.error('[SIMPLIFIED-ONBOARDING] Model download failed:', result.error);
+      // Clean up listeners
+      offProgress();
+      offSignal();
+
+      if (!result.success) {
+        console.error('[SIMPLIFIED-ONBOARDING] Whisper setup failed (invoke result):', result.error);
         // TODO: Show error UI
       }
     } catch (error) {
@@ -556,7 +560,7 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             transition={{ delay: 0.3, duration: 0.5 }}
             className="text-3xl font-bold text-white mb-4"
           >
-            Downloading AI Model
+            Setting up AI Model
           </motion.h1>
 
           {/* Progress bar */}
@@ -587,10 +591,11 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             transition={{ delay: 0.5, duration: 0.5 }}
             className="text-neutral-400 mb-8"
           >
-            {downloadProgress < 100 
+            {downloadProgress < 70
               ? 'Downloading the AI model for offline transcription...'
-              : 'Download complete! Starting Cinestar...'
-            }
+              : downloadProgress < 100
+                ? 'Building whisper.cpp (CMake)...'
+                : 'Setup complete! Starting Cinestar...'}
           </motion.p>
 
           {/* Download speed simulation */}

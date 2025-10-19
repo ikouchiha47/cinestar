@@ -18,6 +18,11 @@ declare global {
       // Whisper model download
       downloadWhisperModel: (options: { modelName: string }) => Promise<{ success: boolean; error?: string }>;
       onWhisperDownloadProgress: (callback: (progress: number) => void) => () => void;
+
+      // Whisper full setup (download + build)
+      setupWhisper: (options?: { modelName?: string; useCuda?: boolean }) => Promise<{ success: boolean; error?: string }>;
+      onWhisperSetupProgress: (callback: (progress: number) => void) => () => void;
+      onWhisperSetupSignal: (callback: (data: { status: string; error?: string }) => void) => () => void;
     };
     
     mediaAPI: {

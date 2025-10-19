@@ -50,30 +50,18 @@ function App() {
   //   return () => window.removeEventListener('resize', logViewportDimensions);
   // }, []);
   
-  // Check onboarding status - moved to simplified onboarding component
-  // Returns TRUE if onboarding is needed, FALSE if already complete
+  // Onboarding status check for SimplifiedOnboarding
   const checkOnboardingStatus = async (): Promise<boolean> => {
-    // Check for ENV variable to force show onboarding (for development)
-    const forceOnboarding = import.meta.env.VITE_FORCE_ONBOARDING === 'true';
-    
-    if (forceOnboarding) {
-      console.log('[APP] VITE_FORCE_ONBOARDING=true - Showing onboarding flow');
-      return true; // Needs onboarding
-    }
-    
     try {
-      // Check onboarding status from config.json
-      const config = await window.ipcRenderer.invoke('config:get');
-      if (config && config.onboarding) {
-        return !config.onboarding.complete; // Return TRUE if NOT complete (needs onboarding)
-      } else {
-        // If config doesn't exist, show onboarding
-        return true; // Needs onboarding
+      // @ts-ignore exposed by preload
+      const config = await (window as any).ipcRenderer?.invoke('config:get');
+      if (config && config.onboarding && config.onboarding.complete === true) {
+        return false; // onboarding not needed
       }
-    } catch (error) {
-      console.error('[APP] Failed to check onboarding status:', error);
-      // Default to showing onboarding on error
-      return true; // Needs onboarding
+      return true; // needs onboarding
+    } catch (e) {
+      // On error, show onboarding to recover
+      return true;
     }
   };
   type JobInfo = { 
@@ -243,12 +231,12 @@ function App() {
   if (!onboardingComplete) {
     console.log('[APP] Rendering SimplifiedOnboarding component');
     return (
-      <SimplifiedOnboarding 
+      <SimplifiedOnboarding
         onComplete={() => {
           console.log('[APP] onboardingComplete set to true');
           setOnboardingComplete(true);
-        }} 
-        onCheckOnboarding={checkOnboardingStatus} 
+        }}
+        onCheckOnboarding={checkOnboardingStatus}
       />
     );
   }
