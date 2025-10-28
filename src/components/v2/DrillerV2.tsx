@@ -41,6 +41,31 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentSearchIdRef = useRef<string | null>(null);
 
+  // Helper: map unified image search results to MediaT[] (kept isolated for easy removal later)
+  const mapImageResultsToMedia = (images: any[]): MediaT[] => {
+    return images.map((it: any) => {
+      const mime = (it.mimeType || '').toLowerCase();
+      let kind: 'image' | 'video' | 'audio' = 'image';
+      if (mime.startsWith('video/')) kind = 'video';
+      else if (mime.startsWith('audio/')) kind = 'audio';
+      else if (typeof it.type === 'string') {
+        const t = it.type.toLowerCase();
+        if (t.includes('video')) kind = 'video';
+        else if (t.includes('audio')) kind = 'audio';
+      } else if (typeof it.name === 'string') {
+        const n = it.name.toLowerCase();
+        if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
+        else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
+      }
+      return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
+    });
+  };
+
+  // Grouped library state via grouped API (per-type cursors)
+  const [groupedLibrary, setGroupedLibrary] = useState<{ images: MediaT[]; videos: MediaT[]; audio: MediaT[] }>({ images: [], videos: [], audio: [] });
+  const [groupCursors, setGroupCursors] = useState<{ images?: string; videos?: string; audio?: string }>({});
+  const [groupHasMore, setGroupHasMore] = useState<{ images: boolean; videos: boolean; audio: boolean }>({ images: false, videos: false, audio: false });
+
   // Load places from real sources, fall back to demo
   useEffect(() => {
     (async () => {
@@ -70,76 +95,100 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
   }, []);
 
   // Remove demo media; show results only when searching
-  // Initial library load for start page (newest first) - CURSOR PAGINATION
+  // Initial library load for start page (newest first) - CURSOR PAGINATION (grouped)
   useEffect(() => {
     (async () => {
-      console.log('[DRILLER] Starting library load with cursor pagination at:', new Date().toISOString());
+      console.log('[DRILLER] Starting grouped library load with cursor pagination at:', new Date().toISOString());
       try {
-        const res = await window.mediaAPI.getRecentItems({
-          limit: 50,
-          cursor: undefined, // First page
-          orderBy: 'createdAt',
+        const res = await (window.mediaAPI as any).getRecentItemsGrouped({
+          limits: { images: 30, videos: 30, audio: 30 },
+          cursors: {},
+          orderBy: 'modifiedAt',
           orderDirection: 'desc'
         });
-        console.log('[DRILLER] getRecentItems response:', res);
-        if (res?.success && Array.isArray(res.items)) {
-          const items: any[] = res.items;
-          console.log('[UI-FILTER-DEBUG] Raw items from API:', items.length);
-          
-          // Filter out video_segment items - only show parent videos
-          const filteredItems = items.filter((it: any) => {
-            const isVideoSegment = it.type === 'video_segment';
-            if (isVideoSegment) {
-              console.log('[UI-FILTER-DEBUG] Filtering out video segment:', it.name);
-            }
-            return !isVideoSegment;
-          });
-          
-          console.log('[UI-FILTER-DEBUG] After filtering segments:', filteredItems.length);
-          
-          const mapped: MediaT[] = filteredItems.map((it: any) => {
+        console.log('[DRILLER] getRecentItemsGrouped response:', res);
+        if (res?.success && res.results) {
+          const mapItem = (it: any, fallback: 'image'|'video'|'audio'): MediaT => {
             const mime = (it.mimeType || '').toLowerCase();
-            let kind: 'image' | 'video' | 'audio' = 'image';
+            let kind: 'image' | 'video' | 'audio' = fallback;
             if (mime.startsWith('video/')) kind = 'video';
             else if (mime.startsWith('audio/')) kind = 'audio';
+            else if (mime.startsWith('image/')) kind = 'image';
             else if (typeof it.type === 'string') {
               const t = it.type.toLowerCase();
               if (t.includes('video')) kind = 'video';
               else if (t.includes('audio')) kind = 'audio';
+              else if (t.includes('image')) kind = 'image';
             }
-            return {
-              id: String(it.id),
-              placeId: String(it.sourceId || ''),
-              type: kind,
-              name: it.name || 'item',
-              path: it.path,
-              thumb: it.metadata?.thumbnailPath || undefined,
-            } as MediaT;
-          });
-          setLibrary(mapped);
-          setLibraryCursor(res.nextCursor);
-          setLibraryHasMore(res.hasMore || false);
-          console.log('[DRILLER] Library loaded:', mapped.length, 'items, hasMore:', res.hasMore, 'at', new Date().toISOString());
+            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
+          };
+
+          const images: MediaT[] = Array.isArray(res.results.images) ? res.results.images.map((it: any) => mapItem(it, 'image')) : [];
+          const videos: MediaT[] = Array.isArray(res.results.videos) ? res.results.videos
+            .filter((it: any) => (String(it.type || '').toLowerCase() !== 'video_segment'))
+            .map((it: any) => mapItem(it, 'video')) : [];
+          const audio: MediaT[] = Array.isArray(res.results.audio) ? res.results.audio.map((it: any) => mapItem(it, 'audio')) : [];
+
+          setGroupedLibrary({ images, videos, audio });
+          setGroupCursors({ images: res.results.nextCursor?.images, videos: res.results.nextCursor?.videos, audio: res.results.nextCursor?.audio });
+          setGroupHasMore({ images: !!res.results.hasMore?.images, videos: !!res.results.hasMore?.videos, audio: !!res.results.hasMore?.audio });
+          console.log('[DRILLER] Grouped library loaded:', { images: images.length, videos: videos.length, audio: audio.length });
         } else {
-          setLibrary([]);
-          setLibraryCursor(undefined);
-          setLibraryHasMore(false);
-          console.log('[DRILLER] No items found, setting empty library at:', new Date().toISOString());
+          setGroupedLibrary({ images: [], videos: [], audio: [] });
+          setGroupCursors({});
+          setGroupHasMore({ images: false, videos: false, audio: false });
+          console.log('[DRILLER] No grouped items found, setting empty grouped library at:', new Date().toISOString());
         }
       } catch (e) {
-        console.error('[DRILLER] Error loading library:', e, 'at:', new Date().toISOString());
-        setLibrary([]);
-        setLibraryCursor(undefined);
-        setLibraryHasMore(false);
+        console.error('[DRILLER] Error loading grouped library:', e, 'at:', new Date().toISOString());
+        setGroupedLibrary({ images: [], videos: [], audio: [] });
+        setGroupCursors({});
+        setGroupHasMore({ images: false, videos: false, audio: false });
       }
     })();
   }, []);
+
+  // Helper to refresh grouped library (e.g., after scan or indexing finishes)
+  const refreshGroupedLibrary = async () => {
+    try {
+      const res = await (window.mediaAPI as any).getRecentItemsGrouped({
+        limits: { images: 30, videos: 30, audio: 30 },
+        cursors: {},
+        orderBy: 'modifiedAt',
+        orderDirection: 'desc'
+      });
+      if (res?.success && res.results) {
+        const mapItem = (it: any, fallback: 'image'|'video'|'audio'): MediaT => {
+          const mime = (it.mimeType || '').toLowerCase();
+          let kind: 'image' | 'video' | 'audio' = fallback;
+          if (mime.startsWith('video/')) kind = 'video';
+          else if (mime.startsWith('audio/')) kind = 'audio';
+          else if (mime.startsWith('image/')) kind = 'image';
+          else if (typeof it.type === 'string') {
+            const t = it.type.toLowerCase();
+            if (t.includes('video')) kind = 'video';
+            else if (t.includes('audio')) kind = 'audio';
+            else if (t.includes('image')) kind = 'image';
+          }
+          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
+        };
+        const images: MediaT[] = Array.isArray(res.results.images) ? res.results.images.map((it: any) => mapItem(it, 'image')) : [];
+        const videos: MediaT[] = Array.isArray(res.results.videos) ? res.results.videos
+          .filter((it: any) => (String(it.type || '').toLowerCase() !== 'video_segment'))
+          .map((it: any) => mapItem(it, 'video')) : [];
+        const audio: MediaT[] = Array.isArray(res.results.audio) ? res.results.audio.map((it: any) => mapItem(it, 'audio')) : [];
+        setGroupedLibrary({ images, videos, audio });
+        setGroupCursors({ images: res.results.nextCursor?.images, videos: res.results.nextCursor?.videos, audio: res.results.nextCursor?.audio });
+        setGroupHasMore({ images: !!res.results.hasMore?.images, videos: !!res.results.hasMore?.videos, audio: !!res.results.hasMore?.audio });
+      }
+    } catch {}
+  };
 
   // Refresh library when selected place changes - CURSOR PAGINATION
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.mediaAPI.getRecentItems({
+        const res = await (window.mediaAPI as any).getRecentItems({
           sourceIds: selectedPlace ? [selectedPlace] : undefined,
           limit: 50,
           cursor: undefined,
@@ -185,27 +234,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       // Refresh sources and items immediately
       (async () => {
         try {
-          const res = await (window.mediaAPI as any).getRecentItems({
-            limit: 50,
-            cursor: undefined,
-            orderBy: 'createdAt',
-            orderDirection: 'desc'
-          });
-          
-          if (res?.success && Array.isArray(res.items)) {
-            const items: any[] = res.items;
-            const displayableItems = items.filter((it: any) => (it.type || '').toLowerCase() !== 'video_segment');
-            
-            const mapped: MediaT[] = displayableItems.map((it: any) => {
-              const kind: MediaT['type'] = (it.type === 'video' || it.type === 'video_segment') ? 'video' : (it.type === 'audio' ? 'audio' : 'image');
-              return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
-            });
-            
-            setLibrary(mapped);
-            setLibraryCursor(res.nextCursor);
-            setLibraryHasMore(res.hasMore || false);
-            console.log(`[DRILLER] Refreshed library: ${mapped.length} items`);
-          }
+          await refreshGroupedLibrary();
+          console.log(`[DRILLER] Refreshed grouped library after scan`);
         } catch (error) {
           console.error('[DRILLER] Failed to refresh after scan:', error);
         }
@@ -239,76 +269,13 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         const st = await window.mediaAPI.getIndexingStatus();
         const active = !!(st?.success && Array.isArray(st.activeJobs) && st.activeJobs.length > 0);
         if (!active && prevActive && mounted) {
-          // Jobs just finished — refresh sources and items ONCE
           try {
-            const [sourcesRes, itemsRes] = await Promise.all([
-              window.mediaAPI.getSources(),
-              window.mediaAPI.getRecentItems({ limit: 50, cursor: undefined, orderBy: 'createdAt', orderDirection: 'desc' })
-            ]);
-            
+            const sourcesRes = await window.mediaAPI.getSources();
             if (sourcesRes.success && Array.isArray(sourcesRes.sources)) {
               const mapped: Place[] = sourcesRes.sources.map((s) => ({ id: s.id, kind: 'local', label: s.name, path: s.path || '', pinned: false }));
               setPlaces(mapped);
             }
-            
-            if (itemsRes.success && Array.isArray(itemsRes.items)) {
-              console.log(`[UI-MAPPING-DEBUG] Processing ${itemsRes.items.length} items for UI display`);
-              
-              // Filter out video segments - they should only be searchable, not displayed as separate cards
-              const displayableItems = itemsRes.items.filter((it: any) => {
-                const itemType = (it.type || '').toLowerCase();
-                const isVideoSegment = itemType === 'video_segment';
-                if (isVideoSegment) {
-                  console.log(`[UI-FILTER-DEBUG] Excluding video segment from display: ${it.name}`);
-                }
-                return !isVideoSegment;
-              });
-              
-              console.log(`[UI-FILTER-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
-              
-              const mapped: MediaT[] = displayableItems.map((it: any, index: number) => {
-                const mime = (it.mimeType || '').toLowerCase();
-                let kind: 'image' | 'video' | 'audio' = 'image';
-                if (mime.startsWith('video/')) kind = 'video';
-                else if (mime.startsWith('audio/')) kind = 'audio';
-                else if (typeof it.type === 'string') {
-                  const t = it.type.toLowerCase();
-                  if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
-                  else if (t.includes('audio')) kind = 'audio';
-                }
-                
-                const mappedItem = { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path } as MediaT;
-                
-                // Log video items specifically
-                if (kind === 'video') {
-                  console.log(`[UI-MAPPING-DEBUG] Video item ${index + 1}:`, {
-                    originalItem: {
-                      id: it.id,
-                      name: it.name,
-                      type: it.type,
-                      path: it.path,
-                      sourceId: it.sourceId
-                    },
-                    mappedItem: mappedItem
-                  });
-                }
-                
-                return mappedItem;
-              });
-              
-              // Final check for duplicates in UI
-              const videoItems = mapped.filter(item => item.type === 'video');
-              if (videoItems.length > 1) {
-                console.warn(`[UI-MAPPING-DEBUG] ⚠️ Multiple video items will be displayed: ${videoItems.length}`);
-                videoItems.forEach((item, index) => {
-                  console.log(`[UI-MAPPING-DEBUG] UI Video ${index + 1}: ${item.name} (${item.id})`);
-                });
-              }
-              
-              setLibrary(mapped);
-              setLibraryCursor(itemsRes.nextCursor);
-              setLibraryHasMore(itemsRes.hasMore || false);
-            }
+            await refreshGroupedLibrary();
           } catch {}
         }
         prevActive = active;
@@ -356,22 +323,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
         // Map images (media/vector)
         const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];
-        const mediaItems: MediaT[] = images.map((it: any) => {
-          const mime = (it.mimeType || '').toLowerCase();
-          let kind: 'image' | 'video' | 'audio' = 'image';
-          if (mime.startsWith('video/')) kind = 'video';
-          else if (mime.startsWith('audio/')) kind = 'audio';
-          else if (typeof it.type === 'string') {
-            const t = it.type.toLowerCase();
-            if (t.includes('video')) kind = 'video';
-            else if (t.includes('audio')) kind = 'audio';
-          } else if (typeof it.name === 'string') {
-            const n = it.name.toLowerCase();
-            if (n.match(/\.(mp4|mov|mkv|webm|avi)$/)) kind = 'video';
-            else if (n.match(/\.(mp3|wav|flac|aac|m4a)$/)) kind = 'audio';
-          }
-          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
-        });
+        const mediaItems: MediaT[] = mapImageResultsToMedia(images);
 
         // Map videos (video DB segments -> flattened video files)
         const videos: any[] = Array.isArray(res?.results?.videos) ? res.results.videos : [];
@@ -462,15 +414,24 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
   const grouped = useMemo(
     () => {
-      const result = {
-        image: scopedMedia.filter((m) => m.type === 'image'),
-        video: scopedMedia.filter((m) => m.type === 'video'),
-        audio: scopedMedia.filter((m) => m.type === 'audio'),
+      const hasQuery = q.trim().length > 0;
+      const hasScope = !!selectedPlace || scope === 's3' || scope === 'drive' || scope === 'folders';
+      if (hasQuery || hasScope) {
+        const result = {
+          image: scopedMedia.filter((m) => m.type === 'image'),
+          video: scopedMedia.filter((m) => m.type === 'video'),
+          audio: scopedMedia.filter((m) => m.type === 'audio'),
+        };
+        return result;
+      }
+      // Default: use grouped library fetched from API
+      return {
+        image: groupedLibrary.images,
+        video: groupedLibrary.videos,
+        audio: groupedLibrary.audio,
       };
-      
-      return result;
     },
-    [scopedMedia, q]
+    [scopedMedia, q, selectedPlace, scope, groupedLibrary]
   );
 
   const pinned = useMemo(() => places.filter((p) => p.pinned).slice(0, 3), [places]);
@@ -862,41 +823,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                       }));
                       setPlaces(mapped);
                     }
-                    // Also refresh items so the new video shows up in the Videos group immediately
-                    try {
-                      const itemsRes = await window.mediaAPI.getRecentItems({ limit: 50, cursor: undefined, orderBy: 'createdAt', orderDirection: 'desc' });
-                      if (itemsRes?.success && Array.isArray(itemsRes.items)) {
-                        console.log(`[UPLOAD-CALLBACK-DEBUG] Processing ${itemsRes.items.length} items after upload`);
-                        
-                        // Filter out video segments - same logic as polling
-                        const displayableItems = itemsRes.items.filter((it: any) => {
-                          const itemType = (it.type || '').toLowerCase();
-                          const isVideoSegment = itemType === 'video_segment';
-                          if (isVideoSegment) {
-                            console.log(`[UPLOAD-CALLBACK-DEBUG] Excluding video segment: ${it.name}`);
-                          }
-                          return !isVideoSegment;
-                        });
-                        
-                        console.log(`[UPLOAD-CALLBACK-DEBUG] Filtered ${itemsRes.items.length} items down to ${displayableItems.length} displayable items`);
-                        
-                        const mappedItems: MediaT[] = displayableItems.map((it: any) => {
-                          const mime = (it.mimeType || '').toLowerCase();
-                          let kind: 'image' | 'video' | 'audio' = 'image';
-                          if (mime.startsWith('video/')) kind = 'video';
-                          else if (mime.startsWith('audio/')) kind = 'audio';
-                          else if (typeof it.type === 'string') {
-                            const t = it.type.toLowerCase();
-                            if (t === 'video') kind = 'video'; // Only exact 'video' type, not 'video_segment'
-                            else if (t.includes('audio')) kind = 'audio';
-                          }
-                          return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
-                        });
-                        setLibrary(mappedItems);
-                        setLibraryCursor(itemsRes.nextCursor);
-                        setLibraryHasMore(itemsRes.hasMore || false);
-                      }
-                    } catch {}
+                    // Also refresh grouped items so the new video shows up in the Videos group immediately
+                    try { await refreshGroupedLibrary(); } catch {}
                   } catch (error) {
                     console.error('Failed to refresh sources:', error);
                   }

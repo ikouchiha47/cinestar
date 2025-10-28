@@ -1,5 +1,7 @@
 import { VideoFile, VideoSegment, SearchResult, VideoProcessingJob, VideoSearchQuery } from '../types/video';
 import { VideoDatabase } from '../core/video-database';
+import { SqliteJobsDatabase } from '../core/sqlite-jobs-database';
+import { VideoJobAdapter } from '../core/video-job-adapter';
 import { EmbeddingService } from '../core/embedding-service';
 import { VideoPipeline } from '../core/video-pipeline';
 // import { getVideoDuration } from '../utils/video-utils';
@@ -13,6 +15,8 @@ import fs from 'fs';
 export class VideoMediaAPI {
   private static instance: VideoMediaAPI;
   private videoDb: VideoDatabase;
+  private jobsDb?: SqliteJobsDatabase;
+  private videoJobAdapter?: VideoJobAdapter;
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
   private initialized = false;
@@ -31,6 +35,16 @@ export class VideoMediaAPI {
       VideoMediaAPI.instance = new VideoMediaAPI();
     }
     return VideoMediaAPI.instance;
+  }
+
+  /**
+   * Set the jobs database for unified job tracking
+   * Must be called before initialize() to enable jobs.db integration
+   */
+  setJobsDatabase(jobsDb: SqliteJobsDatabase): void {
+    this.jobsDb = jobsDb;
+    this.videoJobAdapter = new VideoJobAdapter(jobsDb, this.videoDb);
+    console.log('[VIDEO-MEDIA-API] ✅ VideoJobAdapter configured for job tracking');
   }
 
   /**
@@ -174,7 +188,13 @@ export class VideoMediaAPI {
         if (addResult.success && addResult.id) {
           try {
             console.log(`[VIDEO-API] Creating video_files entry for: ${addResult.id}`);
-            await this.createVideoFileEntry(addResult.id, videoPath, fileName, fs.statSync(videoPath).size);
+            
+            // Get video duration before creating entry
+            const { getVideoDuration } = await import('../core/video-processing');
+            const duration = await getVideoDuration(videoPath);
+            console.log(`[VIDEO-API] Video duration: ${duration}s`);
+            
+            await this.createVideoFileEntry(addResult.id, videoPath, fileName, fs.statSync(videoPath).size, duration);
             console.log(`[VIDEO-API] ✅ Video_files entry created for: ${addResult.id}`);
           } catch (videoFileError) {
             console.warn(`[VIDEO-API] Failed to create video_files entry:`, videoFileError);
@@ -198,14 +218,11 @@ export class VideoMediaAPI {
       }
 
       // Create job in database for background processing (Pass 1 scheduled)
-      const jobId = await this.videoDb.createJob({
+      const jobId = await this.videoJobAdapter!.createVideoJob({
         videoPath,
         fileName,
-        status: 'scheduled',
         refinementPass: 1,
-        threshold: 0.8,
-        progress: 0,
-        scheduledAt: new Date(Date.now() + (5 + Math.random() * 5) * 1000) // Schedule Pass 1 for 5-10 seconds from now (UTC)
+        threshold: 0.8
       });
 
       console.log(`[VIDEO-API] Job ${jobId} submitted for background processing`);
@@ -371,7 +388,7 @@ export class VideoMediaAPI {
           console.log(`[VIDEO-JOB-RECOVERY] Resetting stalled video job: ${job.id} for video: ${job.videoPath}`);
           
           // Reset job to pending status
-          await this.videoDb.updateJob(job.id, { status: 'pending', progress: 0 });
+          await this.videoJobAdapter!.updateVideoJob(job.id, { status: 'pending', progress: 0 });
           
           // Restart the job
           try {
@@ -379,7 +396,7 @@ export class VideoMediaAPI {
             console.log(`[VIDEO-JOB-RECOVERY] Restarted video job: ${newJobId} for ${job.videoPath}`);
           } catch (error) {
             console.error(`[VIDEO-JOB-RECOVERY] Failed to restart video job for ${job.videoPath}:`, error);
-            await this.videoDb.updateJob(job.id, { status: 'failed', error: String(error) });
+            await this.videoJobAdapter!.updateVideoJob(job.id, { status: 'failed', error: String(error) });
           }
         }
       } else {
@@ -501,7 +518,7 @@ export class VideoMediaAPI {
    * Create video_files entry in video database to maintain referential integrity
    * This ensures both main database and video database have the parent video record
    */
-  private async createVideoFileEntry(videoId: string, videoPath: string, fileName: string, fileSize: number): Promise<void> {
+  private async createVideoFileEntry(videoId: string, videoPath: string, fileName: string, fileSize: number, duration: number = 0): Promise<void> {
     try {
       // Direct SQL insert to use the specific ID from main database
       const stmt = (this.videoDb as any).db.prepare(`
@@ -518,7 +535,7 @@ export class VideoMediaAPI {
         videoPath,
         fileName,
         fileSize,
-        0, // duration - will be updated during processing
+        duration, // duration - now passed as parameter
         null, null, null, null, null, // width, height, frameRate, bitrate, codec
         0, // totalSegments
         'pending', // processingStatus

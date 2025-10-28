@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
-import fs from 'fs';
+import { promises as fs } from 'fs';
 import { spawn } from 'child_process';
 import { VideoDatabase } from '../video-database';
+import { SqliteJobsDatabase } from '../sqlite-jobs-database';
 
 export interface ProcessingBatch {
   id: string;
@@ -31,13 +32,16 @@ export interface ProcessingBatch {
 export interface TranscriptionSegment {
   id: string;
   batchId: string;
+  segmentIndex: number;
   startTime: number;
   endTime: number;
   text: string;
   confidence?: number;
   speaker?: string;
   language?: string;
-  metadata?: any;
+  embedding?: number[];
+  metadata?: string;  // JSON string in DB
+  createdAt?: Date;
 }
 
 export interface BatchKeyframe {
@@ -54,13 +58,36 @@ export interface BatchKeyframe {
 
 export class BatchProcessor {
   private videoDb: VideoDatabase;
+  private jobsDb?: SqliteJobsDatabase;
+  private jobRunId?: string;
   private tempDir: string;
   private batchDuration: number;
 
-  constructor(videoDb: VideoDatabase, tempDir: string = '/tmp/drillbit_batches', batchDuration: number = 300) {
+  constructor(
+    videoDb: VideoDatabase,
+    tempDir: string = '/tmp/drillbit_batches',
+    batchDuration: number = 300,
+    jobsDb?: SqliteJobsDatabase,
+    jobRunId?: string
+  ) {
     this.videoDb = videoDb;
+    this.jobsDb = jobsDb;
+    this.jobRunId = jobRunId;
     this.tempDir = tempDir;
     this.batchDuration = batchDuration; // 5 minutes default
+    
+    if (jobsDb && jobRunId) {
+      console.log('[BATCH-PROCESSOR] ✅ Using jobs.db for batch storage (job_run_id:', jobRunId, ')');
+    } else {
+      console.log('[BATCH-PROCESSOR] ⚠️ Using legacy video-rag.db for batch storage');
+    }
+  }
+
+  /**
+   * Get the appropriate database for batch operations
+   */
+  private getDb(): Database.Database {
+    return this.jobsDb?.db || this.videoDb.database;
   }
 
   /**
@@ -145,42 +172,81 @@ export class BatchProcessor {
   }
 
   /**
-   * Store batch in database
+   * Store batch in database (jobs.db if available, otherwise video-rag.db)
    */
   async storeBatch(batch: ProcessingBatch): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
-      INSERT OR REPLACE INTO processing_batches (
-        id, video_id, batch_index, start_time, end_time, audio_path,
-        transcription, embedding, visual_captions, scene_context,
-        status, transcription_confidence, visual_confidence, scene_coherence
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const db = this.jobsDb?.db || this.videoDb.database;
+    const tableName = 'processing_batches';
+    
+    // For jobs.db, include job_run_id
+    if (this.jobsDb && this.jobRunId) {
+      const stmt = db.prepare(`
+        INSERT OR REPLACE INTO ${tableName} (
+          id, job_run_id, video_id, batch_index, start_time, end_time, duration, audio_path,
+          transcription, embedding, visual_captions, scene_context,
+          status, transcription_confidence, visual_confidence, scene_coherence,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    stmt.run(
-      batch.id,
-      batch.videoId,
-      batch.batchIndex,
-      batch.startTime,
-      batch.endTime,
-      batch.audioPath,
-      batch.transcription,
-      batch.embedding ? Buffer.from(new Float32Array(batch.embedding).buffer) : null,
-      batch.visualCaptions ? JSON.stringify(batch.visualCaptions) : null,
-      batch.sceneContext ? JSON.stringify(batch.sceneContext) : null,
-      batch.status,
-      batch.transcriptionConfidence,
-      batch.visualConfidence,
-      batch.sceneCoherence
-    );
+      stmt.run(
+        batch.id,
+        this.jobRunId,
+        batch.videoId,
+        batch.batchIndex,
+        batch.startTime,
+        batch.endTime,
+        batch.duration,
+        batch.audioPath || null,
+        batch.transcription || null,
+        batch.embedding ? Buffer.from(new Float32Array(batch.embedding).buffer) : null,
+        batch.visualCaptions ? JSON.stringify(batch.visualCaptions) : null,
+        batch.sceneContext ? JSON.stringify(batch.sceneContext) : null,
+        batch.status,
+        batch.transcriptionConfidence || null,
+        batch.visualConfidence || null,
+        batch.sceneCoherence || null,
+        batch.createdAt.toISOString(),
+        batch.updatedAt ? batch.updatedAt.toISOString() : null
+      );
+    } else {
+      // Legacy: video-rag.db (no job_run_id column)
+      const stmt = db.prepare(`
+        INSERT OR REPLACE INTO ${tableName} (
+          id, video_id, batch_index, start_time, end_time, duration, audio_path,
+          transcription, embedding, visual_captions, scene_context,
+          status, transcription_confidence, visual_confidence, scene_coherence,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
-    console.log(`[BATCH-PROCESSOR] Stored batch ${batch.id} in database`);
+      stmt.run(
+        batch.id,
+        batch.videoId,
+        batch.batchIndex,
+        batch.startTime,
+        batch.endTime,
+        batch.duration,
+        batch.audioPath || null,
+        batch.transcription || null,
+        batch.embedding ? Buffer.from(new Float32Array(batch.embedding).buffer) : null,
+        batch.visualCaptions ? JSON.stringify(batch.visualCaptions) : null,
+        batch.sceneContext ? JSON.stringify(batch.sceneContext) : null,
+        batch.status,
+        batch.transcriptionConfidence || null,
+        batch.visualConfidence || null,
+        batch.sceneCoherence || null,
+        batch.createdAt.toISOString(),
+        batch.updatedAt ? batch.updatedAt.toISOString() : null
+      );
+    }
   }
 
   /**
    * Update batch with transcription results
    */
   async updateBatchTranscription(batchId: string, transcription: string, embedding: number[], confidence?: number): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       UPDATE processing_batches 
       SET transcription = ?, embedding = ?, transcription_confidence = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -202,7 +268,7 @@ export class BatchProcessor {
   async storeTranscriptionSegments(batchId: string, segments: any[]): Promise<void> {
     if (!segments || segments.length === 0) return;
 
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       INSERT INTO transcription_segments (
         id, batch_id, segment_index, start_time, end_time, text, confidence
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -230,7 +296,7 @@ export class BatchProcessor {
    * Update batch status
    */
   async updateBatchStatus(batchId: string, status: ProcessingBatch['status']): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       UPDATE processing_batches 
       SET status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -258,7 +324,7 @@ export class BatchProcessor {
     
     try {
       // IDEMPOTENCY: Check if batch already exists for same video and time range
-      const existingBatch = this.videoDb.database.prepare(`
+      const existingBatch = this.getDb().prepare(`
         SELECT id FROM processing_batches 
         WHERE video_id = ? AND start_time = ? AND end_time = ?
       `).get(batch.video_id, batch.start_time, batch.end_time) as {id: string} | undefined;
@@ -268,25 +334,50 @@ export class BatchProcessor {
         return existingBatch.id;
       }
 
-      const stmt = this.videoDb.database.prepare(`
-        INSERT INTO processing_batches (
-          id, video_id, batch_index, batch_type, start_time, end_time, duration,
-          transcription, embedding, status, created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'audio_only', CURRENT_TIMESTAMP)
-      `);
-      
-      stmt.run(
-        batch.id,
-        batch.video_id,
-        batch.batch_index,
-        batch.batch_type,
-        batch.start_time,
-        batch.end_time,
-        batch.duration,
-        batch.transcription,
-        batch.embedding
-      );
+      // For jobs.db, include job_run_id
+      if (this.jobsDb && this.jobRunId) {
+        const stmt = this.getDb().prepare(`
+          INSERT INTO processing_batches (
+            id, job_run_id, video_id, batch_index, batch_type, start_time, end_time, duration,
+            transcription, embedding, status, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'audio_only', CURRENT_TIMESTAMP)
+        `);
+        
+        stmt.run(
+          batch.id,
+          this.jobRunId,
+          batch.video_id,
+          batch.batch_index,
+          batch.batch_type,
+          batch.start_time,
+          batch.end_time,
+          batch.duration,
+          batch.transcription,
+          batch.embedding
+        );
+      } else {
+        // Legacy: video-rag.db (no job_run_id column)
+        const stmt = this.getDb().prepare(`
+          INSERT INTO processing_batches (
+            id, video_id, batch_index, batch_type, start_time, end_time, duration,
+            transcription, embedding, status, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'audio_only', CURRENT_TIMESTAMP)
+        `);
+        
+        stmt.run(
+          batch.id,
+          batch.video_id,
+          batch.batch_index,
+          batch.batch_type,
+          batch.start_time,
+          batch.end_time,
+          batch.duration,
+          batch.transcription,
+          batch.embedding
+        );
+      }
       
       console.log(`[BATCH-PROCESSOR] ✅ Inserted new batch record with ID: ${batch.id}`);
       return batch.id;
@@ -301,16 +392,31 @@ export class BatchProcessor {
    */
   async getBatchesForVideo(videoId: string, batchType?: string): Promise<ProcessingBatch[]> {
     console.log(`[BATCH-PROCESSOR] Getting batches for video ${videoId}, type ${batchType || 'all'}`);
-    console.log(`[BATCH-PROCESSOR] Database path: ${(this.videoDb as any).dbPath || 'unknown'}`);
+    console.log(`[BATCH-PROCESSOR] Using ${this.jobsDb ? 'jobs.db' : 'video-rag.db'}`);
     
     try {
-      // Use VideoDatabase to query processing_batches table (migration 014)
+      // NEW SYSTEM (jobs.db): Query by job_run_id
+      // The videoId parameter is actually the jobId in the new system
+      if (this.jobsDb && this.jobRunId) {
+        console.log(`[BATCH-PROCESSOR] Querying jobs.db by job_run_id = ${videoId}`);
+        const query = batchType 
+          ? `SELECT * FROM processing_batches WHERE job_run_id = ? AND batch_type = ? ORDER BY start_time`
+          : `SELECT * FROM processing_batches WHERE job_run_id = ? ORDER BY start_time`;
+        
+        const params = batchType ? [videoId, batchType] : [videoId];
+        const rows = this.getDb().prepare(query).all(...params) as any[];
+        console.log(`[BATCH-PROCESSOR] Found ${rows.length} batches in jobs.db`);
+        return rows.map(row => this.mapRowToBatch(row));
+      }
+      
+      // LEGACY SYSTEM (video-rag.db): Query by video_id
+      console.log(`[BATCH-PROCESSOR] Querying video-rag.db by video_id = ${videoId}`);
       const query = batchType 
         ? `SELECT * FROM processing_batches WHERE video_id = ? AND batch_type = ? ORDER BY start_time`
         : `SELECT * FROM processing_batches WHERE video_id = ? ORDER BY start_time`;
       
       const params = batchType ? [videoId, batchType] : [videoId];
-      const rows = this.videoDb.database.prepare(query).all(...params) as any[];
+      const rows = this.getDb().prepare(query).all(...params) as any[];
       
       console.log(`[BATCH-PROCESSOR] Found ${rows.length} batches for video ${videoId}`);
       
@@ -337,7 +443,7 @@ export class BatchProcessor {
    * Get batch by ID
    */
   async getBatch(batchId: string): Promise<ProcessingBatch | null> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       SELECT * FROM processing_batches WHERE id = ?
     `);
 
@@ -350,12 +456,12 @@ export class BatchProcessor {
    */
   async getSearchableBatches(videoId?: string): Promise<ProcessingBatch[]> {
     const stmt = videoId 
-      ? this.videoDb.database.prepare(`
+      ? this.getDb().prepare(`
           SELECT * FROM processing_batches 
           WHERE video_id = ? AND embedding IS NOT NULL 
           ORDER BY batch_index
         `)
-      : this.videoDb.database.prepare(`
+      : this.getDb().prepare(`
           SELECT * FROM processing_batches 
           WHERE embedding IS NOT NULL 
           ORDER BY video_id, batch_index
@@ -383,15 +489,17 @@ export class BatchProcessor {
     }
   }
 
-  /**
-   * Search batches using semantic similarity
-   */
+  // DEPRECATED: These search methods are not used in production.
+  // Production search uses av-modality-vec-database.ts with sqlite-vec for performance.
+  // Keeping commented for reference in case single-video batch search is needed.
+  
+  /*
   async searchBatches(queryEmbedding: number[], limit: number = 10): Promise<Array<{
     batch: ProcessingBatch;
     similarity: number;
     timeRange: string;
   }>> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       SELECT 
         pb.*,
         v.file_path as video_path,
@@ -408,7 +516,6 @@ export class BatchProcessor {
     for (const row of rows) {
       if (!row.embedding) continue;
 
-      // Calculate cosine similarity
       const batchEmbedding = Array.from(new Float32Array(row.embedding.buffer));
       const similarity = this.cosineSimilarity(queryEmbedding, batchEmbedding);
 
@@ -422,15 +529,11 @@ export class BatchProcessor {
       });
     }
 
-    // Sort by similarity and return top results
     return results
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, limit);
   }
 
-  /**
-   * Search transcription segments with precise timing
-   */
   async searchSegments(queryEmbedding: number[], limit: number = 20): Promise<Array<{
     segment: TranscriptionSegment;
     batch: ProcessingBatch;
@@ -439,7 +542,7 @@ export class BatchProcessor {
     videoPath: string;
     videoName: string;
   }>> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       SELECT 
         ts.*,
         pb.video_id,
@@ -469,7 +572,6 @@ export class BatchProcessor {
     for (const row of rows) {
       if (!row.embedding) continue;
 
-      // Calculate cosine similarity
       const segmentEmbedding = Array.from(new Float32Array(row.embedding.buffer));
       const similarity = this.cosineSimilarity(queryEmbedding, segmentEmbedding);
 
@@ -491,7 +593,7 @@ export class BatchProcessor {
         startTime: row.batch_start,
         endTime: row.batch_end,
         transcription: row.batch_transcription,
-        status: 'audio_only' // Simplified for search results
+        status: 'audio_only'
       };
 
       const timeRange = `${this.formatTime(segment.startTime)}-${this.formatTime(segment.endTime)}`;
@@ -506,15 +608,11 @@ export class BatchProcessor {
       });
     }
 
-    // Sort by similarity and return top results
     return results
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, limit);
   }
 
-  /**
-   * Calculate cosine similarity between two vectors
-   */
   private cosineSimilarity(a: number[], b: number[]): number {
     if (a.length !== b.length) return 0;
 
@@ -528,10 +626,9 @@ export class BatchProcessor {
       normB += b[i] * b[i];
     }
 
-    if (normA === 0 || normB === 0) return 0;
-
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
+  */
 
   /**
    * Format time in MM:SS format
@@ -624,11 +721,11 @@ export class BatchProcessor {
   /**
    * Store batch keyframe in database
    */
-  private async storeBatchKeyframe(keyframe: BatchKeyframe): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+  async storeBatchKeyframe(keyframe: BatchKeyframe): Promise<void> {
+    const stmt = this.getDb().prepare(`
       INSERT INTO batch_keyframes (
-        id, batch_id, keyframe_index, timestamp, image_path
-      ) VALUES (?, ?, ?, ?, ?)
+        id, batch_id, keyframe_index, timestamp, image_path, created_at
+      ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `);
 
     stmt.run(
@@ -644,7 +741,7 @@ export class BatchProcessor {
    * Get keyframes for a batch
    */
   async getBatchKeyframes(batchId: string): Promise<BatchKeyframe[]> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       SELECT * FROM batch_keyframes 
       WHERE batch_id = ? 
       ORDER BY keyframe_index
@@ -666,7 +763,7 @@ export class BatchProcessor {
    * Update batch keyframe with caption
    */
   async updateKeyframeCaption(keyframeId: string, caption: string, confidence?: number): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       UPDATE batch_keyframes 
       SET caption = ?, caption_confidence = ?
       WHERE id = ?
@@ -680,7 +777,7 @@ export class BatchProcessor {
    * Update batch with visual data (keyframes + captions)
    */
   async updateBatchVisualData(batchId: string, visualCaptions: string[], visualConfidence?: number): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       UPDATE processing_batches 
       SET visual_captions = ?, visual_confidence = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -699,7 +796,7 @@ export class BatchProcessor {
    * Update batch with scene reconstruction
    */
   async updateBatchSceneReconstruction(batchId: string, sceneContext: any, sceneCoherence?: number): Promise<void> {
-    const stmt = this.videoDb.database.prepare(`
+    const stmt = this.getDb().prepare(`
       UPDATE processing_batches 
       SET scene_context = ?, scene_coherence = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?

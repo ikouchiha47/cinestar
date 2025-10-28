@@ -39,16 +39,12 @@ export class OllamaCaptioningService implements CaptioningService {
 
     // Build payload with plain base64 (no data URI), JPEG only
     const base64 = imageBuffer.toString('base64');
-    const defaultPrompt = `Describe this image in details in a structured format:
-
-**Scene:** [Overall setting, time of day, lighting, atmosphere]
-**Objects:** [List main objects, people, animals visible]
-**Actions:** [What's happening, activities, movements]
-**Tags:** [Keywords for search: colors, mood, style, location type]`;
+    // CRITICAL: moondream:v2 requires very simple prompts - complex structured prompts return empty responses
+    const defaultPrompt = options.prompt || 'Describe this image in detail.';
 
     const payload = {
       model: this.model,
-      prompt: options.prompt || defaultPrompt,
+      prompt: defaultPrompt,
       images: [base64],
       stream: false
     } as any;
@@ -71,6 +67,18 @@ export class OllamaCaptioningService implements CaptioningService {
       }
 
       const result = await response.json();
+      console.log(`[OLLAMA-CAPTIONING-DEBUG] Raw response:`, {
+        hasResponse: !!result.response,
+        responseLength: result.response?.length || 0,
+        responsePreview: result.response?.substring(0, 100) || '(empty)',
+        model: result.model,
+        evalCount: result.eval_count
+      });
+      
+      if (!result.response || result.response.trim().length === 0) {
+        console.warn(`[OLLAMA-CAPTIONING-WARN] Empty response from Ollama for model ${this.model}`);
+      }
+      
       return {
         caption: result.response || '',
         confidence: 1.0,

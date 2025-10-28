@@ -12,7 +12,9 @@
     "dist",
     "dist-electron",
     "migrations_flat",
-    "scripts"
+    "scripts",
+    "migrations_scripts",
+    "config.template.json"
   ],
   "asarUnpack": [
     "node_modules/sharp/**/*",
@@ -23,7 +25,8 @@
     "node_modules/better-sqlite3/**/*",
     "node_modules/nodejs-whisper/**/*",
     "scripts/**/*",
-    "migrations_flat/**/*"
+    "migrations_flat/**/*",
+    "migrations_scripts/**/*"
   ],
   "mac": {
     "target": [

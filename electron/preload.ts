@@ -81,6 +81,12 @@ contextBridge.exposeInMainWorld('mediaAPI', {
     orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
     orderDirection?: 'asc' | 'desc';
   }) => ipcRenderer.invoke('media:getRecentItems', params),
+  getRecentItemsGrouped: (params?: {
+    limits?: { images?: number; videos?: number; audio?: number };
+    cursors?: { images?: string; videos?: string; audio?: string };
+    orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+    orderDirection?: 'asc' | 'desc';
+  }) => ipcRenderer.invoke('media:getRecentItemsGrouped', params),
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),

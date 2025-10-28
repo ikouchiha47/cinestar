@@ -574,17 +574,8 @@ export class SqliteMainDatabase {
     this.db.prepare(`UPDATE indexing_jobs SET ${sets.join(', ')} WHERE id=?`).run(...vals);
   }
 
-  async getPendingImageJobs(limit: number): Promise<any[]> {
-    return this.db.prepare(`
-      SELECT id, source_id, file_path, file_name, file_size, status, retry_count
-      FROM indexing_jobs
-      WHERE job_type = 'image_processing'
-        AND status = 'pending'
-        AND retry_count < 3
-      ORDER BY priority DESC, created_at ASC
-      LIMIT ?
-    `).all(limit) as any[];
-  }
+  // NOTE: getPendingImageJobs moved to ImageJobCoordinator
+  // The coordinator now handles atomic job assignment to prevent race conditions
 
   async getItemIdByPath(filePath: string): Promise<string | null> {
     const row = this.db.prepare('SELECT id FROM media_items WHERE path = ?').get(filePath) as any;

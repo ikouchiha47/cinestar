@@ -256,7 +256,7 @@ export class VideoDatabase {
   }
 
   async getSegmentCount(videoId: string): Promise<number> {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM video_segments WHERE video_id = ?');
+    const stmt = this.db.prepare('SELECT COUNT(video_id) as count FROM video_segments WHERE video_id = ?');
     const result = stmt.get(videoId) as any;
     return result.count;
   }

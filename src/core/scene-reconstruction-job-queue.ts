@@ -207,7 +207,7 @@ export class SceneReconstructionJobQueue extends EventEmitter {
   }
 
   getActiveJobCount(jobType: 'coarse' | 'fine'): number {
-    const stmt = this.db.prepare('SELECT COUNT(*) as count FROM scene_reconstruction_jobs WHERE job_type = ? AND status = ?');
+    const stmt = this.db.prepare('SELECT COUNT(1) as count FROM scene_reconstruction_jobs WHERE job_type = ? AND status = ?');
     const result = stmt.get(jobType, 'processing') as {count: number};
     return result.count;
   }
@@ -217,7 +217,7 @@ export class SceneReconstructionJobQueue extends EventEmitter {
       SELECT 
         job_type,
         status,
-        COUNT(*) as count
+        COUNT(1) as count
       FROM scene_reconstruction_jobs
       GROUP BY job_type, status
     `);

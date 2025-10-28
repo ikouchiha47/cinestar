@@ -24,9 +24,38 @@ function App() {
   const [activeJobs, setActiveJobs] = useState<string[]>([]);
   const [indexLogs, setIndexLogs] = useState<string[]>([]);
   const logsEndRef = useRef<HTMLDivElement | null>(null);
+  const [migVisible, setMigVisible] = useState<boolean>(false);
+  const [migPhase, setMigPhase] = useState<'sql'|'script' | null>(null);
+  const [migFile, setMigFile] = useState<string | undefined>(undefined);
+  const [migError, setMigError] = useState<string | undefined>(undefined);
+  const [sqlDone, setSqlDone] = useState<boolean>(true);
+  const [scriptDone, setScriptDone] = useState<boolean>(true);
   // Track whether the indexing drawer is open to avoid log spam when closed
   const indexOpenRef = useRef<boolean>(false);
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
+
+  useEffect(() => {
+    try {
+      const handler = (_evt: any, e: { phase: 'sql'|'script'; action: 'start'|'apply'|'skip'|'done'|'error'; file?: string; message?: string }) => {
+        if (e.phase === 'sql' && e.action === 'start') { setSqlDone(false); setMigVisible(true); setMigPhase('sql'); setMigFile(undefined); setMigError(undefined); }
+        if (e.phase === 'script' && e.action === 'start') { setScriptDone(false); setMigVisible(true); setMigPhase('script'); setMigFile(undefined); setMigError(undefined); }
+        if (e.action === 'apply') { setMigPhase(e.phase); setMigFile(e.file); }
+        if (e.action === 'error') { setMigPhase(e.phase); setMigError(e.message); setMigVisible(true); }
+        if (e.phase === 'sql' && e.action === 'done') { setSqlDone(true); }
+        if (e.phase === 'script' && e.action === 'done') { setScriptDone(true); }
+      };
+      // @ts-ignore
+      window.ipcRenderer?.on?.('migration:progress', handler);
+      return () => {
+        try { // @ts-ignore
+          window.ipcRenderer?.off?.('migration:progress', handler); } catch {}
+      };
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    setMigVisible(!(sqlDone && scriptDone));
+  }, [sqlDone, scriptDone]);
 
   // Log viewport dimensions on mount and resize
   // useEffect(() => {
@@ -251,6 +280,25 @@ function App() {
         background: 'linear-gradient(135deg, #000000 0%, #0a0a0a 25%, #111111 50%, #0a0a0a 75%, #000000 100%)'
       }}
     >
+      {migVisible && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="rounded-2xl border border-neutral-700/50 bg-neutral-900/80 p-6 w-[90%] max-w-[520px] text-center text-neutral-200">
+            <Icon.Spinner className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-400" />
+            <div className="text-lg font-semibold mb-1">Updating Cinestar</div>
+            <div className="text-sm text-neutral-400 mb-1">Applying database updates</div>
+            {migPhase && (
+              <div className="text-xs text-neutral-400 mb-1">Phase: {migPhase === 'sql' ? 'Schema' : 'Data scripts'}</div>
+            )}
+            {migFile && (
+              <div className="text-[11px] text-neutral-500 truncate max-w-full mx-auto">{migFile}</div>
+            )}
+            {migError && (
+              <div className="mt-2 text-xs text-red-400 break-words">{migError}</div>
+            )}
+            <div className="mt-3 text-[11px] text-neutral-500">Please wait, this will run only once.</div>
+          </div>
+        </div>
+      )}
       {/* Top progress bar (subtle) */}
       {overallProgress >= 0 && (
         <div className="fixed top-0 left-0 right-0 z-50">

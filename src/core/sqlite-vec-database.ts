@@ -503,14 +503,20 @@ export class SqliteVecDatabase {
   /**
    * Enhanced vector similarity search using sqlite-vec with pagination
    */
-  async searchSimilar(queryEmbedding: Float32Array, limit: number = 10, offset: number = 0, query?: string): Promise<{results: SearchResult[], total: number, hasMore: boolean}> {
+  async searchSimilar(
+    queryEmbedding: Float32Array,
+    limit: number = 10,
+    offset: number = 0,
+    query?: string,
+    cutoff?: { tsISO: string; id: string }
+  ): Promise<{results: SearchResult[], total: number, hasMore: boolean}> {
     console.log(`🔍 [SQLITE-VEC] Starting vector similarity search with ${queryEmbedding.length}D embedding`);
     if (query) console.log(`🔍 [SQLITE-VEC] Query: "${query}"`);
 
 
     // Get total count first for pagination (use reasonable k for count)
     const countStmt = this.db.prepare(`
-      SELECT COUNT(*) as total
+      SELECT COUNT(1) as total
       FROM vec_embeddings v
       JOIN media_items m ON v.item_id = m.id
       WHERE m.embedding_status = 'completed'
@@ -520,16 +526,24 @@ export class SqliteVecDatabase {
 
     // Use sqlite-vec MATCH syntax with pagination
     const stmt = this.db.prepare(`
-      SELECT 
-        m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
-        distance
-      FROM vec_embeddings v
-      JOIN media_items m ON v.item_id = m.id
-      WHERE m.embedding_status = 'completed'
-        AND v.embedding MATCH ?
-        AND k = ?
-      ORDER BY distance ASC
-      LIMIT ? OFFSET ?
+      WITH knn AS (
+        SELECT 
+          m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
+          m.created_at as created_at,
+          distance
+        FROM vec_embeddings v
+        JOIN media_items m ON v.item_id = m.id
+        WHERE m.embedding_status = 'completed'
+          AND v.embedding MATCH ?
+          AND k = ?
+      )
+      SELECT * FROM knn
+      ${cutoff ? `WHERE (
+        datetime(created_at) < datetime(?) OR
+        (datetime(created_at) = datetime(?) AND id < ?)
+      )` : ``}
+      ORDER BY distance ASC, id ASC
+      LIMIT ?
     `);
 
     // Serialize query embedding using struct.pack format like sqlite-vec example
@@ -547,8 +561,10 @@ export class SqliteVecDatabase {
       totalCount = countResult?.total || 0;
       
       // Get paginated results - k should be at least limit + offset but reasonable for performance
-      const kValue = Math.min(Math.max(limit + offset, 50), 1000);
-      rows = stmt.all(queryBuffer, kValue, limit, offset);
+      const kValue = Math.min(Math.max(limit * 4, 50), 1000);
+      rows = cutoff
+        ? stmt.all(queryBuffer, kValue, cutoff.tsISO, cutoff.tsISO, cutoff.id, limit)
+        : stmt.all(queryBuffer, kValue, limit);
       console.log(`🔍 [SQLITE-VEC] Found ${rows.length} results (${offset}-${offset + rows.length} of ${totalCount} total)`);
       
       // Debug: show raw distance values from sqlite-vec
@@ -603,7 +619,7 @@ export class SqliteVecDatabase {
       });
     }
 
-    const hasMore = offset + results.length < totalCount;
+    const hasMore = results.length > 0 && results.length <= totalCount;
     
     console.log(`🔍 [SQLITE-VEC] Returning ${results.length} results, hasMore: ${hasMore}`);
     
@@ -620,7 +636,8 @@ export class SqliteVecDatabase {
   async searchFTS(
     query: string,
     limit: number = 20,
-    offset: number = 0
+    offset: number = 0,
+    cutoff?: { tsISO: string; id: string }
   ): Promise<{ results: SearchResult[]; total: number; hasMore: boolean }> {
     console.log(`🔍 [FTS-SEARCH] Starting FTS search for: "${query}"`);
     
@@ -640,17 +657,27 @@ export class SqliteVecDatabase {
       
       // Get paginated results with BM25 ranking
       const stmt = this.db.prepare(`
-        SELECT 
-          m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
-          bm25(media_fts) as fts_score
-        FROM media_fts f
-        JOIN media_items m ON f.item_id = m.id
-        WHERE media_fts MATCH ?
-        ORDER BY fts_score ASC
-        LIMIT ? OFFSET ?
+        WITH ranked AS (
+          SELECT 
+            m.id, m.name, m.path, m.caption, m.source_id, m.type, m.size,
+            m.created_at as created_at,
+            bm25(media_fts) as fts_score
+          FROM media_fts f
+          JOIN media_items m ON f.item_id = m.id
+          WHERE media_fts MATCH ?
+        )
+        SELECT * FROM ranked
+        ${cutoff ? `WHERE (
+          datetime(created_at) < datetime(?) OR
+          (datetime(created_at) = datetime(?) AND id < ?)
+        )` : ``}
+        ORDER BY fts_score ASC, id ASC
+        LIMIT ?
       `);
       
-      const rows = stmt.all(ftsQuery, limit, offset);
+      const rows = cutoff
+        ? stmt.all(ftsQuery, cutoff.tsISO, cutoff.tsISO, cutoff.id, limit)
+        : stmt.all(ftsQuery, limit);
       console.log(`🔍 [FTS-SEARCH] Found ${rows.length} results (${offset}-${offset + rows.length} of ${totalCount} total)`);
       
       // Convert FTS scores to 0-1 similarity range
@@ -685,7 +712,7 @@ export class SqliteVecDatabase {
       return {
         results,
         total: totalCount,
-        hasMore: offset + results.length < totalCount
+        hasMore: results.length > 0 && results.length <= totalCount
       };
     } catch (error) {
       console.error(`🔍 [FTS-ERROR] Search failed:`, error);
@@ -702,8 +729,9 @@ export class SqliteVecDatabase {
     queryEmbedding: Float32Array,
     options: {
       limit?: number;
-      offset?: number;
+      offset?: number; // ignored for keyset pagination, kept for compatibility
       alpha?: number; // Weight for vector similarity (0-1), default 0.7
+      cutoff?: { tsISO: string; id: string };
     } = {}
   ): Promise<{ results: SearchResult[]; total: number; hasMore: boolean }> {
     const limit = options.limit || 20;
@@ -715,8 +743,8 @@ export class SqliteVecDatabase {
     try {
       // Run both searches in parallel
       const [vectorResults, ftsResults] = await Promise.all([
-        this.searchSimilar(queryEmbedding, limit * 2, 0, query), // Get more results for merging
-        this.searchFTS(query, limit * 2, 0)
+        this.searchSimilar(queryEmbedding, limit * 2, 0, query, options.cutoff),
+        this.searchFTS(query, limit * 2, 0, options.cutoff)
       ]);
       
       // Create a map of combined scores
@@ -781,7 +809,7 @@ export class SqliteVecDatabase {
       return {
         results: hybridResults,
         total: scoreMap.size,
-        hasMore: offset + hybridResults.length < scoreMap.size
+        hasMore: hybridResults.length > 0 && scoreMap.size > hybridResults.length
       };
     } catch (error) {
       console.error(`🔍 [HYBRID-ERROR] Search failed:`, error);
@@ -906,13 +934,13 @@ export class SqliteVecDatabase {
     embeddingsPending: number;
     embeddingsFailed: number;
   } {
-    const totalStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items');
-    const captionsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "completed"');
-    const captionsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "pending"');
-    const captionsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE caption_status = "failed"');
-    const embeddingsCompletedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "completed"');
-    const embeddingsPendingStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "pending"');
-    const embeddingsFailedStmt = this.db.prepare('SELECT COUNT(*) as count FROM media_items WHERE embedding_status = "failed"');
+    const totalStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items');
+    const captionsCompletedStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE caption_status = "completed"');
+    const captionsPendingStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE caption_status = "pending"');
+    const captionsFailedStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE caption_status = "failed"');
+    const embeddingsCompletedStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE embedding_status = "completed"');
+    const embeddingsPendingStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE embedding_status = "pending"');
+    const embeddingsFailedStmt = this.db.prepare('SELECT COUNT(1) as count FROM media_items WHERE embedding_status = "failed"');
 
     return {
       total: (totalStmt.get() as any).count,

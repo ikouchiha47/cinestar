@@ -54,9 +54,10 @@ export function useMediaLibrary() {
     try {
       // Use cursor-based pagination for better performance
       const res = await window.mediaAPI.getRecentItems({
+        types: ['video'],
         cursor: reset ? undefined : nextCursor,
         limit: 50,
-        orderBy: 'createdAt',
+        orderBy: 'modifiedAt',
         orderDirection: 'desc'
       });
       console.log('[DRILLER] getRecentItems response:', res);

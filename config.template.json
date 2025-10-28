@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "onboarding": {
+    "complete": false,
+    "firstLaunchDate": null
+  },
+  "features": {
+    "images": true,
+    "videos": true,
+    "audio": false
+  },
+  "workers": {
+    "imageWorkers": 2,
+    "videoWorkers": 2
+  },
+  "aiServices": {
+    "transcription": {
+      "baseUrl": "http://localhost:9001/asr",
+      "model": "whisper-base.en",
+      "enabled": false,
+      "modelDownloaded": false
+    },
+    "captioning": {
+      "baseUrl": "http://localhost:11434",
+      "model": "moondream:v2",
+      "enabled": true
+    },
+    "sceneReconstruction": {
+      "baseUrl": "http://localhost:11434",
+      "model": "llama3.2:3b",
+      "enabled": true
+    }
+  },
+  "lastModified": null
+}

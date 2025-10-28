@@ -7,7 +7,6 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
-import { VideoJobProcessor } from '../src/core/video-job-processor'
 import { ImageJobProcessor } from '../src/core/image-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
@@ -326,18 +325,37 @@ ipcMain.handle('app:getDataDir', async () => {
 // Initialize MediaAPI in main process
 let mediaAPI: typeof MainMediaAPI | null = null;
 let videoAPI: VideoMediaAPI | null = null;
-let videoJobProcessor: VideoJobProcessor | null = null;
-let imageJobProcessor: ImageJobProcessor | null = null;
+let videoJobProcessors: any[] = []; // Support multiple workers (v1 or v2)
+let imageJobProcessors: ImageJobProcessor[] = []; // Support multiple workers
+let globalJobsDb: any | null = null; // Shared jobs database instance
 let mediaInitAttempted = false;
+let mediaInitializing = false; // Prevent concurrent initialization
 let mediaInitFailed = false;
 let mediaInitErrorMessage = '';
 
+// Helper to get config file path (dev vs prod)
+const getConfigPath = () => IS_DEV 
+  ? path.join(DATA_DIR, 'config.dev.json')
+  : path.join(DATA_DIR, 'config.json');
+
 async function initializeMediaAPI() {
+  // Prevent concurrent initialization attempts
+  if (mediaInitializing) {
+    console.log('[MEDIA-INIT] Already initializing, waiting...');
+    while (mediaInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return;
+  }
+  
   // Avoid tight retry loops if we've already attempted and failed
   if (mediaInitAttempted && mediaInitFailed) {
     return;
   }
+  
+  mediaInitializing = true;
   mediaInitAttempted = true;
+  
   try {
     await MainMediaAPI.initialize(DATA_DIR);
     mediaAPI = MainMediaAPI;
@@ -352,25 +370,51 @@ async function initializeMediaAPI() {
       console.log('[MainMediaAPI] appView webContents ID:', appView.webContents.id);
     }
     
-    // Start the background image job processor
-    if (!imageJobProcessor) {
-      console.log('[IMAGE-JOB-PROCESSOR] Creating ImageJobProcessor...');
-      const { SqliteMainDatabase } = await import('../src/core/sqlite-main-database');
-      const { SqliteVecDatabase } = await import('../src/core/sqlite-vec-database');
+    // Start image job workers (coordinator pattern - multiple workers can run safely)
+    if (imageJobProcessors.length === 0) {
+      console.log('[IMAGE-WORKERS] Creating image job workers...');
+      const { SqliteJobsDatabase } = await import('../src/core/sqlite-jobs-database');
+      const { CanonicalMediaDatabase } = await import('../src/core/canonical-media-database');
+      const { ImageSearchWriter } = await import('../src/core/image-search-writer');
       
-      const dbPath = path.join(DATA_DIR, 'vector.db');
-      const db = new SqliteMainDatabase(dbPath);
-      const vecDb = new SqliteVecDatabase(dbPath);
+      // Use split database architecture
+      const jobsDbPath = path.join(DATA_DIR, 'jobs.db');  // Dedicated jobs database
+      const mediaDbPath = path.join(DATA_DIR, 'media.db');  // Media metadata
+      const imageSearchDbPath = path.join(DATA_DIR, 'image_search.db');  // Search index
       
-      imageJobProcessor = new ImageJobProcessor(db, vecDb);
-      await imageJobProcessor.start();
-      console.log('[IMAGE-JOB-PROCESSOR] ✅ ImageJobProcessor started');
+      const jobsDb = new SqliteJobsDatabase(jobsDbPath);
+      await jobsDb.initialize();
+      globalJobsDb = jobsDb; // Store for use in VideoMediaAPI
+      const mediaDb = new CanonicalMediaDatabase(mediaDbPath);
+      const searchWriter = new ImageSearchWriter(imageSearchDbPath);
+      
+      // Read worker count from config (default to 2)
+      let numWorkers = 2;
+      try {
+        const configPath = getConfigPath();
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          numWorkers = config.workers?.imageWorkers || 2;
+          console.log(`[IMAGE-WORKERS] Config specifies ${numWorkers} workers`);
+        }
+      } catch (error) {
+        console.warn('[IMAGE-WORKERS] Failed to read config, using default:', error);
+      }
+      
+      for (let i = 0; i < numWorkers; i++) {
+        const worker = new ImageJobProcessor(jobsDb, mediaDb, searchWriter, `worker-${i + 1}`);
+        await worker.start();
+        imageJobProcessors.push(worker);
+      }
+      console.log(`[IMAGE-WORKERS] ✅ Started ${numWorkers} image job workers with split DB architecture`);
     }
   } catch (error: any) {
     mediaAPI = null;
     mediaInitFailed = true;
     mediaInitErrorMessage = error instanceof Error ? error.message : String(error);
     console.error('Failed to initialize MainMediaAPI:', error);
+  } finally {
+    mediaInitializing = false;
   }
 }
 
@@ -397,6 +441,12 @@ async function initializeVideoAPI() {
     videoAPI = VideoMediaAPI.getInstance();
     debugLog('VideoMediaAPI.getInstance() succeeded');
     
+    // Set jobs database before initialization
+    if (globalJobsDb) {
+      videoAPI.setJobsDatabase(globalJobsDb);
+      debugLog('VideoMediaAPI.setJobsDatabase() succeeded');
+    }
+    
     await videoAPI.initialize();
     debugLog('videoAPI.initialize() succeeded');
     
@@ -405,19 +455,64 @@ async function initializeVideoAPI() {
     console.log('VideoMediaAPI initialized in main process');
     debugLog('VideoMediaAPI fully initialized');
     
-    // Start the background job processor
-    if (!videoJobProcessor) {
-      debugLog('Creating VideoJobProcessor...');
-      videoJobProcessor = new VideoJobProcessor();
-      debugLog('VideoJobProcessor created, calling start()...');
+    // Start video job workers (coordinator pattern - multiple workers can run safely)
+    if (videoJobProcessors.length === 0) {
+      debugLog('Creating VideoJobProcessor workers...');
+      console.log('[VIDEO-WORKERS] Creating video job workers...');
       
-      await videoJobProcessor.start();
-      debugLog('VideoJobProcessor.start() succeeded');
+      // Import split DB dependencies
+      const { VideoDatabase } = await import('../src/core/video-database');
+      const { CanonicalMediaDatabase } = await import('../src/core/canonical-media-database');
+      const { AVSearchWriter } = await import('../src/core/av-search-writer');
       
-      console.log('VideoJobProcessor started in main process');
-      debugLog('VideoJobProcessor fully started');
+      // Use split database architecture
+      const mediaDbPath = path.join(DATA_DIR, 'media.db');  // Basic catalog
+      const avSearchDbPath = path.join(DATA_DIR, 'av_search.db');  // Search index
+      
+      const videoDb = new VideoDatabase();  // Uses internal path resolution (video-rag.db)
+      const mediaDb = new CanonicalMediaDatabase(mediaDbPath);
+      const avSearchWriter = new AVSearchWriter(avSearchDbPath);
+      
+      // Read worker count from config (default to 2)
+      let numWorkers = 2;
+      try {
+        const configPath = getConfigPath();
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          numWorkers = config.workers?.videoWorkers || 2;
+          console.log(`[VIDEO-WORKERS] Config specifies ${numWorkers} workers`);
+        }
+      } catch (error) {
+        console.warn('[VIDEO-WORKERS] Failed to read config, using default:', error);
+      }
+      
+      // Import refactored video processing orchestrator
+      const { VideoJobOrchestrator } = await import('../src/core/video-processing/index');
+      const { SqliteJobsDatabase } = await import('../src/core/sqlite-jobs-database');
+      
+      // Initialize jobs.db for batch storage
+      const jobsDbPath = path.join(DATA_DIR, 'jobs.db');
+      const jobsDb = new SqliteJobsDatabase(jobsDbPath);
+      await jobsDb.initialize();
+      console.log('[VIDEO-WORKERS] ✅ Initialized jobs.db for batch storage');
+      
+      for (let i = 0; i < numWorkers; i++) {
+        const worker = new VideoJobOrchestrator(
+          videoDb,
+          mediaDb,
+          avSearchWriter,
+          jobsDb,
+          `worker-${i + 1}`
+        );
+        await worker.start();
+        videoJobProcessors.push(worker);
+        debugLog(`VideoJobOrchestrator worker-${i + 1} started`);
+      }
+      
+      console.log(`[VIDEO-WORKERS] ✅ Started ${numWorkers} video job workers with split DB architecture`);
+      debugLog(`All ${numWorkers} VideoJobProcessor workers started`);
     } else {
-      debugLog('VideoJobProcessor already exists, skipping initialization');
+      debugLog('VideoJobProcessors already exist, skipping initialization');
     }
   } catch (error) {
     debugLog(`ERROR in initializeVideoAPI: ${error}`);
@@ -545,8 +640,29 @@ ipcMain.handle('config:autoTune', async () => {
 });
 
 
+// Reload configuration (flags, partitions, source maps)
+ipcMain.handle('config:reload', async () => {
+  if (!mediaAPI) await initializeMediaAPI();
+  try {
+    const res = await MainMediaAPI.reloadConfiguration();
+    return res;
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
+  }
+});
+
+
 ipcMain.handle('media:getRecentItems', async (_evt, params?: { sourceIds?: string[]; types?: Array<'image'|'video'|'audio'>; limit?: number }) => {
   return await guardMedia(() => MainMediaAPI.getRecentItems(params));
+});
+
+ipcMain.handle('media:getRecentItemsGrouped', async (_evt, params?: {
+  limits?: { images?: number; videos?: number; audio?: number };
+  cursors?: { images?: string; videos?: string; audio?: string };
+  orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+  orderDirection?: 'asc' | 'desc';
+}) => {
+  return await guardMedia(() => MainMediaAPI.getRecentItemsGrouped(params));
 });
 
 ipcMain.handle('media:getItems', async (_evt, sourceId?: string) => {
@@ -950,6 +1066,16 @@ ipcMain.handle('config:get', async () => {
       const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
       const config = JSON.parse(configData);
       console.log('[CONFIG] Loaded config from:', CONFIG_FILE);
+      
+      // Ensure workers section exists (migration for existing configs)
+      if (!config.workers) {
+        (config as any).workers = {
+          imageWorkers: 2,
+          videoWorkers: 2
+        };
+        console.log('[CONFIG] Added missing workers section to config');
+      }
+      
       // Merge modelDownloaded from preferences.json (single source of truth)
       try {
         const preferencesPath = path.join(DATA_DIR, 'preferences.json');
@@ -959,9 +1085,30 @@ ipcMain.handle('config:get', async () => {
           if (!config.aiServices) (config as any).aiServices = {};
           if (!config.aiServices.transcription) (config as any).aiServices.transcription = {};
           (config as any).aiServices.transcription.modelDownloaded = !!prefs.whisperModelDownloaded;
+          // Map onboarding completion from preferences as a fallback to avoid re-showing welcome
+          if (prefs.onboardingComplete === true) {
+            if (!(config as any).onboarding) (config as any).onboarding = { complete: true, firstLaunchDate: new Date().toISOString() };
+            else (config as any).onboarding.complete = true;
+          }
         }
       } catch {}
       return config;
+    }
+    
+    // Try to copy from template in production builds
+    if (!IS_DEV) {
+      try {
+        const templatePath = path.join(process.resourcesPath, 'config.template.json');
+        if (fs.existsSync(templatePath)) {
+          await fs.promises.copyFile(templatePath, CONFIG_FILE);
+          const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+          const config = JSON.parse(configData);
+          console.log('[CONFIG] Created config from template:', CONFIG_FILE);
+          return config;
+        }
+      } catch (error) {
+        console.warn('[CONFIG] Failed to copy template, creating default:', error);
+      }
     }
     
     // Initialize defaults from ConfigManager if no config exists
@@ -978,6 +1125,10 @@ ipcMain.handle('config:get', async () => {
         images: true,
         videos: false,
         audio: false
+      },
+      workers: {
+        imageWorkers: 2,
+        videoWorkers: 2
       },
       aiServices: {
         transcription: {
@@ -1020,11 +1171,12 @@ ipcMain.handle('config:get', async () => {
   }
 });
 
+// Save unified configuration with deep merge
 ipcMain.handle('config:set', async (_, config) => {
   try {
     // Ensure config directory exists
     await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
-    
+
     // Read existing config and merge
     let existingConfig: any = {};
     if (fs.existsSync(CONFIG_FILE)) {
@@ -1035,7 +1187,7 @@ ipcMain.handle('config:set', async (_, config) => {
         console.warn('Failed to read existing config, creating new:', error);
       }
     }
-    
+
     // Deep merge to preserve nested structures
     const mergedConfig = {
       ...existingConfig,
@@ -1051,9 +1203,9 @@ ipcMain.handle('config:set', async (_, config) => {
       },
       lastModified: new Date().toISOString()
     };
-    
+
     await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(mergedConfig, null, 2), 'utf8');
-    
+
     console.log('[CONFIG] Settings saved to unified config.json');
     return { success: true };
   } catch (error) {
@@ -1062,121 +1214,6 @@ ipcMain.handle('config:set', async (_, config) => {
   }
 });
 
-// User Preferences - now handled via config.json (see config:get and config:set handlers above)
-
-// Whisper model download handler
-ipcMain.handle('whisper:downloadModel', async (evt, options: { modelName: string }) => {
-  try {
-    console.log(`[WHISPER-DOWNLOAD] Starting download for model: ${options.modelName}`);
-    
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    
-    // Find nodejs-whisper installation path
-    let whisperCppPath: string;
-    if (IS_DEV) {
-      // Development: use node_modules
-      whisperCppPath = path.join(process.cwd(), 'node_modules', 'nodejs-whisper', 'cpp', 'whisper.cpp');
-    } else {
-      // Production: use unpacked asar
-      whisperCppPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'nodejs-whisper', 'cpp', 'whisper.cpp');
-    }
-    
-    const modelsDir = path.join(whisperCppPath, 'models');
-    const modelFileName = `ggml-${options.modelName}.bin`;
-    const modelPath = path.join(modelsDir, modelFileName);
-    
-    console.log(`[WHISPER-DOWNLOAD] Whisper.cpp path: ${whisperCppPath}`);
-    console.log(`[WHISPER-DOWNLOAD] Models directory: ${modelsDir}`);
-    console.log(`[WHISPER-DOWNLOAD] Model file: ${modelPath}`);
-    
-    // Check if model already exists
-    if (fs.existsSync(modelPath)) {
-      console.log(`[WHISPER-DOWNLOAD] Model ${options.modelName} already exists, skipping download`);
-      evt.sender.send('whisper:downloadProgress', 100);
-      
-      // Mark as downloaded in preferences.json (source of truth)
-      try {
-        const preferencesPath = path.join(DATA_DIR, 'preferences.json');
-        let prefs: any = {};
-        if (fs.existsSync(preferencesPath)) {
-          prefs = JSON.parse(await fs.promises.readFile(preferencesPath, 'utf8'));
-        }
-        prefs.whisperModelDownloaded = true;
-        await fs.promises.writeFile(preferencesPath, JSON.stringify(prefs, null, 2), 'utf8');
-        console.log('[WHISPER-DOWNLOAD] Updated preferences.json with whisperModelDownloaded=true');
-      } catch (e) {
-        console.warn('[WHISPER-DOWNLOAD] Failed to update preferences.json:', e);
-      }
-      
-      return { success: true };
-    }
-    
-    // Simulate progress updates
-    let progress = 0;
-    const progressInterval = setInterval(() => {
-      progress += 2;
-      if (progress <= 95) {
-        evt.sender.send('whisper:downloadProgress', progress);
-      }
-    }, 1000);
-    
-    // Download the model using the shell script
-    const scriptName = process.platform === 'win32' ? 'download-ggml-model.cmd' : 'download-ggml-model.sh';
-    const scriptPath = path.join(modelsDir, scriptName);
-    
-    console.log(`[WHISPER-DOWNLOAD] Running download script: ${scriptPath}`);
-    console.log(`[WHISPER-DOWNLOAD] Model name: ${options.modelName}`);
-    
-    // Make script executable on Unix
-    if (process.platform !== 'win32') {
-      await execAsync(`chmod +x "${scriptPath}"`);
-    }
-    
-    // Run the download script
-    const { stdout, stderr } = await execAsync(`cd "${modelsDir}" && ./${scriptName} ${options.modelName}`, {
-      maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large downloads
-    });
-    
-    console.log(`[WHISPER-DOWNLOAD] Download output:`, stdout);
-    if (stderr) {
-      console.log(`[WHISPER-DOWNLOAD] Download stderr:`, stderr);
-    }
-    
-    clearInterval(progressInterval);
-    evt.sender.send('whisper:downloadProgress', 100);
-    
-    // Verify model was downloaded
-    if (!fs.existsSync(modelPath)) {
-      throw new Error(`Model file not found after download: ${modelPath}`);
-    }
-    
-    console.log(`[WHISPER-DOWNLOAD] Model downloaded successfully to: ${modelPath}`);
-    
-    // Mark as downloaded in preferences.json (source of truth)
-    try {
-      const preferencesPath = path.join(DATA_DIR, 'preferences.json');
-      let prefs: any = {};
-      if (fs.existsSync(preferencesPath)) {
-        prefs = JSON.parse(await fs.promises.readFile(preferencesPath, 'utf8'));
-      }
-      prefs.whisperModelDownloaded = true;
-      await fs.promises.writeFile(preferencesPath, JSON.stringify(prefs, null, 2), 'utf8');
-      console.log('[WHISPER-DOWNLOAD] Updated preferences.json with whisperModelDownloaded=true');
-    } catch (e) {
-      console.warn('[WHISPER-DOWNLOAD] Failed to update preferences.json:', e);
-    }
-    
-    console.log('[WHISPER-DOWNLOAD] Download complete');
-    return { success: true };
-  } catch (error) {
-    console.error('[WHISPER-DOWNLOAD] Download failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-});
-
-// Whisper setup handler - spawn ESM script with Node and stream progress
 ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCuda?: boolean } = {}) => {
   try {
     const modelName = options.modelName || 'base.en';
@@ -1255,6 +1292,26 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
       } catch (e) {
         console.warn('[WHISPER-SETUP] Failed updating preferences after setup:', e);
       }
+      // Also persist onboarding completion to unified config so renderer skips welcome on next launch
+      try {
+        let cfg: any = {};
+        if (fs.existsSync(CONFIG_FILE)) {
+          try {
+            const data = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+            cfg = JSON.parse(data);
+          } catch (e) {
+            console.warn('[WHISPER-SETUP] Failed reading existing config, will recreate:', e);
+          }
+        }
+        const firstLaunchDate = cfg?.onboarding?.firstLaunchDate || new Date().toISOString();
+        cfg.onboarding = { ...(cfg.onboarding || {}), complete: true, firstLaunchDate };
+        cfg.lastModified = new Date().toISOString();
+        await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
+        await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+        console.log('[CONFIG] Onboarding marked complete in config');
+      } catch (e) {
+        console.warn('[WHISPER-SETUP] Failed updating config onboarding state:', e);
+      }
       return { success: true, model: modelName };
     } else {
       evt.sender.send('whisper:setup:signal', { status: 'failed' });
@@ -1265,6 +1322,7 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });
+
 
 app.whenReady().then(async () => {
   // Run data migration ONLY in production (never in dev mode)
@@ -1296,9 +1354,11 @@ app.whenReady().then(async () => {
   }
   
   // Defer heavy initialization so the UI can appear immediately
-  setTimeout(() => {
-    initializeMediaAPI().catch((e) => console.warn('[MAIN-PROCESS] MediaAPI init failed:', e));
-    initializeVideoAPI().catch((e) => console.warn('[MAIN-PROCESS] VideoAPI init failed:', e));
+  setTimeout(async () => {
+    // Initialize MediaAPI first to set up globalJobsDb
+    await initializeMediaAPI().catch((e) => console.warn('[MAIN-PROCESS] MediaAPI init failed:', e));
+    // Then initialize VideoAPI which depends on globalJobsDb
+    await initializeVideoAPI().catch((e) => console.warn('[MAIN-PROCESS] VideoAPI init failed:', e));
     // Kick off background auto-tuning of FFmpeg per-process threads after initializations
     runAutoTune();
   }, 0);

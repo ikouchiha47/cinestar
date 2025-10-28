@@ -47,6 +47,22 @@ declare global {
         orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
         orderDirection?: 'asc' | 'desc';
       }) => Promise<{ success: boolean; items?: any[]; nextCursor?: string; hasMore?: boolean; error?: string }>;
+      getRecentItemsGrouped: (params?: {
+        limits?: { images?: number; videos?: number; audio?: number };
+        cursors?: { images?: string; videos?: string; audio?: string };
+        orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
+        orderDirection?: 'asc' | 'desc';
+      }) => Promise<{
+        success: boolean;
+        results?: {
+          images: any[];
+          videos: any[];
+          audio: any[];
+          hasMore: { images: boolean; videos: boolean; audio: boolean };
+          nextCursor: { images?: string; videos?: string; audio?: string };
+        };
+        error?: string;
+      }>;
       search: (query: SearchQuery) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       searchText: (text: string, limit?: number) => Promise<{ success: boolean; results?: SearchResult; error?: string }>;
       unifiedSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number; offset?: number }) => Promise<{

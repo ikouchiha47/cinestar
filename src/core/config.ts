@@ -73,6 +73,21 @@ export interface AppConfig {
     captionKeyframes: boolean;
     captionThumbnails: boolean;
   };
+  multiPass?: {
+    enabled: boolean;
+    extractionModel: string;
+    extractionUrl: string;
+    phases: {
+      enableExtraction: boolean;
+      enableSpatial: boolean;
+      enableTemporal: boolean;
+      enableSegmentationCheck: boolean;
+    };
+    segmentation: {
+      threshold: 'low' | 'medium' | 'high';
+      maxAdditionalFrames: number;
+    };
+  };
   debug: {
     enabled: boolean;
     saveCompressedImages: boolean;
@@ -167,6 +182,21 @@ export const DEFAULT_CONFIG: AppConfig = {
     retryDelayMs: 1000,
     captionKeyframes: true,
     captionThumbnails: false,
+  },
+  multiPass: {
+    enabled: true, // ✅ ENABLED - Multi-pass captioning active
+    extractionModel: 'llama3.2:3b',
+    extractionUrl: '', // Will use ai.embedUrl if empty
+    phases: {
+      enableExtraction: true,  // ✅ Phase 2: Extract structured elements
+      enableSpatial: true,      // ✅ Phase 3: Spatial relationships
+      enableTemporal: true,     // ✅ Phase 4: Temporal analysis
+      enableSegmentationCheck: false
+    },
+    segmentation: {
+      threshold: 'medium',
+      maxAdditionalFrames: 10
+    }
   },
   debug: {
     enabled: process.env.DEBUG_MODE === 'true', // Enable with DEBUG_MODE=true

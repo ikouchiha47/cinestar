@@ -1,4 +1,7 @@
-import { VideoDatabase, VideoProcessingJob } from './video-database';
+import { VideoDatabase } from './video-database';
+import { SqliteJobsDatabase } from './sqlite-jobs-database';
+import { VideoJobAdapter } from './video-job-adapter';
+import { VideoProcessingJob } from '../types/video';
 import path from 'path';
 
 export interface RefinementPass {
@@ -31,11 +34,18 @@ export interface RefinementMetrics {
  */
 export class RefinementJobScheduler {
   private videoDb: VideoDatabase;
+  private videoJobAdapter?: VideoJobAdapter;
   private schedulerInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
 
-  constructor(videoDb: VideoDatabase) {
+  constructor(videoDb: VideoDatabase, jobsDb?: SqliteJobsDatabase) {
     this.videoDb = videoDb;
+    if (jobsDb) {
+      this.videoJobAdapter = new VideoJobAdapter(jobsDb, videoDb);
+      console.log('[REFINEMENT-SCHEDULER] ✅ Using VideoJobAdapter for job creation');
+    } else {
+      console.log('[REFINEMENT-SCHEDULER] ⚠️  Using legacy VideoDatabase for job creation');
+    }
   }
 
   /**
@@ -98,7 +108,7 @@ export class RefinementJobScheduler {
         
         const scheduledAt = new Date(Date.now() + delayWithJitter * 1000); // UTC time
         
-        const jobId = await this.videoDb.createJob({
+        const jobId = await this.videoJobAdapter!.createVideoJob({
           videoPath,
           fileName: path.basename(videoPath),
           status: 'scheduled',
@@ -107,7 +117,11 @@ export class RefinementJobScheduler {
           threshold: pass.threshold,
           parentJobId: initialJobId,
           triggerCondition: pass.triggerCondition,
-          scheduledAt
+          currentPhase: 'phase0',
+          phase0Complete: 0,
+          phase1Complete: 0,
+          totalBatches: 0,
+          jobType: 'video_processing'
         });
 
         scheduledJobIds.push(jobId);
@@ -144,25 +158,24 @@ export class RefinementJobScheduler {
             console.log(`[REFINEMENT-SCHEDULER] Activating refinement job ${job.id} (pass ${job.refinementPass})`);
             
             // Update job status to pending so it gets picked up by the main processor
-            await this.videoDb.updateJob(job.id, {
-              status: 'pending',
-              scheduledAt: undefined // Clear scheduled time
+            await this.videoJobAdapter!.updateVideoJob(job.id, {
+              status: 'pending'
             });
           } else {
             console.log(`[REFINEMENT-SCHEDULER] Skipping refinement job ${job.id} - conditions not met`);
             
             // Mark as completed without processing
-            await this.videoDb.updateJob(job.id, {
+            await this.videoJobAdapter!.updateVideoJob(job.id, {
               status: 'completed',
               progress: 100,
-              endTime: new Date()
+              completedAt: new Date()
             });
           }
         } catch (error) {
           console.error(`[REFINEMENT-SCHEDULER] Error processing job ${job.id}:`, error);
           
           // Mark job as failed
-          await this.videoDb.updateJob(job.id, {
+          await this.videoJobAdapter!.updateVideoJob(job.id, {
             status: 'failed',
             error: error instanceof Error ? error.message : 'Unknown error'
           });

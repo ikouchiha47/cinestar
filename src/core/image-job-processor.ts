@@ -1,10 +1,14 @@
-import { SqliteMainDatabase } from './sqlite-main-database';
-import { SqliteVecDatabase } from './sqlite-vec-database';
+import { SqliteJobsDatabase } from './sqlite-jobs-database';
+import { CanonicalMediaDatabase } from './canonical-media-database';
+import { ImageSearchWriter } from './image-search-writer';
 import { LLMProvider, LLMProviderFactory } from './llm-provider';
 import { ImageCompressor } from './image-compressor';
 import { ConfigManager } from './config';
+import { ImageJobCoordinator } from './image-job-coordinator';
+import { MultiPassCaptioningService } from './processors/multi-pass-captioning-service';
 import path from 'path';
 import os from 'os';
+import { randomUUID } from 'crypto';
 
 interface ImageJob {
   id: string;
@@ -25,27 +29,53 @@ interface ProcessingResult {
 
 /**
  * Background processor for image captioning and embedding jobs
- * Pulls jobs in batches and processes them concurrently
+ * PULL-BASED WORKER: Requests jobs from coordinator when ready
+ * Multiple workers can run concurrently without duplicate processing
  */
 export class ImageJobProcessor {
-  private db: SqliteMainDatabase;
-  private vecDb: SqliteVecDatabase;
+  private jobsDb: SqliteJobsDatabase;  // For indexing_jobs table (jobs.db)
+  private mediaDb: CanonicalMediaDatabase;  // For media_items (metadata)
+  private searchWriter: ImageSearchWriter;  // For embeddings/captions in image_search.db
+  private coordinator: ImageJobCoordinator;
+  private workerId: string;
   private llm: LLMProvider | null = null;
+  private multiPassService: MultiPassCaptioningService | null = null;
   private isRunning: boolean = false;
   private processingLoopPromise: Promise<void> | null = null;
   private batchSize: number = 8;
   private concurrency: number = 4;
 
-  constructor(db: SqliteMainDatabase, vecDb: SqliteVecDatabase) {
-    this.db = db;
-    this.vecDb = vecDb;
+  constructor(
+    jobsDb: SqliteJobsDatabase,
+    mediaDb: CanonicalMediaDatabase,
+    searchWriter: ImageSearchWriter,
+    workerId?: string
+  ) {
+    this.jobsDb = jobsDb;
+    this.mediaDb = mediaDb;
+    this.searchWriter = searchWriter;
+    this.workerId = workerId || `worker-${randomUUID().slice(0, 8)}`;
+    this.coordinator = ImageJobCoordinator.getInstance(jobsDb);
+    
+    console.log(`[WORKER-${this.workerId}] 🏗️  Worker created`);
     
     // Initialize LLM service if available
     try {
       this.llm = LLMProviderFactory.createProvider('ollama');
-      console.log('[IMAGE-JOB-PROCESSOR] ✅ LLM service initialized');
+      console.log(`[WORKER-${this.workerId}] ✅ LLM service initialized`);
     } catch (error) {
-      console.warn('[IMAGE-JOB-PROCESSOR] ⚠️ LLM service not available:', error);
+      console.warn(`[WORKER-${this.workerId}] ⚠️ LLM service not available:`, error);
+    }
+    
+    // Initialize multi-pass captioning service if enabled
+    const config = ConfigManager.getConfig();
+    if (config.multiPass?.enabled) {
+      try {
+        this.multiPassService = new MultiPassCaptioningService();
+        console.log(`[WORKER-${this.workerId}] ✅ Multi-pass captioning service initialized`);
+      } catch (error) {
+        console.warn(`[WORKER-${this.workerId}] ⚠️ Multi-pass service not available:`, error);
+      }
     }
   }
 
@@ -54,22 +84,22 @@ export class ImageJobProcessor {
    */
   async start(): Promise<void> {
     if (this.isRunning) {
-      console.log('[IMAGE-JOB-PROCESSOR] Already running');
+      console.log(`[WORKER-${this.workerId}] Already running`);
       return;
     }
 
-    console.log('[IMAGE-JOB-PROCESSOR] Starting background image job processor...');
+    console.log(`[WORKER-${this.workerId}] 🚀 Starting worker...`);
     this.isRunning = true;
 
     // Start the processing loop
     this.processingLoopPromise = this.runProcessingLoop().catch(err => {
-      console.error('[IMAGE-JOB-PROCESSOR] Processing loop crashed:', err);
+      console.error(`[WORKER-${this.workerId}] Processing loop crashed:`, err);
       // Restart the loop if it crashes
       if (this.isRunning) {
-        console.log('[IMAGE-JOB-PROCESSOR] Restarting processing loop...');
+        console.log(`[WORKER-${this.workerId}] Restarting processing loop...`);
         setTimeout(() => {
           this.processingLoopPromise = this.runProcessingLoop().catch(err => {
-            console.error('[IMAGE-JOB-PROCESSOR] Processing loop crashed again:', err);
+            console.error(`[WORKER-${this.workerId}] Processing loop crashed again:`, err);
           });
         }, 5000);
       }
@@ -80,14 +110,14 @@ export class ImageJobProcessor {
    * Stop the background job processor
    */
   async stop(): Promise<void> {
-    console.log('[IMAGE-JOB-PROCESSOR] Stopping...');
+    console.log(`[WORKER-${this.workerId}] Stopping...`);
     this.isRunning = false;
     
     if (this.processingLoopPromise) {
       await this.processingLoopPromise;
     }
     
-    console.log('[IMAGE-JOB-PROCESSOR] Stopped');
+    console.log(`[WORKER-${this.workerId}] Stopped`);
   }
 
   /**
@@ -96,22 +126,20 @@ export class ImageJobProcessor {
   private async runProcessingLoop(): Promise<void> {
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     
-    console.log('[IMAGE-JOB-PROCESSOR] Processing loop started');
+    console.log(`[WORKER-${this.workerId}] 🔄 Processing loop started`);
     
-    let iteration = 0;
     while (this.isRunning) {
       try {
-        iteration++;
         await this.processNextBatch();
       } catch (error) {
-        console.error('[IMAGE-JOB-PROCESSOR] Error in processing loop:', error);
+        console.error(`[WORKER-${this.workerId}] Error in processing loop:`, error);
       }
       
-      // Wait 5 seconds before next check
+      // Wait before requesting more work (natural backpressure)
       await sleep(5000);
     }
     
-    console.log('[IMAGE-JOB-PROCESSOR] Processing loop stopped');
+    console.log(`[WORKER-${this.workerId}] Processing loop stopped`);
   }
 
   /**
@@ -119,51 +147,32 @@ export class ImageJobProcessor {
    */
   private async processNextBatch(): Promise<void> {
     if (!this.llm) {
-      // No LLM service available, skip processing
-      return;
+      return; // No LLM service available
     }
 
-    // Pull pending jobs
-    const jobs = await this.getPendingImageJobs(this.batchSize);
+    // PULL from coordinator (atomic assignment, no duplicates)
+    const jobs = await this.coordinator.requestJobs(this.workerId, this.batchSize);
     
     if (jobs.length === 0) {
-      return; // No jobs to process
+      return; // No work available
     }
 
-    console.log(`[IMAGE-BATCH] 🔄 Processing ${jobs.length} images...`);
+    console.log(`[WORKER-${this.workerId}] 🔄 Processing ${jobs.length} images...`);
     
     // Process batch concurrently
     const results = await this.processConcurrent(jobs, this.concurrency);
     
-    // Update job statuses
+    // Report results back to coordinator
     for (const result of results) {
-      if (result.success) {
-        await this.db.updateJobStatus(result.jobId, 'completed', 100);
-        console.log(`[IMAGE-BATCH] ✅ ${result.fileName} completed`);
-      } else {
-        await this.db.updateJobStatusWithError(result.jobId, 'failed', 0, result.error);
-        console.log(`[IMAGE-BATCH] ❌ ${result.fileName} failed: ${result.error}`);
-      }
+      await this.coordinator.reportJobComplete(
+        this.workerId,
+        result.jobId,
+        result.success,
+        result.error
+      );
     }
     
-    console.log(`[IMAGE-BATCH] ✅ Batch complete: ${results.filter(r => r.success).length}/${results.length} succeeded`);
-  }
-
-  /**
-   * Get pending image processing jobs from database
-   */
-  private async getPendingImageJobs(limit: number): Promise<ImageJob[]> {
-    const rows = await this.db.getPendingImageJobs(limit);
-    
-    return rows.map(row => ({
-      id: row.id,
-      sourceId: row.source_id,
-      filePath: row.file_path,
-      fileName: row.file_name,
-      fileSize: row.file_size,
-      status: row.status,
-      retryCount: row.retry_count
-    }));
+    console.log(`[WORKER-${this.workerId}] ✅ Batch complete: ${results.filter(r => r.success).length}/${results.length} succeeded`);
   }
 
   /**
@@ -228,22 +237,54 @@ export class ImageJobProcessor {
       console.warn('[IMAGE-PROCESS] ⚠️ Compression failed, using original:', e);
     }
 
-    // 2. Generate caption
-    console.log(`[IMAGE-PROCESS] 💬 Generating caption for ${job.fileName}...`);
-    const caption = await this.llm!.generateImageDescription(inferencePath, job.filePath);
+    // 2. Generate caption (with optional multi-pass analysis)
+    let caption: string;
+    let multiPassData: any = null;
+    
+    const cfg = ConfigManager.getConfig();
+    if (cfg.multiPass?.enabled && this.multiPassService) {
+      console.log(`[IMAGE-PROCESS] 💬 Generating multi-pass caption for ${job.fileName}...`);
+      const multiPassResult = await this.multiPassService.analyzeImage(inferencePath);
+      
+      caption = multiPassResult.caption;
+      multiPassData = {
+        caption: multiPassResult.caption,
+        captionElements: multiPassResult.elements,
+        captionSpatial: multiPassResult.spatial,
+        captionTemporal: multiPassResult.temporal,
+        captionTokens: multiPassResult.tokens
+      };
+      
+      console.log(`[IMAGE-PROCESS] 📊 Multi-pass complete: ${multiPassResult.tokens.total} tokens (${multiPassResult.tokens.moondreamOnly} moondream)`);
+    } else {
+      console.log(`[IMAGE-PROCESS] 💬 Generating caption for ${job.fileName}...`);
+      caption = await this.llm!.generateImageDescription(inferencePath, job.filePath);
+    }
     
     // 3. Generate embedding
     console.log(`[IMAGE-PROCESS] 🔢 Generating embedding for ${job.fileName}...`);
     const embedding = await this.llm!.generateImageEmbedding(inferencePath);
     
-    // 4. Update vector DB
-    const itemId = await this.db.getItemIdByPath(job.filePath);
+    // 4. Update search database (embeddings + captions)
+    const items = this.mediaDb.getMediaItemsByPath(job.filePath, true);
+    const itemId = items && items.length > 0 ? items[0].id : null;
     if (itemId) {
-      await this.vecDb.updateCaption(itemId, caption, 'completed');
-      await this.vecDb.updateEmbedding(itemId, embedding, 'completed');
+      // Write to image_search.db
+      this.searchWriter.updateCaption(itemId, caption);
+      this.searchWriter.updateEmbedding(itemId, embedding);
+      
+      // Update metadata cache in image_search.db (include multi-pass metadata if available)
+      this.searchWriter.updateMetaCache(itemId, {
+        path: job.filePath,
+        size: job.fileSize,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        ...(multiPassData || {})
+      });
+      
       console.log(`[IMAGE-PROCESS] ✅ ${job.fileName} indexed successfully`);
     } else {
-      throw new Error(`Item not found in vector DB for path: ${job.filePath}`);
+      throw new Error(`Item not found in media DB for path: ${job.filePath}`);
     }
   }
 
@@ -251,7 +292,7 @@ export class ImageJobProcessor {
    * Retry failed jobs
    */
   async retryFailedJobs(): Promise<void> {
-    const stmt = this.db.db.prepare(`
+    const stmt = this.jobsDb.db.prepare(`
       SELECT id, retry_count
       FROM indexing_jobs
       WHERE job_type = 'image_processing'
@@ -270,7 +311,7 @@ export class ImageJobProcessor {
     
     for (const job of failedJobs) {
       // Reset status to pending and increment retry count
-      const updateStmt = this.db.db.prepare(`
+      const updateStmt = this.jobsDb.db.prepare(`
         UPDATE indexing_jobs 
         SET status = 'pending', retry_count = retry_count + 1
         WHERE id = ?

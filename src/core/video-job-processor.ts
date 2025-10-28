@@ -1,4 +1,6 @@
-import { VideoDatabase, VideoProcessingJob } from './video-database';
+import { VideoDatabase } from './video-database';
+import { VideoProcessingJob } from '../types/video';
+
 import { SqliteVecDatabase } from './sqlite-vec-database';
 import { EmbeddingService } from './embedding-service';
 import { VideoPipeline } from './video-pipeline';
@@ -7,18 +9,23 @@ import { BatchProcessor, ProcessingBatch, TranscriptionSegment, BatchKeyframe } 
 import { RefinementJobScheduler } from './refinement-job-scheduler';
 import { IncrementalSegmentProcessor } from './incremental-segment-processor';
 import { VideoSegmentIndexer } from './video-segment-indexer';
+import { VideoJobCoordinator } from './video-job-coordinator';
 import { ConfigManager } from './config.js';
 import { getDataDir } from './utils/data-dir';
 import { getMimeType } from './utils';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 /**
  * Background job processor for video processing tasks
- * Handles video processing jobs asynchronously without blocking request cycles
+ * PULL-BASED WORKER: Requests jobs from VideoJobCoordinator when ready
+ * Multiple workers can run concurrently without duplicate processing
  */
 export class VideoJobProcessor {
   private videoDb: VideoDatabase;
   private vectorDb: SqliteVecDatabase;
+  private coordinator: VideoJobCoordinator;
+  private workerId: string;
   private embeddingService: EmbeddingService;
   private videoPipeline: VideoPipeline;
   // private concurrencyLimiter: ConcurrencyLimiter; // Unused
@@ -34,9 +41,12 @@ export class VideoJobProcessor {
   private currentJobId: string | null = null;
   private segmentCount = 0;
 
-  constructor(sharedPipeline?: VideoPipeline) {
+  constructor(sharedPipeline?: VideoPipeline, workerId?: string) {
+    this.workerId = workerId || `video-worker-${randomUUID().slice(0, 8)}`;
     this.embeddingService = new EmbeddingService();
     this.videoDb = new VideoDatabase();
+    this.coordinator = VideoJobCoordinator.getInstance(this.videoDb);
+    console.log(`[VIDEO-WORKER-${this.workerId}] 🏗️  Worker created`);
     console.log(`[DB-PATH-DEBUG] 🗄️  VideoDatabase initialized - should connect to ./data/video-rag.db`);
     // this.concurrencyLimiter = new ConcurrencyLimiter(2); // Commented out - not available
     this.videoPipeline = sharedPipeline || new VideoPipeline();
@@ -341,65 +351,45 @@ export class VideoJobProcessor {
   }
 
   /**
-   * Process the next pending job
+   * Process the next pending job - PULL from coordinator
    */
   private async processNextJob(): Promise<void> {
-    console.log('[VIDEO-JOB-PROCESSOR] 🚀 processNextJob() CALLED');
-    // Debug logging to file (bypasses broken console logger)
-    // Only writes to file when debug mode is enabled
-    const debugLog = (msg: string) => {
-      if (!this.isDebugMode()) return;
-      
-      try {
-        const fs = require('fs');
-        const path = require('path');
-        const os = require('os');
-        const logPath = path.join(os.homedir(), '.clipwise', 'processor-debug.txt');
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
-      } catch {}
-    };
+    console.log(`[VIDEO-WORKER-${this.workerId}] 🚀 processNextJob() CALLED`);
     
     try {
       this.isProcessing = true;
-      debugLog('processNextJob() called');
       
-      console.log(`[VIDEO-JOB-PROCESSOR] 🔍 Checking for pending jobs...`);
-      const pendingJobs = await this.videoDb.getPendingJobs();
-      debugLog(`Found ${pendingJobs.length} pending jobs`);
-      console.log(`[VIDEO-JOB-PROCESSOR] 📊 Found ${pendingJobs.length} pending jobs`);
+      // PULL from coordinator (atomic assignment, no duplicates)
+      const jobs = await this.coordinator.requestJobs(this.workerId, 1);
       
-      if (pendingJobs.length === 0) {
-        debugLog('No pending jobs, waiting...');
-        console.log(`[VIDEO-JOB-PROCESSOR] 💤 No pending jobs, waiting...`);
+      if (jobs.length === 0) {
+        console.log(`[VIDEO-WORKER-${this.workerId}] 💤 No pending jobs, waiting...`);
         return;
       }
 
-      const job = pendingJobs[0];
-      debugLog(`Processing job ${job.id} for ${job.videoPath}`);
-      console.log(`[VIDEO-JOB-PROCESSOR] 🎯 Processing job ${job.id} for ${job.videoPath}`, {
+      const job = jobs[0];
+      console.log(`[VIDEO-WORKER-${this.workerId}] 🎯 Processing job ${job.id} for ${job.videoPath}`, {
         status: job.status,
         refinementPass: job.refinementPass,
         scheduledAt: job.scheduledAt
       });
 
-      // Update job status to processing
-      await this.videoDb.updateJob(job.id, {
-        status: 'processing',
-        startTime: new Date(),
-        progress: 0
-      });
-      debugLog(`Updated job ${job.id} to processing status`);
-
       // Process the video
-      await this.processVideoJob(job);
-      debugLog(`Completed processing job ${job.id}`);
+      try {
+        await this.processVideoJob(job);
+        // Report success to coordinator
+        await this.coordinator.reportJobComplete(this.workerId, job.id, true);
+      } catch (error) {
+        // Report failure to coordinator
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        await this.coordinator.reportJobComplete(this.workerId, job.id, false, errorMsg);
+        throw error;
+      }
 
     } catch (error) {
-      debugLog(`ERROR in processNextJob: ${error}`);
-      console.error(`[VIDEO-JOB-PROCESSOR-ERROR] Failed to process job:`, error);
+      console.error(`[VIDEO-WORKER-${this.workerId}] Failed to process job:`, error);
     } finally {
       this.isProcessing = false;
-      debugLog('processNextJob() finished, isProcessing = false');
     }
   }
 
@@ -2557,36 +2547,31 @@ export class VideoJobProcessor {
   private async captionKeyframesForBatch(keyframes: any[]): Promise<string[]> {
     if (keyframes.length === 0) return [];
 
-    try {
-      // Use existing captioning services (Ollama, Moondream)
-      const { OllamaCaptioningService } = await import('./processors/ollama-captioning-service');
-      
-      const service = new OllamaCaptioningService();
-      
-      if (!(await service.isAvailable())) {
-        console.warn(`[ENHANCED-BATCH] Ollama captioning service not available`);
-        return keyframes.map(() => 'Visual content');
-      }
-
-      console.log(`[ENHANCED-BATCH] Captioning ${keyframes.length} keyframes with Ollama...`);
-
-      const captions: string[] = [];
-      for (const keyframe of keyframes) {
-        try {
-          const result = await service.caption(keyframe.imagePath);
-          captions.push(result.caption || 'Visual content');
-        } catch (error) {
-          console.error(`[ENHANCED-BATCH] Failed to caption keyframe:`, error);
-          captions.push('Visual content');
-        }
-      }
-
-      return captions;
-
-    } catch (error) {
-      console.error(`[ENHANCED-BATCH] Keyframe captioning failed:`, error);
-      return keyframes.map(() => 'Visual content');
+    // Use existing captioning services (Ollama, Moondream)
+    const { OllamaCaptioningService } = await import('./processors/ollama-captioning-service');
+    
+    const service = new OllamaCaptioningService();
+    
+    if (!(await service.isAvailable())) {
+      throw new Error(`Ollama captioning service not available - cannot proceed with Phase 1`);
     }
+
+    console.log(`[ENHANCED-BATCH] Captioning ${keyframes.length} keyframes with Ollama...`);
+
+    const captions: string[] = [];
+    for (let i = 0; i < keyframes.length; i++) {
+      const keyframe = keyframes[i];
+      const result = await service.caption(keyframe.imagePath);
+      
+      if (!result.caption || result.caption.trim().length === 0) {
+        throw new Error(`Ollama returned empty caption for keyframe ${i + 1}/${keyframes.length} at ${keyframe.imagePath}`);
+      }
+      
+      captions.push(result.caption);
+      console.log(`[ENHANCED-BATCH] ✓ Keyframe ${i + 1}/${keyframes.length} captioned (${result.caption.length} chars)`);
+    }
+
+    return captions;
   }
 
   /**
@@ -2594,10 +2579,10 @@ export class VideoJobProcessor {
    */
   private async reconstructSceneForBatch(transcription: string, keyframeCaptions: string[]): Promise<string> {
     try {
-      const visualContext = keyframeCaptions.filter(c => c && c !== 'Visual content').join('. ');
+      const visualContext = keyframeCaptions.join('. ');
       
       if (!transcription && !visualContext) {
-        return 'Scene content';
+        throw new Error('Cannot reconstruct scene - no transcription or visual context available');
       }
 
       // Build scene reconstruction prompt
@@ -2630,18 +2615,21 @@ Scene Description:`;
       });
 
       if (!response.ok) {
-        console.warn(`[ENHANCED-BATCH] Scene reconstruction API returned ${response.status}`);
-        return `${transcription.substring(0, 200)}...`;
+        throw new Error(`Scene reconstruction API returned ${response.status}`);
       }
 
       const data = await response.json();
-      const sceneDescription = data.response?.trim() || transcription.substring(0, 200);
+      const sceneDescription = data.response?.trim();
+      
+      if (!sceneDescription || sceneDescription.length === 0) {
+        throw new Error('Scene reconstruction returned empty response');
+      }
       
       return sceneDescription;
 
     } catch (error) {
       console.error(`[ENHANCED-BATCH] Scene reconstruction failed:`, error);
-      return transcription.substring(0, 200) || 'Scene content';
+      throw error;
     }
   }
 
