@@ -15,7 +15,17 @@ export class ImageSearchStoreSqlite implements IImageSearchStore {
     this.db.pragma('foreign_keys = ON');
   }
 
-  async search(q: string, limit: number, cursor?: SearchCursor): Promise<{ items: SearchItem[]; total: number; nextCursor?: SearchCursor }> {
+  async search(
+    q: string, 
+    limit: number, 
+    cursor?: SearchCursor,
+    config?: any
+  ): Promise<{ 
+    items: SearchItem[]; 
+    total: number; 
+    nextCursor?: SearchCursor;
+    searchDepth: number;
+  }> {
     const like = `%${(q || '').toLowerCase()}%`;
     const params: any[] = [like];
     let cursorClause = '';
@@ -55,6 +65,6 @@ export class ImageSearchStoreSqlite implements IImageSearchStore {
       }
     }
 
-    return { items, total: Number(totalRow?.c || 0), nextCursor };
+    return { items, total: Number(totalRow?.c || 0), nextCursor, searchDepth: 1 };
   }
 }

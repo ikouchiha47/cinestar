@@ -77,7 +77,14 @@ export interface AppConfig {
     enabled: boolean;
     extractionModel: string;
     extractionUrl: string;
-    phases: {
+    image: {
+      singlePassMode: boolean;  // If true, get spatial+temporal in one vision call
+      enableExtraction: boolean;
+      enableSpatial: boolean;
+      enableTemporal: boolean;
+    };
+    video: {
+      singlePassMode: boolean;
       enableExtraction: boolean;
       enableSpatial: boolean;
       enableTemporal: boolean;
@@ -141,7 +148,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',
     visionModelDims: [378, 378], // Moondream v2 dimensions
-    generalPurposeModel: 'llama3.2:3b', // For text generation (scene reconstruction, Q&A)
+    generalPurposeModel: 'qwen3:4b', // For text generation (scene reconstruction, Q&A)
     maxTokens: 2048,
     temperature: 0.1,
   },
@@ -185,10 +192,17 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   multiPass: {
     enabled: true, // ✅ ENABLED - Multi-pass captioning active
-    extractionModel: 'llama3.2:3b',
+    extractionModel: 'qwen3:4b',
     extractionUrl: '', // Will use ai.embedUrl if empty
-    phases: {
-      enableExtraction: true,  // ✅ Phase 2: Extract structured elements
+    image: {
+      singlePassMode: true,     // ✅ TESTED & VERIFIED - moondream handles comprehensive prompt correctly
+      enableExtraction: true,   // ✅ Extract structured elements from comprehensive caption
+      enableSpatial: false,     // ❌ Disabled (included in single-pass comprehensive prompt)
+      enableTemporal: false     // ❌ Disabled (included in single-pass comprehensive prompt)
+    },
+    video: {
+      singlePassMode: false,    // ❌ Videos: Use multi-pass for better control
+      enableExtraction: true,   // ✅ Phase 2: Extract structured elements
       enableSpatial: true,      // ✅ Phase 3: Spatial relationships
       enableTemporal: true,     // ✅ Phase 4: Temporal analysis
       enableSegmentationCheck: false

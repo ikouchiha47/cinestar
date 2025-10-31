@@ -154,26 +154,77 @@ export class AVModalityVecDatabase {
     return { results, total, hasMore: results.length > 0 && results.length <= total };
   }
 
-  async searchHybrid(query: string, embedding: Float32Array, options: { limit?: number; alpha?: number; cutoff?: { tsISO: string; id: string } } = {}) {
-    const limit = options.limit || 20;
-    const alpha = options.alpha ?? 0.7;
+  async searchHybrid(query: string, embedding: Float32Array, options: { 
+    limit?: number; 
+    alpha?: number; 
+    cutoff?: { tsISO: string; id: string }; 
+    minSimilarity?: number;
+    maxDistance?: number;
+  } = {}) {
+    const limit = options.limit || 10;
+    const alpha = options.alpha ?? 0.75;
+    const minSimilarity = options.minSimilarity ?? 0.5;
+    const maxDistance = options.maxDistance ?? 0.4;
+
+    console.log(`[AV-HYBRID] Starting hybrid search for: "${query}"`);
+    console.log(`[AV-HYBRID] alpha=${alpha}, minSimilarity=${minSimilarity}, maxDistance=${maxDistance}, limit=${limit}`);
+
     const [vec, fts] = await Promise.all([
-      this.searchSimilar(embedding, limit * 2, options.cutoff),
-      this.searchFTS(query, limit * 2, options.cutoff)
+      this.searchSimilar(embedding, limit * 3, options.cutoff),
+      this.searchFTS(query, limit * 3, options.cutoff)
     ]);
 
-    const map = new Map<string, { item: AVHybridResult; vs: number; fs: number }>();
-    for (const it of vec.results) map.set(it.id, { item: it, vs: it.similarity, fs: 0 });
+    console.log(`[AV-HYBRID] Raw results - Vector: ${vec.results.length}, FTS: ${fts.results.length}`);
+
+    // Apply distance cutoff to vector results
+    const filteredVec = vec.results.filter(r => (r as any).distance <= maxDistance);
+    console.log(`[AV-HYBRID] After distance cutoff (≤${maxDistance}): ${filteredVec.length} vector results`);
+
+    const map = new Map<string, { item: AVHybridResult; vs: number; fs: number; distance?: number }>();
+    
+    // Add filtered vector results
+    for (const it of filteredVec) {
+      map.set(it.id, { item: it, vs: it.similarity, fs: 0, distance: (it as any).distance });
+    }
+    
+    // Add FTS results
     for (const it of fts.results) {
       const ex = map.get(it.id);
       if (ex) ex.fs = it.similarity; else map.set(it.id, { item: it, vs: 0, fs: it.similarity });
     }
 
-    const merged = Array.from(map.values())
-      .map(({ item, vs, fs }) => ({ ...item, similarity: alpha * vs + (1 - alpha) * fs }))
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
+    // Calculate hybrid scores with quality filtering
+    const scoredResults = Array.from(map.values())
+      .map(({ item, vs, fs, distance }) => {
+        const hybridScore = alpha * vs + (1 - alpha) * fs;
+        return {
+          ...item,
+          similarity: hybridScore,
+          _debug: { vectorScore: vs, ftsScore: fs, hybridScore, distance }
+        };
+      })
+      .filter(r => r.similarity >= minSimilarity)
+      .sort((a, b) => b.similarity - a.similarity);
 
-    return { results: merged, total: map.size, hasMore: merged.length > 0 && map.size > merged.length };
+    console.log(`[AV-HYBRID] Quality filtered: ${scoredResults.length} results (≥${minSimilarity})`);
+    
+    // Log top results
+    if (scoredResults.length > 0) {
+      console.log(`[AV-HYBRID] Top 5 results:`);
+      scoredResults.slice(0, 5).forEach((r, i) => {
+        const debug = (r as any)._debug;
+        const name = r.path ? path.basename(r.path) : r.id;
+        console.log(`  ${i+1}. ${name}: score=${r.similarity.toFixed(3)}, vector=${debug.vectorScore.toFixed(3)}, fts=${debug.ftsScore.toFixed(3)}${debug.distance ? `, distance=${debug.distance.toFixed(3)}` : ''}`);
+      });
+    }
+
+    const finalResults = scoredResults.slice(0, limit);
+    const hasMore = scoredResults.length > limit;
+
+    return { 
+      results: finalResults, 
+      total: scoredResults.length, 
+      hasMore 
+    };
   }
 }

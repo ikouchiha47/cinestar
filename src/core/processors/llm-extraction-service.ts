@@ -24,7 +24,7 @@ export class LLMExtractionService {
   constructor(baseUrl?: string, model?: string) {
     const config = ConfigManager.getConfig();
     this.baseUrl = (baseUrl || config.ai.embedUrl).replace(/\/$/, '');
-    this.model = model || config.ai.generalPurposeModel || 'llama3.2:3b';
+    this.model = model || config.ai.generalPurposeModel || 'qwen3:4b';
     console.log(`[LLM-EXTRACTION] Using model: ${this.model} at ${this.baseUrl}`);
   }
 

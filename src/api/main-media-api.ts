@@ -38,7 +38,7 @@ export class MainMediaAPI {
   private static reconciliationInterval: NodeJS.Timeout | null = null;
   private static mainWindow: any = null; // BrowserWindow reference for IPC events
   // Strategy/config
-  private static flags: StrategyFlags = { dualWrite: false, useNewCatalog: false, useNewImageSearch: false, useNewAVSearch: false };
+  private static flags: StrategyFlags = { dualWrite: false, useNewCatalog: false, useNewImageSearch: true, useNewAVSearch: false };
   private static partitions: Record<string, { id: string; role: string; file_path: string }> = {};
   private static sourcePartitionMap: Record<string, { catalog_partition_id: string; image_partition_id: string; av_partition_id: string }> = {};
   private static canonical: CanonicalMediaDatabase | null = null;
@@ -61,11 +61,13 @@ export class MainMediaAPI {
     cursors?: { images?: string; videos?: string; audio?: string };
     orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
     orderDirection?: 'asc' | 'desc';
-  }): Promise<{ success: boolean; results?: {
-    images: any[]; videos: any[]; audio: any[];
-    hasMore: { images: boolean; videos: boolean; audio: boolean };
-    nextCursor: { images?: string; videos?: string; audio?: string };
-  }; error?: string }> {
+  }): Promise<{
+    success: boolean; results?: {
+      images: any[]; videos: any[]; audio: any[];
+      hasMore: { images: boolean; videos: boolean; audio: boolean };
+      nextCursor: { images?: string; videos?: string; audio?: string };
+    }; error?: string
+  }> {
     try {
       await this.ensureInitialized();
       const limits = params?.limits || {};
@@ -116,8 +118,8 @@ export class MainMediaAPI {
             try {
               await fs.access(thumbPath);
               (v as any).metadata = { ...(v as any).metadata, thumbnailPath: thumbPath, thumbnailUrl: `file://${thumbPath}` };
-            } catch {}
-          } catch {}
+            } catch { }
+          } catch { }
         }
       } catch (e) {
         console.warn('[LISTING-THUMB] Failed to enrich video thumbnails (non-fatal):', e);
@@ -207,17 +209,17 @@ export class MainMediaAPI {
 
   static async initialize(dbPath?: string): Promise<void> {
     if (this.initialized) return;
-    
+
     // Use default data directory if no path provided (fresh install scenario)
     const dataDir = dbPath ?? getDefaultDataDir();
     const baseDir = path.extname(dataDir).toLowerCase() === '.db' ? path.dirname(dataDir) : dataDir;
     this.dataDirPath = baseDir;
-    
+
     // Force SQLite backend (JSON backend deprecated)
     // If a directory was passed, append a filename
     const isFile = path.extname(dataDir).toLowerCase() === '.db';
     const filePath = isFile ? dataDir : path.join(dataDir, 'vector.db');
-    
+
     // Run unified database migrations for fresh installs
     console.log('[MainMediaAPI] Checking unified database migrations...');
     const migrator = new UnifiedMigrator(dataDir);
@@ -226,19 +228,19 @@ export class MainMediaAPI {
         if (this.mainWindow?.webContents) {
           this.mainWindow.webContents.send('migration:progress', evt);
         }
-      } catch {}
+      } catch { }
     });
-    
+
     if (!migrationResult.success) {
       throw new Error(`Unified migration failed: ${migrationResult.error}`);
     }
-    
+
     if (migrationResult.migrationsRun.length > 0) {
       console.log(`[MainMediaAPI] Applied ${migrationResult.migrationsRun.length} migrations:`, migrationResult.migrationsRun);
       console.log(`[MainMediaAPI] Video DB: ${migrationResult.videoDB.migrationsApplied} total migrations`);
       console.log(`[MainMediaAPI] Media DB: ${migrationResult.mediaDB.migrationsApplied} total migrations`);
     }
-    
+
     this.db = new SqliteMainDatabase(filePath);
     this.backendType = 'sqlite';
     this.dbPathInfo = filePath;
@@ -305,12 +307,12 @@ export class MainMediaAPI {
     }
     // Build search stores after LLM is resolved (vector/FTS need llm/vecDb)
     this.buildSearchStores(baseDir);
-    
+
     this.initialized = true;
     console.log(`[MainMediaAPI] initialized with backend=${this.backendType} path=${this.dbPathInfo}`);
-  
-  // Start background reconciliation service
-  this.startBackgroundReconciliation();
+
+    // Start background reconciliation service
+    this.startBackgroundReconciliation();
   }
 
   private static async ensureInitialized(): Promise<void> {
@@ -427,10 +429,10 @@ export class MainMediaAPI {
    * older items of a different type. Kept for scoped overlays and backward
    * compatibility.
    */
-  static async getRecentItems(params?: { 
-    sourceIds?: string[]; 
-    types?: Array<'image'|'video'|'audio'>; 
-    limit?: number; 
+  static async getRecentItems(params?: {
+    sourceIds?: string[];
+    types?: Array<'image' | 'video' | 'audio'>;
+    limit?: number;
     cursor?: string; // ISO timestamp cursor for efficient pagination
     orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
     orderDirection?: 'asc' | 'desc';
@@ -438,7 +440,7 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
       console.log(`[MainMediaAPI] getRecentItems using backend=${this.backendType}`, params);
-      
+
       // Map camelCase to snake_case for database
       const orderByMap: Record<string, 'created_at' | 'modified_at' | 'name' | 'size'> = {
         'createdAt': 'created_at',
@@ -446,9 +448,9 @@ export class MainMediaAPI {
         'name': 'name',
         'size': 'size'
       };
-      
+
       const dbOrderBy = params?.orderBy ? orderByMap[params.orderBy] || 'created_at' : 'created_at';
-      
+
       // Use cursor-based pagination on canonical catalog
       const result = await this.canonicalGetMediaItemsPaginated({
         types: params?.types,
@@ -469,17 +471,17 @@ export class MainMediaAPI {
             try {
               await fs.access(thumbPath);
               (it as any).metadata = { ...(it as any).metadata, thumbnailPath: thumbPath, thumbnailUrl: `file://${thumbPath}` };
-            } catch {}
-          } catch {}
+            } catch { }
+          } catch { }
         }
-      } catch {}
+      } catch { }
 
       console.log(`[MainMediaAPI] getRecentItems returning ${result.items.length} items (hasMore: ${result.hasMore})`);
-      return { 
-        success: true, 
-        items: result.items, 
+      return {
+        success: true,
+        items: result.items,
         nextCursor: result.nextCursor,
-        hasMore: result.hasMore 
+        hasMore: result.hasMore
       };
     } catch (error) {
       console.error('Failed to get recent items:', error);
@@ -490,10 +492,10 @@ export class MainMediaAPI {
   /**
    * Legacy method with offset pagination (deprecated but kept for compatibility)
    */
-  static async getRecentItemsWithOffset(params?: { 
-    sourceIds?: string[]; 
-    types?: Array<'image'|'video'|'audio'>; 
-    limit?: number; 
+  static async getRecentItemsWithOffset(params?: {
+    sourceIds?: string[];
+    types?: Array<'image' | 'video' | 'audio'>;
+    limit?: number;
     offset?: number;
     orderBy?: 'createdAt' | 'modifiedAt' | 'name' | 'size';
     orderDirection?: 'asc' | 'desc';
@@ -501,7 +503,7 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
       console.warn(`[MainMediaAPI] getRecentItemsWithOffset is deprecated - use cursor-based getRecentItems instead`);
-      
+
       // Use canonical offset-based pagination
       const limit = params?.limit || 50;
       const offset = params?.offset || 0;
@@ -535,7 +537,7 @@ export class MainMediaAPI {
         modifiedAt: r.modified_at,
       }));
       const hasMore = items.length === limit; // heuristic
-      
+
       console.log(`[MainMediaAPI] getRecentItemsWithOffset returning ${items.length} items (hasMore: ${hasMore})`);
       return { success: true, items, hasMore };
     } catch (error) {
@@ -545,12 +547,12 @@ export class MainMediaAPI {
   }
 
   private static async canonicalGetMediaItemsPaginated(params: {
-    types?: Array<'image'|'video'|'audio'>;
+    types?: Array<'image' | 'video' | 'audio'>;
     limit?: number;
     cursor?: string;
-    orderBy?: 'created_at'|'modified_at'|'name'|'size';
-    orderDirection?: 'ASC'|'DESC';
-  }): Promise<{ items: any[]; nextCursor?: string; hasMore: boolean }>{
+    orderBy?: 'created_at' | 'modified_at' | 'name' | 'size';
+    orderDirection?: 'ASC' | 'DESC';
+  }): Promise<{ items: any[]; nextCursor?: string; hasMore: boolean }> {
     const limit = params.limit ?? 20;
     const types = params.types && params.types.length ? params.types : undefined;
     const orderBy = params.orderBy || 'created_at';
@@ -596,7 +598,7 @@ export class MainMediaAPI {
     }));
     const hasMore = rows.length > limit;
     const last = slice[slice.length - 1];
-    const nextCursor = last ? (orderColumn === 'created_at' ? last.created_at : (orderColumn === 'modified_at' ? last.modified_at : (orderColumn === 'size' ? String(last.size||0) : last.path))) : undefined;
+    const nextCursor = last ? (orderColumn === 'created_at' ? last.created_at : (orderColumn === 'modified_at' ? last.modified_at : (orderColumn === 'size' ? String(last.size || 0) : last.path))) : undefined;
     return { items, nextCursor, hasMore };
   }
 
@@ -607,10 +609,10 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
       console.log(`[MainMediaAPI] getVideosByPath: ${videoPath}`);
-      
+
       // Query canonical media.db (not vector.db) for videos
       const videoItems = this.canonical!.getMediaItemsByPath(videoPath, true);
-      
+
       // Map snake_case to camelCase for consistency
       const mappedItems = videoItems.map(item => ({
         ...item,
@@ -619,7 +621,7 @@ export class MainMediaAPI {
         modifiedAt: item.modified_at,
         durationMs: item.duration_ms
       }));
-      
+
       console.log(`[MainMediaAPI] Found ${mappedItems.length} video items for path: ${videoPath}`);
       return { success: true, items: mappedItems };
     } catch (error) {
@@ -637,23 +639,23 @@ export class MainMediaAPI {
       // Handle 'ALL' as undefined (get all items)
       const actualSourceId = sourceId === 'ALL' ? undefined : sourceId;
       const params = actualSourceId ? { sourceIds: [actualSourceId] } : undefined;
-      
+
       // Use legacy offset-based method but simulate 'total' for backward compatibility
       const result = await this.getRecentItemsWithOffset(params);
-      
+
       if (!result.success) {
         return result as any;
       }
-      
+
       // Simulate total count for backward compatibility
       // This is not accurate but prevents breaking existing code
       const estimatedTotal = result.items?.length || 0;
       const total = result.hasMore ? estimatedTotal + 1 : estimatedTotal;
-      
+
       console.log(`[MainMediaAPI] getItems returning ${result.items?.length || 0} items (estimated total: ${total})`);
-      return { 
-        success: true, 
-        items: result.items, 
+      return {
+        success: true,
+        items: result.items,
         total // Estimated total for backward compatibility
       };
     } catch (error) {
@@ -782,11 +784,13 @@ export class MainMediaAPI {
   /**
    * Get basic statistics
    */
-  static async getStats(): Promise<{ success: boolean; stats?: {
-    totalSources: number;
-    totalItems: number;
-    activeJobs: number;
-  }; error?: string }> {
+  static async getStats(): Promise<{
+    success: boolean; stats?: {
+      totalSources: number;
+      totalItems: number;
+      activeJobs: number;
+    }; error?: string
+  }> {
     try {
       await this.ensureInitialized();
       const stats = await this.db.getStats();
@@ -803,7 +807,7 @@ export class MainMediaAPI {
   static async startIndexing(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
       await this.ensureInitialized();
-      
+
       // Read from canonical database (media.db) where addSource() writes
       let source: any = null;
       try {
@@ -822,31 +826,31 @@ export class MainMediaAPI {
             config: {}
           };
         }
-      } catch {}
-      
+      } catch { }
+
       if (!source) {
         return { success: false, error: 'Source not found' };
       }
 
-      const jobId = await this.jobsDb!.createJob({ 
+      const jobId = await this.jobsDb!.createJob({
         sourceId,
         title: 'Scanning Media Files',
         description: `Scanning ${source.name} for new media files`,
         operationType: 'media_scan',
         targetFile: source.path
       });
-      
+
       console.log(`[INDEXING-START] Created job ${jobId}, calling performIndexing for source ${sourceId}`);
-      
+
       // Start indexing in background (simplified version)
       this.performIndexing(jobId, sourceId, false).catch(error => {
         console.error('[INDEXING-ERROR] Indexing failed:', error);
         console.error('[INDEXING-ERROR] Stack:', error.stack);
         this.jobsDb!.updateJobStatus(jobId, 'failed', 0);
       });
-      
+
       console.log(`[INDEXING-START] performIndexing called (async), returning jobId ${jobId}`);
-      
+
       return { success: true, jobId };
     } catch (error) {
       console.error('Failed to start indexing:', error);
@@ -874,26 +878,26 @@ export class MainMediaAPI {
   static async forceReindex(sourceId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
       await this.ensureInitialized();
-      
+
       const source = await this.db.getSource(sourceId);
       if (!source) {
         return { success: false, error: 'Source not found' };
       }
 
-      const jobId = await this.jobsDb!.createJob({ 
+      const jobId = await this.jobsDb!.createJob({
         sourceId,
         title: 'Force Re-indexing',
         description: `Force re-indexing ${source.name} (regenerating all captions and embeddings)`,
         operationType: 'force_reindex',
         targetFile: source.path
       });
-      
+
       // Start force re-indexing in background
       this.performIndexing(jobId, sourceId, true).catch(error => {
         console.error('Force re-indexing failed:', error);
         this.jobsDb!.updateJobStatus(jobId, 'failed', 0);
       });
-      
+
       return { success: true, jobId };
     } catch (error) {
       console.error('Failed to start force re-indexing:', error);
@@ -968,13 +972,13 @@ export class MainMediaAPI {
       const sources = this.canonical!.db.prepare(`
         SELECT id, name, root_path FROM sources WHERE status = 'active'
       `).all() as any[];
-      const singleFilesSource = sources.find((s: any) => 
+      const singleFilesSource = sources.find((s: any) =>
         s.name === 'Single File Uploads' || s.root_path === 'various' || s.id === 'single_files'
       );
       const actualSourceId = singleFilesSource ? singleFilesSource.id : (sources.length > 0 ? sources[0].id : 'single_files');
 
       // 5) Create UI-visible job and dispatch enqueue loop
-      const jobId = await this.jobsDb!.createJob({ 
+      const jobId = await this.jobsDb!.createJob({
         sourceId: actualSourceId,
         title: 'Processing Unindexed Images',
         description: `Generating captions and embeddings for ${unindexedImages.length} unindexed images`,
@@ -1000,7 +1004,7 @@ export class MainMediaAPI {
    */
   private static async generateFastThumbnail(id: string, filePath: string, name: string): Promise<void> {
     console.log(`[FAST-THUMBNAIL] Generating thumbnail for: ${name}`);
-    
+
     try {
       // For now, we'll use the image itself as thumbnail (fast)
       // In the future, this could generate a smaller thumbnail using sharp or similar
@@ -1015,7 +1019,7 @@ export class MainMediaAPI {
    */
   private static async queueImageForCaptioning(id: string, filePath: string, name: string, sourceId: string): Promise<void> {
     console.log(`[CAPTION-QUEUE] Queuing image for background captioning: ${name}`);
-    
+
     try {
       // Create an image_processing job that workers will pick up (canonical path)
       const stats = await fs.stat(filePath);
@@ -1051,12 +1055,12 @@ export class MainMediaAPI {
    */
   private static async processUnindexedImagesWithJobTracking(jobId: string, unindexedImages: any[]): Promise<void> {
     console.log(`[UNINDEXED-RECOVERY] Starting background processing of ${unindexedImages.length} images (Job: ${jobId})`);
-    
+
     // Update job status to running
     await this.jobsDb!.updateJobStatus(jobId, 'running', 0);
-    
+
     let processedCount = 0;
-    
+
     for (const item of unindexedImages) {
       try {
         console.log(`[UNINDEXED-RECOVERY] Processing image ${processedCount + 1}/${unindexedImages.length}: ${item.name}`);
@@ -1072,22 +1076,22 @@ export class MainMediaAPI {
           jobType: 'image_processing',
           retryCount: 0
         });
-        
+
         processedCount++;
-        
+
         // Update job progress for UI
         const progress = Math.round((processedCount / unindexedImages.length) * 100);
         await this.jobsDb!.updateJobStatus(jobId, 'running', progress);
-        
+
         // Small delay to avoid overwhelming the system
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
       } catch (error) {
         console.error(`[UNINDEXED-RECOVERY] Failed to process ${item.name}:`, error);
         // Continue with next image even if one fails
       }
     }
-    
+
     // Mark job as completed
     await this.jobsDb!.updateJobStatus(jobId, 'completed', 100);
     console.log(`[UNINDEXED-RECOVERY] Completed background processing of ${unindexedImages.length} images (Job: ${jobId})`);
@@ -1099,33 +1103,33 @@ export class MainMediaAPI {
   static async deleteMediaItem(itemId: string, deleteFile: boolean = false): Promise<{ success: boolean; error?: string }> {
     try {
       await this.ensureInitialized();
-      
+
       // Get the item details before deletion
       const items = await this.db.getMediaItems();
       const item = items.find((i: any) => i.id === itemId);
-      
+
       if (!item) {
         return { success: false, error: 'Media item not found' };
       }
-      
+
       console.log(`[MEDIA-DELETE] Removing media item from library: ${item.name} (${itemId})`);
-      
+
       // Remove from main database only - let triggers handle FTS cleanup
       await this.db.removeMediaItem(itemId);
-      
+
       // Do not write to legacy vector.db during cutover
-      
+
       // CRITICAL: Also delete associated video processing jobs to prevent resurrection
       if (item.type === 'video' && item.path) {
         try {
           const { VideoMediaAPI } = await import('./video-media-api');
           const videoAPI = VideoMediaAPI.getInstance();
-          
+
           // Ensure jobsDb is set on the singleton
           if (this.jobsDb) {
             videoAPI.setJobsDatabase(this.jobsDb);
           }
-          
+
           // Delete all jobs for this video path
           const deleted = await videoAPI.deleteJobsByVideoPath(item.path);
           console.log(`[MEDIA-DELETE] Deleted ${deleted} video processing jobs for: ${item.path}`);
@@ -1133,10 +1137,10 @@ export class MainMediaAPI {
           console.warn(`[MEDIA-DELETE] Failed to delete video jobs (non-critical):`, error);
         }
       }
-      
+
       console.log(`[MEDIA-DELETE] Successfully removed ${item.name} from library`);
       return { success: true };
-      
+
     } catch (error) {
       console.error('[MEDIA-DELETE] Failed to delete media item:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -1149,19 +1153,19 @@ export class MainMediaAPI {
   static async startCleanupJob(): Promise<{ success: boolean; jobId?: string; error?: string }> {
     try {
       await this.ensureInitialized();
-      
+
       console.log(`[CLEANUP-JOB] Starting background cleanup job`);
-      
+
       // Create a cleanup job
       const jobId = `cleanup_${Date.now()}`;
-      
+
       // Start cleanup in background
       this.performCleanup(jobId).catch(error => {
         console.error('[CLEANUP-JOB] Background cleanup failed:', error);
       });
-      
+
       return { success: true, jobId };
-      
+
     } catch (error) {
       console.error('[CLEANUP-JOB] Failed to start cleanup job:', error);
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -1173,14 +1177,14 @@ export class MainMediaAPI {
    */
   private static async performCleanup(jobId: string): Promise<void> {
     console.log(`[CLEANUP-JOB] Starting cleanup job ${jobId}`);
-    
+
     try {
       // 1. Find orphaned database entries (files that no longer exist)
       const items = await this.db.getMediaItems();
       const orphanedItems: any[] = [];
-      
+
       console.log(`[CLEANUP-JOB] Checking ${items.length} items for orphaned files`);
-      
+
       for (const item of items) {
         try {
           const fs = await import('fs');
@@ -1193,40 +1197,40 @@ export class MainMediaAPI {
           console.warn(`[CLEANUP-JOB] Cannot check file existence for ${item.name}:`, e);
         }
       }
-      
+
       // 2. Remove orphaned database entries
       if (orphanedItems.length > 0) {
         console.log(`[CLEANUP-JOB] Removing ${orphanedItems.length} orphaned database entries`);
-        
+
         for (const item of orphanedItems) {
           try {
             await this.db.removeMediaItem(item.id);
-            
+
             // Skip legacy vector.db cleanup writes during cutover
-            
+
             console.log(`[CLEANUP-JOB] Removed orphaned entry: ${item.name} (${item.id})`);
-            
+
             // Small delay to avoid overwhelming the system
             await new Promise(resolve => setTimeout(resolve, 100));
-            
+
           } catch (error) {
             console.error(`[CLEANUP-JOB] Failed to remove orphaned entry ${item.id}:`, error);
           }
         }
       }
-      
+
       // 3. Clean up empty sources (sources with no items)
       console.log(`[CLEANUP-JOB] Checking for empty sources`);
       const sources = await this.db.getSources();
       const emptySources: any[] = [];
-      
+
       for (const source of sources) {
         const sourceItems = await this.db.getMediaItems(source.id);
         if (sourceItems.length === 0 && source.id !== 'single_files') { // Don't remove single_files source
           emptySources.push(source);
         }
       }
-      
+
       if (emptySources.length > 0) {
         console.log(`[CLEANUP-JOB] Removing ${emptySources.length} empty sources`);
         for (const source of emptySources) {
@@ -1238,10 +1242,10 @@ export class MainMediaAPI {
           }
         }
       }
-      
+
       console.log(`[CLEANUP-JOB] Cleanup job ${jobId} completed successfully`);
       console.log(`[CLEANUP-JOB] Summary: Removed ${orphanedItems.length} orphaned items, ${emptySources.length} empty sources`);
-      
+
     } catch (error) {
       console.error(`[CLEANUP-JOB] Cleanup job ${jobId} failed:`, error);
     }
@@ -1267,16 +1271,16 @@ export class MainMediaAPI {
   static startBackgroundReconciliation(): void {
     // Run reconciliation every 30 minutes (infrequent)
     const RECONCILIATION_INTERVAL = 30 * 60 * 1000; // 30 minutes
-    
+
     console.log('[JOB-RECONCILIATION] Starting background reconciliation service (every 30 minutes)');
-    
+
     // Initial reconciliation after 2 minutes (let app settle)
     setTimeout(() => {
       this.runReconciliation().catch((error: any) => {
         console.warn('[JOB-RECONCILIATION] Initial reconciliation failed:', error);
       });
     }, 2 * 60 * 1000); // 2 minutes
-    
+
     // Then run periodically
     this.reconciliationInterval = setInterval(() => {
       this.runReconciliation().catch((error: any) => {
@@ -1301,10 +1305,10 @@ export class MainMediaAPI {
    */
   static async runReconciliation(): Promise<{ stalledJobs: number; unindexedImages: number }> {
     console.log('[JOB-RECONCILIATION] Running reconciliation cycle...');
-    
+
     let stalledJobsCount = 0;
     let unindexedImagesCount = 0;
-    
+
     try {
       // 1. Check for stalled jobs (only if no active jobs to avoid conflicts)
       const activeJobs = await this.jobsDb!.getActiveJobs();
@@ -1315,7 +1319,7 @@ export class MainMediaAPI {
       } else {
         console.log(`[JOB-RECONCILIATION] ${activeJobs.length} active jobs running - skipping stalled job check`);
       }
-      
+
       // 2. Check for unindexed images (less aggressive)
       const unindexedResult = await this.indexUnprocessedImages();
       if (unindexedResult.success && unindexedResult.unindexedCount) {
@@ -1324,13 +1328,13 @@ export class MainMediaAPI {
           console.log(`[JOB-RECONCILIATION] Found ${unindexedImagesCount} unindexed images - started background processing`);
         }
       }
-      
+
       console.log(`[JOB-RECONCILIATION] Cycle complete - recovered ${stalledJobsCount} stalled jobs, ${unindexedImagesCount} unindexed images`);
-      
+
     } catch (error) {
       console.error('[JOB-RECONCILIATION] Reconciliation cycle failed:', error);
     }
-    
+
     return { stalledJobs: stalledJobsCount, unindexedImages: unindexedImagesCount };
   }
 
@@ -1341,12 +1345,12 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
       console.log('[JOB-RECOVERY] Checking for stalled indexing jobs...');
-      
+
       const result = await this.jobsDb!.resetStalledJobs();
-      
+
       if (result.resetCount > 0) {
         console.log(`[JOB-RECOVERY] Reset ${result.resetCount} stalled jobs to pending status`);
-        
+
         // Restart the recovered jobs
         for (const jobId of result.jobIds) {
           try {
@@ -1367,7 +1371,7 @@ export class MainMediaAPI {
       } else {
         console.log('[JOB-RECOVERY] No stalled jobs found');
       }
-      
+
       return { success: true, recoveredCount: result.resetCount };
     } catch (error) {
       console.error('[JOB-RECOVERY] Failed to recover stalled jobs:', error);
@@ -1378,39 +1382,39 @@ export class MainMediaAPI {
   /**
    * Get indexing status (includes both media indexing and video processing jobs)
    */
-  static async getIndexingStatus(): Promise<{ 
-    success: boolean; 
-    activeJobs: string[]; 
-    jobs?: Array<{ 
-      id: string; 
-      sourceId: string; 
-      status: string; 
-      progress: number; 
-      totalItems?: number; 
-      processedItems?: number; 
-      startedAt?: Date; 
-      completedAt?: Date 
-    }>; 
-    error?: string 
+  static async getIndexingStatus(): Promise<{
+    success: boolean;
+    activeJobs: string[];
+    jobs?: Array<{
+      id: string;
+      sourceId: string;
+      status: string;
+      progress: number;
+      totalItems?: number;
+      processedItems?: number;
+      startedAt?: Date;
+      completedAt?: Date
+    }>;
+    error?: string
   }> {
     try {
       await this.ensureInitialized();
-      
+
       // Get media indexing jobs
       const mediaJobs = await this.jobsDb!.getActiveJobs();
       console.log(`[INDEXING-STATUS-DEBUG] Media jobs from DB:`, mediaJobs.map((j: any) => ({ id: j.id, status: j.status, sourceId: j.sourceId })));
-      
+
       // Get video processing jobs using singleton VideoMediaAPI
       let videoJobs: any[] = [];
       try {
         const { VideoMediaAPI } = await import('./video-media-api');
         const videoApi = VideoMediaAPI.getInstance();
-        
+
         // Ensure jobsDb is set on the singleton
         if (this.jobsDb) {
           videoApi.setJobsDatabase(this.jobsDb);
         }
-        
+
         // Use the singleton instance instead of creating new connections
         const activeVideoJobs = await videoApi.getActiveJobs();
         // VideoMediaAPI doesn't have getPendingJobs, so we get all active jobs
@@ -1423,7 +1427,7 @@ export class MainMediaAPI {
         }
         videoJobs = Object.values(byId);
         console.log(`[INDEXING-STATUS-DEBUG] Video jobs:`, videoJobs.map((j: any) => ({ id: j.id, status: j.status })));
-        
+
         // [DEBUG] Log actual video job structure
         if (videoJobs.length > 0) {
           console.log(`[VIDEO-JOB-STRUCTURE-DEBUG] First video job fields:`, Object.keys(videoJobs[0]));
@@ -1433,7 +1437,7 @@ export class MainMediaAPI {
         console.error('[MainMediaAPI] Failed to get video jobs:', e);
         console.error('[MainMediaAPI] Video job error stack:', e instanceof Error ? e.stack : e);
       }
-      
+
       // Combine all jobs
       const allJobs = [...mediaJobs, ...videoJobs];
       // Treat queued + in-progress jobs as active so UI shows jobs immediately after upload
@@ -1441,26 +1445,26 @@ export class MainMediaAPI {
         .filter((j: any) => ['running', 'processing', 'pending', 'scheduled'].includes(j.status))
         .map((j: any) => j.id);
       console.log(`[INDEXING-STATUS-DEBUG] Active jobs (queued/processing):`, activeJobs);
-      
+
       // Get detailed job info for UI display (only active/pending jobs)
-      const relevantJobs = [...mediaJobs, ...videoJobs].filter(j => 
+      const relevantJobs = [...mediaJobs, ...videoJobs].filter(j =>
         j.status === 'running' || j.status === 'processing' || j.status === 'pending' || j.status === 'scheduled'
       );
       const jobDetails = relevantJobs.map(j => {
         // Determine if this is a video job (from VideoDatabase)
         const isVideoJob = !j.sourceId && (j.videoPath || j.video_path); // Video jobs have video_path but no sourceId
-        
+
         // Generate appropriate title and description for video jobs
         let jobTitle = j.title;
         let jobDescription = j.description;
         let operationType = j.operationType;
         let targetFile = j.targetFile;
-        
+
         if (isVideoJob) {
           // Extract filename from video path (handle both field names)
           const videoPath = j.videoPath || j.video_path;
           const fileName = videoPath ? videoPath.split('/').pop() : (j.file_name || j.fileName || 'video');
-          
+
           // [DEBUG] Log video job mapping
           console.log(`[VIDEO-JOB-MAPPING-DEBUG] Processing video job ${j.id}:`, {
             isVideoJob,
@@ -1469,7 +1473,7 @@ export class MainMediaAPI {
             status: j.status,
             progress: j.progress
           });
-          
+
           // Set descriptive titles based on video job status/progress
           if (j.status === 'scheduled' || j.status === 'pending') {
             // Explicitly show queued state, not processing
@@ -1482,7 +1486,7 @@ export class MainMediaAPI {
             if (j.statusMessage) {
               // Use stored status message as job title
               jobTitle = j.statusMessage;
-              
+
               // Try to get additional info from metadata
               let metadata: any = {};
               try {
@@ -1490,7 +1494,7 @@ export class MainMediaAPI {
               } catch (e) {
                 // Ignore metadata parsing errors
               }
-              
+
               jobDescription = metadata.actionDescription || `Processing ${fileName}`;
               operationType = metadata.currentPhase === 'phase0' ? 'video_segmentation' : 'video_keyframes';
             } else {
@@ -1514,10 +1518,10 @@ export class MainMediaAPI {
             jobDescription = `Completed processing ${fileName}`;
             operationType = 'video_complete';
           }
-          
+
           targetFile = videoPath;
         }
-        
+
         const mappedJob = {
           id: j.id,
           sourceId: j.sourceId,
@@ -1535,15 +1539,15 @@ export class MainMediaAPI {
           operationType: operationType,
           targetFile: targetFile
         };
-        
+
         // [DEBUG] Log final mapped job
         if (isVideoJob) {
           console.log(`[VIDEO-JOB-FINAL-DEBUG] Final mapped job for ${j.id}:`, mappedJob);
         }
-        
+
         return mappedJob;
       });
-      
+
       // [DEBUG] Log job details being sent to UI
       console.log(`[INDEXING-API-DEBUG] Sending ${jobDetails.length} jobs to UI:`);
       jobDetails.forEach((job, index) => {
@@ -1557,14 +1561,14 @@ export class MainMediaAPI {
           targetFile: job.targetFile
         });
       });
-      
+
       return { success: true, activeJobs, jobs: jobDetails };
     } catch (error) {
       console.error('Failed to get indexing status:', error);
-      return { 
-        success: false, 
+      return {
+        success: false,
         activeJobs: [],
-        error: error instanceof Error ? error.message : 'Unknown error' 
+        error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
   }
@@ -1576,7 +1580,7 @@ export class MainMediaAPI {
     console.log(`[PERFORM-INDEXING] 🚀 ENTERED performIndexing - jobId: ${jobId}, sourceId: ${sourceId}, forceReindex: ${forceReindex}`);
     try {
       console.log(`[PERFORM-INDEXING] ✅ Inside try block, starting indexing job ${jobId} for source ${sourceId}`);
-      
+
       // Prefer canonical source (media.db), fallback to legacy only if needed
       let source: any = null;
       try {
@@ -1595,16 +1599,16 @@ export class MainMediaAPI {
             config: {}
           };
         }
-      } catch {}
+      } catch { }
       console.log(`[PERFORM-INDEXING] 📁 Got source:`, source ? `${source.name} (${source.path})` : 'null');
-      
+
       if (!source) {
         throw new Error(`Source not found in canonical catalog: ${sourceId}`);
       }
-      
+
       console.log(`[PERFORM-INDEXING] 📝 Updating job status to 'running'`);
       await this.jobsDb!.updateJobStatus(jobId, 'running');
-      
+
       // Ensure source exists in canonical catalog (media.db)
       if (this.canonical) {
         try {
@@ -1621,27 +1625,27 @@ export class MainMediaAPI {
           console.warn('[PERFORM-INDEXING] canonical upsertSource failed (non-fatal):', e);
         }
       }
-      
+
       console.log(`[PERFORM-INDEXING] 📦 Importing file scanner...`);
       // Import file scanner
       const { scanDirectory } = await import('../core/file-scanner');
       console.log(`[PERFORM-INDEXING] ✅ File scanner imported successfully`);
-      
+
       console.log(`[PERFORM-INDEXING] 🔍 Scanning directory: ${source.path}, recursive: ${source.config?.recursive !== false}`);
       // Scan for media files
       const mediaFiles = await scanDirectory(source.path, source.config?.recursive !== false);
       console.log(`[PERFORM-INDEXING] 📊 Found ${mediaFiles.length} media files`);
-      
+
       if (mediaFiles.length === 0) {
         await this.jobsDb!.updateJobStatus(jobId, 'completed', 100);
         return;
       }
-      
+
       // NEW APPROACH: Add all files to DB immediately, create background jobs for processing
       const { generateDeterministicId } = await import('../core/utils/crypto-utils');
       let addedCount = 0;
       let jobsCreated = 0;
-      
+
       for (const file of mediaFiles) {
         try {
           // Generate deterministic ID based on path hash
@@ -1677,25 +1681,25 @@ export class MainMediaAPI {
             jobType: 'image_processing',
             retryCount: 0
           });
-          
+
           addedCount++;
           jobsCreated++;
-          
+
           // Update scan job progress
           const progress = Math.floor((addedCount / mediaFiles.length) * 100);
           await this.jobsDb!.updateJobStatus(jobId, 'running', progress);
-          
+
         } catch (error) {
           console.error(`[INDEX] Failed to add file ${file.name}:`, error);
         }
       }
-      
+
       console.log(`[INDEXING] ✅ Added ${addedCount} images to DB - visible immediately`);
       console.log(`[INDEXING] 🔄 Created ${jobsCreated} background jobs for caption/embedding`);
-      
+
       await this.jobsDb!.updateJobStatus(jobId, 'completed', 100);
       console.log(`[INDEXING] Scan job ${jobId} completed. Added ${addedCount}/${mediaFiles.length} files, created ${jobsCreated} background jobs`);
-      
+
       // Emit IPC event to trigger UI refresh immediately
       console.log(`[INDEXING-IPC-DEBUG] Checking IPC send conditions:`, {
         hasMainWindow: !!this.mainWindow,
@@ -1703,7 +1707,7 @@ export class MainMediaAPI {
         isDestroyed: this.mainWindow?.webContents?.isDestroyed?.() ?? 'N/A',
         webContentsId: this.mainWindow ? this.mainWindow.webContents.id : 'N/A'
       });
-      
+
       if (this.mainWindow && addedCount > 0) {
         console.log(`[INDEXING] 📡 Sending media:scan-completed event to renderer (${addedCount} items)`);
         try {
@@ -1719,7 +1723,7 @@ export class MainMediaAPI {
       } else {
         console.log(`[INDEXING-IPC-DEBUG] Skipping IPC send - mainWindow: ${!!this.mainWindow}, addedCount: ${addedCount}`);
       }
-      
+
     } catch (error) {
       console.error(`[PERFORM-INDEXING] ❌ Indexing job ${jobId} failed:`, error);
       console.error(`[PERFORM-INDEXING] ❌ Error stack:`, error instanceof Error ? error.stack : 'No stack');
@@ -1769,22 +1773,19 @@ export class MainMediaAPI {
       let queryClassification = null;
       let multiModalQuery = null;
 
-      if (searchQuery.length > 3) {
+      if (searchQuery.length >= 3) {
         console.log(`[MULTIMODAL-SEARCH] Processing query: "${q}"`);
-        
+
         // Check cancellation before expensive LLM operations
         if (signal?.aborted) {
           throw new Error('Search cancelled before query classification');
         }
-        
-        try {
-          // Step 1: Classify query type (spatial, temporal, audio, action, mixed)
-          queryClassification = await this.llm!.classifyQueryType(q);
-          console.log(`[MULTIMODAL-SEARCH] Classified as: ${queryClassification.type} (${queryClassification.confidence})`);
 
-          // Step 2: Transform for multi-modal search
-          multiModalQuery = await this.llm!.transformMultiModalQuery(q, queryClassification);
-          searchQuery = multiModalQuery.transformed;
+        try {
+          // Combined: Classify AND transform in a single LLM call (faster!)
+          multiModalQuery = await this.llm!.classifyAndTransformQuery(q);
+          queryClassification = multiModalQuery.classification;
+          searchQuery = multiModalQuery.cleanedQueries[0]; // Use first cleaned query
           enhancedEntities = [
             ...multiModalQuery.searchKeywords.text,
             ...multiModalQuery.searchKeywords.visual,
@@ -1792,8 +1793,10 @@ export class MainMediaAPI {
             ...multiModalQuery.searchKeywords.temporal,
             ...multiModalQuery.searchKeywords.action
           ].filter(Boolean);
-          
-          console.log(`[MULTIMODAL-SEARCH] Transformed query: "${searchQuery}"`);
+
+          console.log(`[MULTIMODAL-SEARCH] Classified as: ${queryClassification.type} (${queryClassification.confidence})`);
+          console.log(`[MULTIMODAL-SEARCH] Cleaned queries: [${multiModalQuery.cleanedQueries.join(', ')}]`);
+          console.log(`[MULTIMODAL-SEARCH] Step-back queries: [${multiModalQuery.stepBackQueries.join(', ')}]`);
           console.log(`[MULTIMODAL-SEARCH] Keywords by modality:`, {
             text: multiModalQuery.searchKeywords.text,
             visual: multiModalQuery.searchKeywords.visual,
@@ -1801,13 +1804,8 @@ export class MainMediaAPI {
             temporal: multiModalQuery.searchKeywords.temporal,
             action: multiModalQuery.searchKeywords.action
           });
-          // console.log(`[MULTIMODAL-SEARCH] Embeddings text:`, {
-          //   text: multiModalQuery.embeddings.text,
-          //   visual: multiModalQuery.embeddings.visual,
-          //   audio: multiModalQuery.embeddings.audio
-          // });
         } catch (error) {
-          console.warn('[MULTIMODAL-SEARCH] Classification failed, using original query:', error);
+          console.warn('[MULTIMODAL-SEARCH] Combined classification/transformation failed, using original query:', error);
           // Fallback to simple entity extraction
           try {
             enhancedEntities = await this.llm!.extractSearchEntities(q);
@@ -1831,9 +1829,74 @@ export class MainMediaAPI {
         try {
           console.log(`[SEARCH-TIMING] 🔎 Using SearchService (modality stores)`);
           const searchLimit = limit * requestedTypes.length;
+
+          // SEARCH STRATEGY:
+          // 1. cleanedQueries[] → multiple embeddings (literal, compressed, paraphrase)
+          // 2. stepBackQueries[] → abstract embeddings (generalized concepts)
+          // 3. expanded keywords → FTS (synonym matching for recall)
+          // Format: "cleaned[0]|stepBack[0]|cleaned[1]|stepBack[1]|...|ftsKeywords"
+
+          let searchQueryForFTS = q;
+
+          if (multiModalQuery) {
+            // Build query string with all variants
+            const queryParts: string[] = [];
+
+            // Interleave cleaned and step-back queries
+            const maxLen = Math.max(
+              multiModalQuery.cleanedQueries.length,
+              multiModalQuery.stepBackQueries.length
+            );
+
+            for (let i = 0; i < maxLen; i++) {
+              if (multiModalQuery.cleanedQueries[i]) {
+                queryParts.push(multiModalQuery.cleanedQueries[i]);
+              }
+              if (multiModalQuery.stepBackQueries[i]) {
+                queryParts.push(multiModalQuery.stepBackQueries[i]);
+              }
+            }
+
+            // Build FTS keywords (last part)
+            const allKeywordArrays = [
+              ...multiModalQuery.searchKeywords.visual,
+              ...multiModalQuery.searchKeywords.audio,
+              ...multiModalQuery.searchKeywords.action,
+              ...multiModalQuery.searchKeywords.text,
+              ...multiModalQuery.searchKeywords.temporal
+            ];
+
+            if (allKeywordArrays.length > 0) {
+              const allKeywords = [q, ...allKeywordArrays]
+                .filter(kw => kw && typeof kw === 'string' && kw.trim().length > 0)
+                .map(kw => kw.trim());
+
+              const uniqueKeywords = [...new Set(allKeywords.map(k => k.toLowerCase()))];
+              queryParts.push(uniqueKeywords.join(' '));
+            } else {
+              // Fallback: use original query for FTS
+              queryParts.push(q);
+            }
+
+            searchQueryForFTS = queryParts.join('|');
+
+            console.log(`[SEARCH-TIMING] 📝 Multi-query search:`);
+            console.log(`  Cleaned (${multiModalQuery.cleanedQueries.length}): [${multiModalQuery.cleanedQueries.join(', ')}]`);
+            console.log(`  Step-back (${multiModalQuery.stepBackQueries.length}): [${multiModalQuery.stepBackQueries.join(', ')}]`);
+            console.log(`  Query string: "${searchQueryForFTS.substring(0, 100)}${searchQueryForFTS.length > 100 ? '...' : ''}"`);
+          }
+
+          // Add search config for incremental depth (will be used in Task 5)
+          const searchConfig = {
+            maxSearchDepth: 2,
+            minResultsThreshold: 5,
+            cleanedQueryWeight: 1.0,
+            stepBackQueryWeight: 0.8
+          };
+
           const searchStart = Date.now();
-          const res = await this.searchService.search(q, searchLimit);
-          console.log(`[SEARCH-TIMING] ⏱️  SearchService took: ${Date.now() - searchStart}ms, got ${res.items.length} items`);
+          const res = await this.searchService.search(searchQueryForFTS, searchLimit, undefined, searchConfig);
+          console.log(`[SEARCH-TIMING] ⏱️  SearchService took: ${Date.now() - searchStart}ms, got ${res.items.length} items (depth: ${res.searchDepth})`);
 
           // Apply adaptive scoring if we have LLM classification
           let scoredItems = res.items || [];
@@ -1842,11 +1905,11 @@ export class MainMediaAPI {
               const scoringStart = Date.now();
               const scoringService = new SearchScoringService();
               const videoResults = scoredItems.filter((r: any) => r.type === 'video' || r.type === 'audio');
-              
+
               if (videoResults.length > 0) {
                 console.log(`[SEARCH-SCORING] Applying adaptive scoring to ${videoResults.length} video/audio results`);
                 const scored = await scoringService.scoreResults(videoResults, q, queryClassification);
-                
+
                 // Replace original items with scored items
                 const scoredMap = new Map(scored.map(s => [s.id, s]));
                 scoredItems = scoredItems.map((item: any) => {
@@ -1856,14 +1919,14 @@ export class MainMediaAPI {
                   }
                   return item;
                 });
-                
+
                 // Re-sort by adaptive score
                 scoredItems.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
-                
+
                 console.log(`[SEARCH-SCORING] ⏱️  Adaptive scoring took: ${Date.now() - scoringStart}ms`);
                 console.log(`[SEARCH-SCORING] Top result boosted: ${scored[0]?.similarity.toFixed(3)} → ${scored[0]?.adaptiveScore.toFixed(3)}`);
               }
-              
+
               scoringService.close();
             } catch (scoringError) {
               console.warn('[SEARCH-SCORING] Adaptive scoring failed, using base results:', scoringError);
@@ -1903,7 +1966,7 @@ export class MainMediaAPI {
             image: imageItems,
             video: deduplicatedVideos,
             audio: audioItems
-          } as Record<'image'|'video'|'audio', any[]>;
+          } as Record<'image' | 'video' | 'audio', any[]>;
 
           const paginationStart = Date.now();
           requestedTypes.forEach(type => {
@@ -1967,7 +2030,7 @@ export class MainMediaAPI {
           const mimeType = getMimeType(it.path);
           const lower = (mimeType || '').toLowerCase();
           let type: 'image' | 'video' | 'audio' = it.type || 'image';
-          
+
           // First check database type for video segments
           if (it.type === 'video_segment' || it.type === 'video') {
             type = 'video';
@@ -1980,7 +2043,7 @@ export class MainMediaAPI {
           } else if (lower.startsWith('image/')) {
             type = 'image';
           }
-          
+
           return {
             id: it.id,
             name: it.name,
@@ -1999,14 +2062,14 @@ export class MainMediaAPI {
         const groupingStart = Date.now();
         const imageItems = transformedItems.filter(item => item.type === 'image');
         const audioItems = transformedItems.filter(item => item.type === 'audio');
-        
+
         // For videos, deduplicate parent videos and segments
         const videoItems = transformedItems.filter(item => item.type === 'video');
         const dedupeStart = Date.now();
         const deduplicatedVideos = await this.deduplicateVideoResults(videoItems);
         console.log(`[SEARCH-TIMING] ⏱️  Video deduplication took: ${Date.now() - dedupeStart}ms (${videoItems.length} → ${deduplicatedVideos.length})`);
         console.log(`[SEARCH-TIMING] ⏱️  Type grouping took: ${Date.now() - groupingStart}ms (${imageItems.length} images, ${deduplicatedVideos.length} videos, ${audioItems.length} audio)`);
-        
+
         const typeGroups = {
           image: imageItems,
           video: deduplicatedVideos,
@@ -2017,7 +2080,7 @@ export class MainMediaAPI {
         const paginationStart = Date.now();
         requestedTypes.forEach(type => {
           const items = typeGroups[type] || [];
-          
+
           // Sort by createdAt desc
           items.sort((a: any, b: any) => {
             const aDate = new Date(a.createdAt || 0);
@@ -2027,7 +2090,7 @@ export class MainMediaAPI {
 
           const total = items.length;
           const paginatedItems = items.slice(offset, offset + limit);
-          
+
           if (type === 'image') {
             grouped.images = paginatedItems;
             grouped.totals.images = total;
@@ -2061,9 +2124,9 @@ export class MainMediaAPI {
       }
     } catch (error) {
       console.error('[UNIFIED-SEARCH] Search failed:', error);
-      return { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown search error' 
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown search error'
       };
     }
   }
@@ -2075,11 +2138,11 @@ export class MainMediaAPI {
   private static async deduplicateVideoResults(videoItems: any[]): Promise<any[]> {
     // Group by video file path (remove #t= fragments for segments)
     const videoGroups = new Map<string, any[]>();
-    
+
     videoItems.forEach(item => {
       // Extract base video path (remove #t=start,end for segments)
       const basePath = item.path.split('#t=')[0];
-      
+
       if (!videoGroups.has(basePath)) {
         videoGroups.set(basePath, []);
       }
@@ -2092,21 +2155,21 @@ export class MainMediaAPI {
         // Separate parent videos and segments
         const parentVideos = items.filter(item => !item.path.includes('#t='));
         const segments = items.filter(item => item.path.includes('#t='));
-        
+
         // If we only have segments, try to fetch the parent video from database
         if (parentVideos.length === 0 && segments.length > 0) {
           try {
             const allItems = await this.db.getMediaItems();
-            const parentVideo = allItems.find((item: any) => 
+            const parentVideo = allItems.find((item: any) =>
               item.path === basePath && item.type === 'video'
             );
-            
+
             if (parentVideo) {
               // Add metadata field with proper structure
-              const metadata = parentVideo.metadata ? 
-                (typeof parentVideo.metadata === 'string' ? JSON.parse(parentVideo.metadata) : parentVideo.metadata) 
+              const metadata = parentVideo.metadata ?
+                (typeof parentVideo.metadata === 'string' ? JSON.parse(parentVideo.metadata) : parentVideo.metadata)
                 : undefined;
-              
+
               return {
                 ...parentVideo,
                 metadata,
@@ -2129,12 +2192,12 @@ export class MainMediaAPI {
             console.error('[DEDUP-ERROR] Failed to fetch parent video:', error);
           }
         }
-        
+
         // Prefer parent video if it exists, otherwise use best segment
         const primaryItem = parentVideos.length > 0 ? parentVideos[0] : segments[0];
-        
+
         if (!primaryItem) return null;
-        
+
         // If we have both parent and segments, show parent with segment info
         if (parentVideos.length > 0 && segments.length > 0) {
           const parentVideo = parentVideos[0];
@@ -2153,11 +2216,11 @@ export class MainMediaAPI {
             })) // Store segment info for future chapter-like functionality
           };
         }
-        
+
         return primaryItem;
       })
     );
-    
+
     return results.filter(Boolean);
   }
 

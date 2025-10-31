@@ -62,7 +62,7 @@ const DEFAULT_CONFIG: UnifiedConfig = {
     },
     sceneReconstruction: {
       baseUrl: 'http://localhost:11434',
-      model: 'llama3.2:3b',
+      model: 'qwen3:4b',
       enabled: true
     }
   },

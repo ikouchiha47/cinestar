@@ -36,7 +36,7 @@ export class ImageModalityVecDatabase {
     const platform = process.platform;
     const arch = process.arch;
     const isDev = !!process.env.VITE_DEV_SERVER_URL;
-    const basePath = isDev 
+    const basePath = isDev
       ? '.'
       : path.join((process as any).resourcesPath || path.dirname(process.execPath), 'app.asar.unpacked');
 
@@ -121,7 +121,7 @@ export class ImageModalityVecDatabase {
       SELECT COUNT(v.item_id) as total
       FROM image_vec_embeddings v
       JOIN image_meta_cache c ON v.item_id = c.item_id
-      WHERE v.embedding MATCH ?
+      WHERE v.embedding MATCH ? AND k = 1000
     `);
 
     const stmt = this.db.prepare(`
@@ -154,6 +154,8 @@ export class ImageModalityVecDatabase {
 
   async searchFTS(query: string, limit: number, cutoff?: { tsISO: string; id: string }): Promise<{ results: ImageHybridResult[]; total: number; hasMore: boolean }> {
     const ftsQuery = query.trim().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).join(' OR ');
+    console.log(`[IMAGE-FTS] Original query: "${query}" → FTS query: "${ftsQuery}"`);
+
     const countStmt = this.db.prepare(`
       SELECT COUNT(1) as total FROM image_fts WHERE image_fts MATCH ?
     `);
@@ -170,7 +172,10 @@ export class ImageModalityVecDatabase {
       LIMIT ?
     `);
     const total = (countStmt.get(ftsQuery) as any)?.total || 0;
+    console.log(`[IMAGE-FTS] Total FTS matches: ${total}`);
+
     const rows = cutoff ? stmt.all(ftsQuery, cutoff.tsISO, cutoff.tsISO, cutoff.id, limit) : stmt.all(ftsQuery, limit);
+    console.log(`[IMAGE-FTS] Retrieved ${rows.length} FTS rows (limit=${limit})`);
     const results: ImageHybridResult[] = [];
     if (rows.length > 0) {
       const scores = rows.map((r: any) => r.fts_score);
@@ -185,23 +190,116 @@ export class ImageModalityVecDatabase {
     return { results, total, hasMore: results.length > 0 && results.length <= total };
   }
 
-  async searchHybrid(query: string, embedding: Float32Array, options: { limit?: number; alpha?: number; cutoff?: { tsISO: string; id: string } } = {}) {
-    const limit = options.limit || 20;
-    const alpha = options.alpha ?? 0.7;
+  async searchHybrid(query: string, embedding: Float32Array, options: {
+    limit?: number;
+    alpha?: number;
+    cutoff?: { tsISO: string; id: string };
+    minSimilarity?: number;    // Hybrid score cutoff
+    minVectorSim?: number;     // Vector similarity cutoff (pre-merge)
+    maxDistance?: number;      // Legacy distance cutoff (not recommended)
+  } = {}) {
+    const limit = options.limit || 10;
+    let alpha = options.alpha ?? 0.75;
+    let minSimilarity = options.minSimilarity ?? 0.5;
+    let minVectorSim = options.minVectorSim ?? 0.60;
+    const maxDistance = options.maxDistance ?? 0;
+
+    console.log(`[IMAGE-HYBRID] Starting hybrid search for: "${query}"`);
+    console.log(`[IMAGE-HYBRID] alpha=${alpha}, minSimilarity=${minSimilarity}, minVectorSim=${minVectorSim}, maxDistance=${maxDistance}, limit=${limit}`);
+
+    // Reasonable candidate multiplier: 2-3x is enough for hybrid search
+    // Cap at 100 to avoid fetching too many candidates
+    const candidateK = Math.min(Math.max(limit * 3, 30), 100);
+    console.log(`[IMAGE-HYBRID] Fetching candidateK=${candidateK} vector results (limit×3, min 30, max 100)`);
     const [vec, fts] = await Promise.all([
-      this.searchSimilar(embedding, limit * 2, options.cutoff),
-      this.searchFTS(query, limit * 2, options.cutoff)
+      this.searchSimilar(embedding, candidateK, options.cutoff),
+      this.searchFTS(query, limit * 3, options.cutoff)
     ]);
-    const map = new Map<string, { item: ImageHybridResult; vs: number; fs: number }>();
-    for (const it of vec.results) map.set(it.id, { item: it, vs: it.similarity, fs: 0 });
+
+    console.log(`[IMAGE-HYBRID] Raw results - Vector: ${vec.results.length}/${candidateK}, FTS: ${fts.results.length}`);
+
+    let filteredVec = vec.results.filter(r => r.similarity >= minVectorSim);
+    console.log(`[IMAGE-HYBRID] After vector cutoff (≥${minVectorSim}): ${filteredVec.length} vector results`);
+    if (maxDistance && maxDistance > 0) {
+      filteredVec = filteredVec.filter(r => (r as any).distance <= maxDistance);
+      console.log(`[IMAGE-HYBRID] After legacy distance cutoff (≤${maxDistance}): ${filteredVec.length} vector results`);
+    }
+
+    const map = new Map<string, { item: ImageHybridResult; vs: number; fs: number; distance?: number }>();
+    for (const it of filteredVec) {
+      map.set(it.id, { item: it, vs: it.similarity, fs: 0, distance: (it as any).distance });
+    }
     for (const it of fts.results) {
       const ex = map.get(it.id);
       if (ex) ex.fs = it.similarity; else map.set(it.id, { item: it, vs: 0, fs: it.similarity });
     }
-    const merged = Array.from(map.values())
-      .map(({ item, vs, fs }) => ({ ...item, similarity: alpha * vs + (1 - alpha) * fs }))
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
-    return { results: merged, total: map.size, hasMore: merged.length > 0 && map.size > merged.length };
+
+    // Calculate all scored results FIRST (before filtering)
+    const allScored = Array.from(map.values())
+      .map(({ item, vs, fs, distance }) => {
+        const hybridScore = alpha * vs + (1 - alpha) * fs;
+        return { ...item, similarity: hybridScore, _debug: { vectorScore: vs, ftsScore: fs, hybridScore, distance } };
+      })
+      .sort((a, b) => b.similarity - a.similarity);
+
+    // When FTS contributes nothing, we already filtered by minVectorSim
+    // So skip the hybrid quality filter to avoid double-filtering
+    const hasFTSResults = fts.results.length > 0;
+    let scoredResults: typeof allScored;
+
+    if (!hasFTSResults) {
+      // No FTS results - use all vector results that passed minVectorSim
+      console.log(`[IMAGE-HYBRID] ⚠️  No FTS results, skipping hybrid quality filter (already filtered by minVectorSim=${minVectorSim})`);
+      scoredResults = allScored;
+    } else {
+      // FTS contributed - apply hybrid quality filter
+      scoredResults = allScored.filter(r => r.similarity >= minSimilarity);
+      console.log(`[IMAGE-HYBRID] Quality filtered: ${scoredResults.length} results (≥${minSimilarity})`);
+    }
+
+    console.log(`[IMAGE-HYBRID] 📊 Top 10 scored results (before quality filter):`);
+    allScored.slice(0, 10).forEach((r, i) => {
+      const debug = (r as any)._debug;
+      const passed = r.similarity >= minSimilarity ? '✅' : '❌';
+      console.log(`  ${passed} ${i + 1}. ${r.name}: hybrid=${r.similarity.toFixed(3)} (α=${alpha.toFixed(2)}×vec=${debug.vectorScore.toFixed(3)} + ${(1 - alpha).toFixed(2)}×fts=${debug.ftsScore.toFixed(3)})${debug.distance ? `, dist=${debug.distance.toFixed(3)}` : ''}`);
+    });
+
+    // Log top results after filtering
+    if (scoredResults.length > 0) {
+      console.log(`[IMAGE-HYBRID] ✅ ${scoredResults.length} results passed quality filter (≥${minSimilarity})`);
+    } else {
+      console.log(`[IMAGE-HYBRID] ⚠️  No results passed quality filter (≥${minSimilarity})`);
+      console.log(`[IMAGE-HYBRID] 💡 Suggestion: Lower minSimilarity threshold or check if FTS is working`);
+    }
+
+    const finalResults = scoredResults.slice(0, limit);
+    const hasMore = scoredResults.length > limit;
+    return { results: finalResults, total: scoredResults.length, hasMore };
+  }
+
+  // Potential future helpers (not used yet):
+  private relaxVectorCandidates(vecResults: ImageHybridResult[], currentCutoff: number, limit: number): { filtered: ImageHybridResult[]; newCutoff: number } {
+    const sims = vecResults.map(r => r.similarity).sort((a, b) => b - a);
+    const p80 = sims.length ? sims[Math.floor(sims.length * 0.20)] : currentCutoff;
+    const p70 = sims.length ? sims[Math.floor(sims.length * 0.30)] : currentCutoff;
+    for (const t of [p80, p70]) {
+      if (t < currentCutoff) {
+        const filtered = vecResults.filter(r => r.similarity >= t);
+        if (filtered.length >= Math.min(limit, 5)) return { filtered, newCutoff: t };
+      }
+    }
+
+    return { filtered: vecResults.filter(r => r.similarity >= currentCutoff), newCutoff: currentCutoff };
+  }
+
+  private fallbackTopByVector(vecResults: ImageHybridResult[], alpha: number, limit: number): ImageHybridResult[] {
+    return vecResults
+      .slice(0, Math.min(limit, vecResults.length))
+      .map((it) => ({
+        ...it,
+        similarity: alpha * it.similarity,
+        _debug: { vectorScore: it.similarity, ftsScore: 0, hybridScore: alpha * it.similarity, distance: (it as any).distance }
+      } as any))
+      .sort((a, b) => b.similarity - a.similarity);
   }
 }

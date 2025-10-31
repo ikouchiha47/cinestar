@@ -43,16 +43,29 @@ export class MultiPassCaptioningService {
 
   /**
    * Perform multi-pass analysis on an image
+   * @param imagePath Path to the image file
+   * @param context Optional context: 'image' for standalone images, 'video' for video keyframes
    */
-  async analyzeImage(imagePath: string): Promise<MultiPassResult> {
+  async analyzeImage(imagePath: string, context: 'image' | 'video' = 'image'): Promise<MultiPassResult> {
     const config = ConfigManager.getConfig();
     const multiPassConfig = config.multiPass;
+    const contextConfig = context === 'image' ? multiPassConfig?.image : multiPassConfig?.video;
 
     // Phase 1: Comprehensive caption from moondream
-    console.log('[MULTI-PASS] Phase 1: Generating comprehensive caption...');
-    const captionResult = await this.moondreamService.caption(imagePath, {
-      prompt: 'What do you see in this image? Describe everything including the setting, objects, people, activities, colors, lighting, and mood.'
-    });
+    const useSinglePass = contextConfig?.singlePassMode ?? false;
+    
+    console.log(`[MULTI-PASS] Phase 1: Generating ${useSinglePass ? 'comprehensive' : 'basic'} caption... (context: ${context})`);
+    const prompt = useSinglePass
+      ? `Describe this image in detail, including:
+1. CONTENT: What objects, people, and elements are present?
+2. SPATIAL: Where are things positioned? What's in the foreground, middle ground, and background? How are elements arranged in depth?
+3. TEMPORAL: What actions, movements, or dynamic elements are visible? What sense of motion or time is conveyed?
+4. CONTEXT: Setting, colors, lighting, and overall mood.
+
+Provide a rich, comprehensive description covering all these aspects.`
+      : 'What do you see in this image? Describe everything including the setting, objects, people, activities, colors, lighting, and mood.';
+    
+    const captionResult = await this.moondreamService.caption(imagePath, { prompt });
 
     const tokens = {
       caption: captionResult.metadata?.tokens || 0,
@@ -65,7 +78,7 @@ export class MultiPassCaptioningService {
 
     // Phase 2: Extract structured elements (if enabled)
     let elements: ExtractedElements;
-    if (multiPassConfig?.phases?.enableExtraction) {
+    if (contextConfig?.enableExtraction) {
       console.log('[MULTI-PASS] Phase 2: Extracting structured elements...');
       elements = await this.extractionService.extractElements(captionResult.caption);
       tokens.extraction = 58; // Approximate token count for extraction
@@ -81,9 +94,9 @@ export class MultiPassCaptioningService {
       };
     }
 
-    // Phase 3: Spatial analysis (if enabled)
+    // Phase 3: Spatial analysis (if enabled and not in single-pass mode)
     let spatial: string | undefined;
-    if (multiPassConfig?.phases?.enableSpatial && elements.objects.length > 0) {
+    if (contextConfig?.enableSpatial && elements.objects.length > 0) {
       console.log('[MULTI-PASS] Phase 3: Spatial analysis...');
       const spatialPrompt = this.queryBuilder.buildSpatialPrompt(elements);
       const spatialResult = await this.moondreamService.caption(imagePath, {
@@ -94,9 +107,9 @@ export class MultiPassCaptioningService {
       tokens.moondreamOnly += tokens.spatial;
     }
 
-    // Phase 4: Temporal analysis (if enabled)
+    // Phase 4: Temporal analysis (if enabled and not in single-pass mode)
     let temporal: string | undefined;
-    if (multiPassConfig?.phases?.enableTemporal && elements.objects.length > 0) {
+    if (contextConfig?.enableTemporal && elements.objects.length > 0) {
       console.log('[MULTI-PASS] Phase 4: Temporal analysis...');
       const temporalPrompt = this.queryBuilder.buildTemporalPrompt(elements);
       const temporalResult = await this.moondreamService.caption(imagePath, {

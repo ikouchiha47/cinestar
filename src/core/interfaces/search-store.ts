@@ -17,10 +17,37 @@ export type SearchCursor = {
   id: string; // tie-breaker id
 };
 
+interface SearchConfig {
+  maxSearchDepth: number;
+  minResultsThreshold: number;
+  cleanedQueryWeight: number;
+  stepBackQueryWeight: number;
+}
+
 export interface IImageSearchStore {
-  search(q: string, limit: number, cursor?: SearchCursor): Promise<{ items: SearchItem[]; total: number; nextCursor?: SearchCursor }>;
+  search(
+    q: string, 
+    limit: number, 
+    cursor?: SearchCursor, 
+    config?: SearchConfig
+  ): Promise<{ 
+    items: SearchItem[]; 
+    total: number; 
+    nextCursor?: SearchCursor;
+    searchDepth: number;
+  }>;
 }
 
 export interface IAVSearchStore {
-  search(q: string, limit: number, cursor?: SearchCursor): Promise<{ items: SearchItem[]; total: number; nextCursor?: SearchCursor }>;
+  search(
+    q: string, 
+    limit: number, 
+    cursor?: SearchCursor, 
+    config?: SearchConfig
+  ): Promise<{ 
+    items: SearchItem[]; 
+    total: number; 
+    nextCursor?: SearchCursor;
+    searchDepth: number;
+  }>;
 }

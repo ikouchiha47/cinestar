@@ -307,7 +307,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
         setSearching(true);
         // Unified search across media (images via vec) and videos (segments FTS)
         console.log(`[SEARCH-CANCEL] Starting search ${searchId} for: "${query}"`);
-        const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
+        const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 10, offset: 0 });
         
         // Check if this search is still current
         if (currentSearchIdRef.current !== searchId) {
@@ -564,7 +564,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                     try {
                       setSearching(true);
                       console.log(`[SEARCH-DEBUG] Calling unifiedSearch with query: "${query}"`);
-                      const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 40, offset: 0 });
+                      const res: any = await (window.mediaAPI as any).unifiedSearch(query, { limit: 10, offset: 0 });
                       console.log(`[SEARCH-DEBUG] Got response with ${res?.results?.images?.length || 0} images, ${res?.results?.videos?.length || 0} videos`);
                       
                       const images: any[] = Array.isArray(res?.results?.images) ? res.results.images : [];

@@ -1,5 +1,12 @@
 import { IImageSearchStore, IAVSearchStore, SearchItem, SearchCursor } from './interfaces/search-store';
 
+interface SearchConfig {
+  maxSearchDepth: number;
+  minResultsThreshold: number;
+  cleanedQueryWeight: number;
+  stepBackQueryWeight: number;
+}
+
 export class SearchService {
   private imageStores: IImageSearchStore[];
   private avStores: IAVSearchStore[];
@@ -11,16 +18,37 @@ export class SearchService {
 
   // Dual-read merge with cursor pagination.
   // Each store supports (created_at DESC, id DESC) cursor.
-  async search(query: string, limit: number, cursor?: SearchCursor): Promise<{ items: SearchItem[]; total: number; nextCursor?: SearchCursor; hasMore: boolean }> {
+  async search(
+    query: string,
+    limit: number,
+    cursor?: SearchCursor,
+    config?: SearchConfig
+  ): Promise<{ 
+    items: SearchItem[]; 
+    total: number; 
+    nextCursor?: SearchCursor; 
+    hasMore: boolean;
+    searchDepth: number;
+  }> {
     const q = (query || '').trim();
-    const imgResults = await Promise.all(this.imageStores.map(s => s.search(q, limit, cursor)));
-    const avResults = await Promise.all(this.avStores.map(s => s.search(q, limit, cursor)));
+    console.log(`[SEARCH-SERVICE] search() called: query="${q}", limit=${limit}, cursor=${cursor ? JSON.stringify(cursor) : 'none'}, config=`, config);
+    console.log(`[SEARCH-SERVICE] Stores: ${this.imageStores.length} image, ${this.avStores.length} av`);
+    
+    const imgResults = await Promise.all(this.imageStores.map(s => s.search(q, limit, cursor, config)));
+    const avResults = await Promise.all(this.avStores.map(s => s.search(q, limit, cursor, config)));
+    
+    console.log(`[SEARCH-SERVICE] Store results: image=${imgResults.map(r => r.items.length).join(',')}, av=${avResults.map(r => r.items.length).join(',')}`);
 
     const imgItems = imgResults.flatMap(r => r.items || []);
     const avItems = avResults.flatMap(r => r.items || []);
+    console.log(`[SEARCH-SERVICE] Flattened: ${imgItems.length} image items, ${avItems.length} av items`);
+    
     const merged = this.mergeItems(imgItems, avItems);
+    console.log(`[SEARCH-SERVICE] Merged: ${merged.length} total items`);
+    
     const items = merged.slice(0, limit);
     const total = imgResults.reduce((acc, r) => acc + (r.total || 0), 0) + avResults.reduce((acc, r) => acc + (r.total || 0), 0);
+    console.log(`[SEARCH-SERVICE] Final: ${items.length} items (limit=${limit}), total=${total}`);
 
     let nextCursor: SearchCursor | undefined;
     if (items.length === limit) {
@@ -30,8 +58,16 @@ export class SearchService {
       }
     }
     const hasMore = !!nextCursor && total > 0; // heuristic; exact per-store hasMore requires deeper coordination
+    
+    // Aggregate max depth from all stores
+    const maxDepth = Math.max(
+      ...imgResults.map(r => r.searchDepth || 1),
+      ...avResults.map(r => r.searchDepth || 1)
+    );
+    
+    console.log(`[SEARCH-SERVICE] Returning: ${items.length} items, hasMore=${hasMore}, nextCursor=${nextCursor ? 'yes' : 'no'}, searchDepth=${maxDepth}`);
 
-    return { items, total, nextCursor, hasMore };
+    return { items, total, nextCursor, hasMore, searchDepth: maxDepth };
   }
 
   private mergeItems(a: SearchItem[], b: SearchItem[]): SearchItem[] {

@@ -62,9 +62,15 @@ export class ImageSearchWriter {
    * Update or insert caption in FTS index
    */
   updateCaption(itemId: string, caption: string): void {
-    // FTS5 doesn't support UPSERT, so delete then insert
-    this.db.prepare(`DELETE FROM image_fts WHERE item_id = ?`).run(itemId);
-    this.db.prepare(`INSERT INTO image_fts(item_id, text) VALUES (?, ?)`).run(itemId, caption);
+    // FTS5 supports UPDATE, which is better than DELETE+INSERT because:
+    // - Preserves rowid (no fragmentation)
+    // - No dead pages created (no need for optimize/vacuum)
+    // Try UPDATE first, if no rows changed, INSERT new entry
+    const result = this.db.prepare(`UPDATE image_fts SET text = ? WHERE item_id = ?`).run(caption, itemId);
+    if (result.changes === 0) {
+      // Item doesn't exist, insert new entry
+      this.db.prepare(`INSERT INTO image_fts(item_id, text) VALUES (?, ?)`).run(itemId, caption);
+    }
   }
 
   /**
@@ -87,12 +93,18 @@ export class ImageSearchWriter {
     `).run(itemId, itemId, model, buffer);
 
     // Also update vec0 virtual table for similarity search
-    // Note: sqlite-vec virtual tables don't support UPSERT, so we delete first
-    this.db.prepare(`DELETE FROM image_vec_embeddings WHERE item_id = ?`).run(itemId);
-    this.db.prepare(`
-      INSERT INTO image_vec_embeddings(item_id, embedding)
-      VALUES (?, ?)
-    `).run(itemId, buffer);
+    // vec0 supports UPDATE when there's a PRIMARY KEY, which is more efficient than DELETE+INSERT
+    const vecResult = this.db.prepare(`
+      UPDATE image_vec_embeddings SET embedding = ? WHERE item_id = ?
+    `).run(buffer, itemId);
+    
+    if (vecResult.changes === 0) {
+      // Item doesn't exist in vec0 table, insert new entry
+      this.db.prepare(`
+        INSERT INTO image_vec_embeddings(item_id, embedding)
+        VALUES (?, ?)
+      `).run(itemId, buffer);
+    }
   }
 
   /**
@@ -183,7 +195,8 @@ export class ImageSearchWriter {
       data.temporal,
       data.elements
     );
-    this.updateFTS(itemId, combinedText);
+
+    this.updateCaption(itemId, combinedText);
   }
 
   /**
