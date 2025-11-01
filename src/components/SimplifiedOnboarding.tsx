@@ -2,16 +2,27 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { DrillbitLogoImage } from './DrillbitLogoImage';
 import PortalSplash from './PortalSplash';
+import { SetupProgress } from './SetupProgress';
+import { ModelManager } from '../core/model-manager';
 
 interface SimplifiedOnboardingProps {
   onComplete: () => void;
   onCheckOnboarding: () => Promise<boolean>;
 }
 
+interface SetupTask {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'completed' | 'error';
+  progress?: number;
+  message?: string;
+  size?: string;
+}
+
 export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: SimplifiedOnboardingProps) {
   const [currentStep, setCurrentStep] = useState<'splash' | 'welcome' | 'features' | 'download' | 'complete'>('splash');
   const [selectedFeatures, setSelectedFeatures] = useState({ videos: false, audio: false });
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [setupTasks, setSetupTasks] = useState<SetupTask[]>([]);
 
   console.log('[SIMPLIFIED-ONBOARDING] Component mounted, currentStep:', currentStep);
   console.log('[SIMPLIFIED-ONBOARDING] Viewport dimensions:', {
@@ -95,39 +106,154 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
     }
   };
 
+  const updateTask = (id: string, updates: Partial<SetupTask>) => {
+    setSetupTasks(prev => prev.map(task => 
+      task.id === id ? { ...task, ...updates } : task
+    ));
+  };
+
   const startModelDownload = async () => {
     try {
-      // Listen for setup progress (download + build)
-      const offProgress = window.electronAPI.onWhisperSetupProgress((progress: number) => {
-        setDownloadProgress(progress);
-      });
-      // Listen for setup status signals
-      const offSignal = window.electronAPI.onWhisperSetupSignal((data: { status: string; error?: string }) => {
-        if (data.status === 'completed') {
-          setDownloadProgress(100);
-          setTimeout(() => {
-            completeOnboarding();
-          }, 500);
-        } else if (data.status === 'failed') {
-          console.error('[SIMPLIFIED-ONBOARDING] Whisper setup failed:', data.error);
-          // TODO: Show error UI
+      console.log('[SIMPLIFIED-ONBOARDING] Starting comprehensive setup...');
+      
+      // Initialize ModelManager
+      const modelManager = new ModelManager();
+      
+      // Check which models are missing
+      const { missing: missingModels } = await modelManager.checkRequiredModels();
+      console.log(`[SIMPLIFIED-ONBOARDING] Found ${missingModels.length} missing Ollama models`);
+      
+      // Initialize setup tasks
+      const tasks: SetupTask[] = [
+        {
+          id: 'whisper-check',
+          name: 'Checking Whisper installation',
+          status: 'pending',
+          size: '~140MB'
+        },
+        ...missingModels.map(model => ({
+          id: `ollama-${model.name}`,
+          name: `Downloading ${model.name.split('/').pop()}`,
+          status: 'pending' as const,
+          size: model.size,
+          message: model.purpose
+        }))
+      ];
+      
+      setSetupTasks(tasks);
+      
+      // Run Whisper setup and Ollama downloads in parallel
+      const setupPromises: Promise<void>[] = [];
+      
+      // 1. Whisper Setup (runs in parallel)
+      setupPromises.push((async () => {
+        try {
+          updateTask('whisper-check', { status: 'running', message: 'Checking installation...' });
+          
+          // Listen for setup progress
+          const offProgress = window.electronAPI.onWhisperSetupProgress((progress: number) => {
+            updateTask('whisper-check', { 
+              status: 'running', 
+              progress,
+              message: progress < 50 ? 'Downloading model...' : 'Building Whisper...'
+            });
+          });
+          
+          // Listen for setup status
+          const offSignal = window.electronAPI.onWhisperSetupSignal((data: { status: string; error?: string }) => {
+            if (data.status === 'completed') {
+              updateTask('whisper-check', { 
+                status: 'completed', 
+                progress: 100,
+                message: 'Ready for transcription'
+              });
+            } else if (data.status === 'failed') {
+              updateTask('whisper-check', { 
+                status: 'error',
+                message: data.error || 'Setup failed'
+              });
+            }
+          });
+          
+          // Trigger setup
+          const result = await window.electronAPI.setupWhisper({ modelName: 'base.en' });
+          
+          // Clean up listeners
+          offProgress();
+          offSignal();
+          
+          if (!result.success) {
+            throw new Error(result.error || 'Whisper setup failed');
+          }
+          
+          updateTask('whisper-check', { 
+            status: 'completed',
+            progress: 100,
+            message: 'Ready for transcription'
+          });
+        } catch (error) {
+          console.error('[SIMPLIFIED-ONBOARDING] Whisper setup error:', error);
+          updateTask('whisper-check', { 
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Setup failed'
+          });
+          throw error;
         }
-      });
-
-      // Trigger full setup (download + CMake build)
-      const result = await window.electronAPI.setupWhisper({ modelName: 'base.en' });
-
-      // Clean up listeners
-      offProgress();
-      offSignal();
-
-      if (!result.success) {
-        console.error('[SIMPLIFIED-ONBOARDING] Whisper setup failed (invoke result):', result.error);
-        // TODO: Show error UI
-      }
+      })());
+      
+      // 2. Ollama Model Downloads (sequential, but parallel with Whisper)
+      setupPromises.push((async () => {
+        for (const model of missingModels) {
+          const taskId = `ollama-${model.name}`;
+          
+          try {
+            updateTask(taskId, { 
+              status: 'running',
+              progress: 0,
+              message: 'Starting download...'
+            });
+            
+            await modelManager.pullModel(model.name, (progress) => {
+              const percentage = progress.percentage || 0;
+              updateTask(taskId, {
+                status: 'running',
+                progress: percentage,
+                message: progress.status
+              });
+            });
+            
+            updateTask(taskId, {
+              status: 'completed',
+              progress: 100,
+              message: 'Downloaded successfully'
+            });
+          } catch (error) {
+            console.error(`[SIMPLIFIED-ONBOARDING] Failed to download ${model.name}:`, error);
+            updateTask(taskId, {
+              status: 'error',
+              message: error instanceof Error ? error.message : 'Download failed'
+            });
+            throw error;
+          }
+        }
+      })());
+      
+      // Wait for all setups to complete
+      await Promise.all(setupPromises);
+      
+      console.log('[SIMPLIFIED-ONBOARDING] All setup tasks completed successfully');
+      
+      // Small delay to show completion state
+      setTimeout(() => {
+        completeOnboarding();
+      }, 1000);
+      
     } catch (error) {
-      console.error('[SIMPLIFIED-ONBOARDING] Download error:', error);
-      // TODO: Show error UI
+      console.error('[SIMPLIFIED-ONBOARDING] Setup error:', error);
+      // Don't block onboarding on errors - user can retry later
+      setTimeout(() => {
+        completeOnboarding();
+      }, 2000);
     }
   };
 
@@ -318,7 +444,7 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.3, duration: 0.5 }}
-            className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12"
+            className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12 max-w-4xl mx-auto"
           >
             {/* Images - Always enabled */}
             <div className="flex flex-col h-full">
@@ -431,8 +557,8 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
               </div>
             </div>
 
-            {/* Audio */}
-            <div className="flex flex-col h-full">
+            {/* Audio - DISABLED */}
+            {/* <div className="flex flex-col h-full">
               <div className={`flex-1 border-2 rounded-2xl p-8 cursor-pointer transition-all flex flex-col ${
                 selectedFeatures.audio 
                   ? 'bg-purple-500/10 border-purple-500' 
@@ -490,7 +616,7 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
                   </div>
                 </div>
               </div>
-            </div>
+            </div> */}
           </motion.div>
 
           {/* Info box */}
@@ -532,81 +658,37 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
 
   // Render download progress screen
   if (currentStep === 'download') {
+    // Calculate overall progress
+    const completedTasks = setupTasks.filter(t => t.status === 'completed').length;
+    const totalTasks = setupTasks.length;
+    const overallProgress = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950 p-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
-          className="text-center max-w-md w-full"
+          className="w-full"
         >
-          {/* Icon */}
+          {/* Logo */}
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ delay: 0.2, duration: 0.5 }}
-            className="mb-8 flex justify-center"
+            className="mb-12 flex justify-center"
           >
             <div className="relative">
-              <DrillbitLogoImage className="w-24 h-24 mx-auto" />
+              <DrillbitLogoImage className="w-20 h-20 mx-auto" />
               <div className="absolute inset-0 bg-blue-500/20 rounded-full blur-xl animate-pulse" />
             </div>
           </motion.div>
 
-          {/* Title */}
-          <motion.h1
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3, duration: 0.5 }}
-            className="text-3xl font-bold text-white mb-4"
-          >
-            Setting up AI Model
-          </motion.h1>
-
-          {/* Progress bar */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4, duration: 0.5 }}
-            className="mb-6"
-          >
-            <div className="w-full bg-neutral-800 rounded-full h-3 mb-2 overflow-hidden">
-              <motion.div 
-                className="h-full bg-gradient-to-r from-blue-500 to-purple-600 rounded-full"
-                initial={{ width: 0 }}
-                animate={{ width: `${downloadProgress}%` }}
-                transition={{ duration: 0.5 }}
-              />
-            </div>
-            <div className="text-sm text-neutral-400 flex justify-between">
-              <span>{downloadProgress}%</span>
-              <span>140 MB</span>
-            </div>
-          </motion.div>
-
-          {/* Status message */}
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.5, duration: 0.5 }}
-            className="text-neutral-400 mb-8"
-          >
-            {downloadProgress < 70
-              ? 'Downloading the AI model for offline transcription...'
-              : downloadProgress < 100
-                ? 'Building whisper.cpp (CMake)...'
-                : 'Setup complete! Starting Cinestar...'}
-          </motion.p>
-
-          {/* Download speed simulation */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.6, duration: 0.5 }}
-            className="text-xs text-neutral-500"
-          >
-            <span>Speed: {Math.max(0.5, (downloadProgress / 100) * 3).toFixed(1)} MB/s</span>
-          </motion.div>
+          {/* Setup Progress Component */}
+          <SetupProgress 
+            tasks={setupTasks}
+            overallProgress={overallProgress}
+          />
         </motion.div>
       </div>
     );
