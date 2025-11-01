@@ -18,12 +18,17 @@ CREATE TABLE IF NOT EXISTS job_runs (
   status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','canceled')),
   progress INTEGER DEFAULT 0,
   error TEXT,
+  retry_count INTEGER DEFAULT 0,
+  max_retries INTEGER DEFAULT 3,
+  last_error TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_status ON job_runs(status);
 CREATE INDEX IF NOT EXISTS idx_job_runs_target ON job_runs(target_item_id);
+CREATE INDEX IF NOT EXISTS idx_job_runs_retry ON job_runs(status, retry_count) WHERE retry_count > 0;
+CREATE INDEX IF NOT EXISTS idx_job_runs_pending_retry ON job_runs(status, retry_count, max_retries) WHERE status = 'pending' AND retry_count > 0;
 
 CREATE TABLE IF NOT EXISTS job_steps (
   id TEXT PRIMARY KEY,

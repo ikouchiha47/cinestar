@@ -415,7 +415,13 @@ export class VideoMediaAPI {
    */
   async getActiveJobs(): Promise<VideoProcessingJob[]> {
     console.log(`[VIDEO-API-ACTIVE] 🔍 VideoMediaAPI.getActiveJobs() called`);
-    const jobs = await this.videoDb.getActiveJobs();
+    
+    // Use VideoJobAdapter if available (reads from jobs.db)
+    // Otherwise fall back to legacy video-rag.db
+    const jobs = this.videoJobAdapter 
+      ? await this.videoJobAdapter.getActiveJobs()
+      : await this.videoDb.getActiveJobs();
+    
     console.log(`[VIDEO-API-ACTIVE] 📋 VideoMediaAPI returning ${jobs.length} jobs:`, 
       jobs.map(j => ({ id: j.id, status: j.status, videoPath: j.videoPath })));
     return jobs;
@@ -461,12 +467,19 @@ export class VideoMediaAPI {
       console.log(`[VIDEO-API-DELETE] Deleted ${deletedFiles.changes || 0} video files`);
     }
     
-    // Delete from video_processing_jobs (by path, not video_id)
-    const deletedJobs = await this.videoDb.database.prepare(`
-      DELETE FROM video_processing_jobs WHERE video_path = ?
-    `).run(videoPath);
-    totalDeleted += deletedJobs.changes || 0;
-    console.log(`[VIDEO-API-DELETE] Deleted ${deletedJobs.changes || 0} processing jobs`);
+    // Delete from jobs.db via VideoJobAdapter (if available)
+    // Legacy video-rag.db jobs are read-only now
+    if (this.videoJobAdapter) {
+      // Get jobs by video path and delete them
+      const jobs = await this.videoJobAdapter.getJobsByVideoPath(videoPath);
+      for (const job of jobs) {
+        await this.videoJobAdapter.deleteVideoJob(job.id);
+        totalDeleted++;
+      }
+      console.log(`[VIDEO-API-DELETE] Deleted ${jobs.length} processing jobs from jobs.db`);
+    } else {
+      console.log(`[VIDEO-API-DELETE] ⚠️  VideoJobAdapter not available - skipping job deletion`);
+    }
     
     // Delete from scene_reconstruction_jobs (if table exists)
     try {

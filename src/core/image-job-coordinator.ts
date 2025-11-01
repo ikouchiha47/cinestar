@@ -87,8 +87,29 @@ export class ImageJobCoordinator {
       await this.db.updateJobStatus(jobId, 'completed', 100);
       console.log(`[IMAGE-COORDINATOR] ✅ Worker ${workerId} completed job ${jobId}`);
     } else {
-      await this.db.updateJobStatusWithError(jobId, 'failed', 0, error);
-      console.log(`[IMAGE-COORDINATOR] ❌ Worker ${workerId} failed job ${jobId}: ${error}`);
+      // Get current retry count to determine if we should retry
+      const job = this.db.db.prepare(`
+        SELECT retry_count FROM indexing_jobs WHERE id = ?
+      `).get(jobId) as any;
+      
+      const maxRetries = 3;
+      
+      if (job && job.retry_count < maxRetries) {
+        // Re-enqueue for retry - set status back to 'pending' and increment retry_count
+        this.db.db.prepare(`
+          UPDATE indexing_jobs 
+          SET status = 'pending', 
+              retry_count = retry_count + 1,
+              last_error = ?
+          WHERE id = ?
+        `).run(error || 'Unknown error', jobId);
+        
+        console.log(`[IMAGE-COORDINATOR] 🔄 Worker ${workerId} job ${jobId} failed, re-enqueued for retry (attempt ${job.retry_count + 1}/${maxRetries}): ${error}`);
+      } else {
+        // Max retries exceeded or job not found - mark as permanently failed
+        await this.db.updateJobStatusWithError(jobId, 'failed', 0, error);
+        console.error(`[IMAGE-COORDINATOR] ❌ Worker ${workerId} job ${jobId} permanently failed after ${maxRetries} attempts: ${error}`);
+      }
     }
   }
 

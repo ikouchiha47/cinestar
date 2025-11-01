@@ -56,13 +56,15 @@ export class VideoPersistenceService {
    * Store a single batch result
    */
   private async storeBatchResult(result: BatchProcessingResult): Promise<void> {
-    // Ensure parent video exists
-    await this.ensureParentVideoExists(result.videoPath);
+    // Ensure parent video exists and get its sourceId
+    // This will throw if parent not found, preventing FK constraint errors
+    const parentVideo = await this.ensureParentVideoExists(result.videoPath);
 
     // Prepare segment storage data
     const segmentData: SegmentStorageData = {
       segmentId: result.batchId,
       videoPath: result.videoPath,
+      parentSourceId: parentVideo.sourceId, // Always valid - ensureParentVideoExists throws if not found
       startTime: result.startTime,
       endTime: result.endTime,
       transcription: result.transcription,
@@ -114,9 +116,14 @@ export class VideoPersistenceService {
     const segmentPath = `${data.videoPath}#t=${data.startTime},${data.endTime}`;
     const durationMs = (data.endTime - data.startTime) * 1000;
 
+    // parentSourceId is always set - ensureParentVideoExists throws if parent not found
+    if (!data.parentSourceId) {
+      throw new Error(`Cannot write segment to media.db: parentSourceId is missing for ${data.segmentId}`);
+    }
+
     this.mediaDb.upsertMediaItemFromLegacy({
       id: data.segmentId,
-      sourceId: data.videoPath,
+      sourceId: data.parentSourceId,
       type: 'video_segment',
       path: segmentPath,
       size: 0, // Size not relevant for segments
@@ -177,46 +184,42 @@ export class VideoPersistenceService {
   /**
    * Ensure parent video record exists in database
    * Required to satisfy foreign key constraints when writing segments
+   * Returns parent video info including sourceId from media.db
+   * @throws Error if parent video not found (prevents FK constraint errors)
    */
-  async ensureParentVideoExists(videoPath: string): Promise<void> {
-    if (!this.videoDb) {
-      console.warn('[PERSISTENCE] VideoDatabase not available, skipping parent video check');
-      return;
-    }
-
+  async ensureParentVideoExists(videoPath: string): Promise<{ id: string; sourceId: string }> {
     try {
-      // Check if video file already exists
-      const existingVideo = await this.videoDb.getVideoFileByPath(videoPath);
-      
-      if (existingVideo) {
-        console.log(`[PERSISTENCE] Parent video exists: ${existingVideo.id}`);
-        return;
+      // First check media.db for the parent video
+      const mediaItem = this.mediaDb.getMediaItem(videoPath);
+      if (mediaItem && mediaItem.type === 'video') {
+        console.log(`[PERSISTENCE] Parent video in media.db: ${mediaItem.id}, sourceId: ${mediaItem.sourceId}`);
+        return { id: mediaItem.id, sourceId: mediaItem.sourceId };
       }
 
-      // Create parent video record
-      console.log(`[PERSISTENCE] Creating parent video record for ${videoPath}`);
+      // Check by path query
+      const items = this.mediaDb.getMediaItemsByPath(videoPath);
+      const parentVideo = items.find(item => item.type === 'video' && item.path === videoPath);
       
-      const fs = await import('fs');
-      const path = await import('path');
-      
-      const stats = fs.existsSync(videoPath) ? fs.statSync(videoPath) : null;
-      const fileName = path.basename(videoPath);
-      const fileSize = stats?.size || 0;
+      if (parentVideo) {
+        // Database returns snake_case (source_id), need to handle both cases
+        const sourceId = (parentVideo as any).source_id || parentVideo.sourceId;
+        console.log(`[PERSISTENCE] Parent video found by path: ${parentVideo.id}, sourceId: ${sourceId}`);
+        return { id: parentVideo.id, sourceId: sourceId };
+      }
 
-      await this.videoDb.addVideoFile({
-        path: videoPath,
-        fileName: fileName,
-        fileSize: fileSize,
-        duration: 0, // Will be updated during processing
-        width: 0,
-        height: 0,
-        addedAt: new Date()
-      });
-
-      console.log(`[PERSISTENCE] ✅ Created parent video record`);
+      // CRITICAL: Parent video MUST exist before processing segments
+      const errorMsg = `Parent video not found in media.db: ${videoPath}. Cannot process segments without parent video. Ensure video is indexed before processing segments.`;
+      console.error(`[PERSISTENCE] ❌ ${errorMsg}`);
+      throw new Error(errorMsg);
     } catch (error) {
-      console.error(`[PERSISTENCE] Failed to ensure parent video exists:`, error);
-      // Don't throw - allow processing to continue
+      // If it's already our error, rethrow it
+      if (error instanceof Error && error.message.includes('Parent video not found')) {
+        throw error;
+      }
+      
+      // Otherwise, wrap the error with context
+      console.error(`[PERSISTENCE] Failed to lookup parent video:`, error);
+      throw new Error(`Failed to lookup parent video in media.db for ${videoPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

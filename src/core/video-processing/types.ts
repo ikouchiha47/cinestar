@@ -38,6 +38,7 @@ export interface KeyframeData {
 export interface SegmentStorageData {
   segmentId: string;
   videoPath: string;
+  parentSourceId?: string; // Parent video's sourceId from media.db for FK constraint
   startTime: number;
   endTime: number;
   transcription?: string;

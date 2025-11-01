@@ -70,6 +70,8 @@ export class VideoJobAdapter {
     totalBatches?: number;
     statusMessage?: string;
     error?: string;
+    retry_count?: number;
+    last_error?: string;
     startedAt?: Date;
     completedAt?: Date;
   }): Promise<void> {
@@ -94,6 +96,16 @@ export class VideoJobAdapter {
     if (updates.error !== undefined) {
       sets.push('last_error = ?');
       vals.push(updates.error);
+    }
+
+    if (updates.retry_count !== undefined) {
+      sets.push('retry_count = ?');
+      vals.push(updates.retry_count);
+    }
+
+    if (updates.last_error !== undefined) {
+      sets.push('last_error = ?');
+      vals.push(updates.last_error);
     }
 
     // Handle explicit timestamp updates or auto-set based on status
@@ -227,6 +239,54 @@ export class VideoJobAdapter {
     `).get(status) as { count: number };
 
     return row?.count || 0;
+  }
+
+  /**
+   * Get jobs by video path
+   */
+  async getJobsByVideoPath(videoPath: string): Promise<any[]> {
+    const rows = await this.jobsDb.db.prepare(`
+      SELECT * FROM indexing_jobs 
+      WHERE job_type = 'video_processing' AND file_path = ?
+      ORDER BY created_at DESC
+    `).all(videoPath) as any[];
+
+    return rows.map(row => ({
+      id: row.id,
+      videoPath: row.file_path,
+      fileName: row.file_name,
+      status: row.status,
+      progress: row.progress,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      statusMessage: row.job_description
+    }));
+  }
+
+  /**
+   * Get all active video processing jobs
+   */
+  async getActiveJobs(): Promise<any[]> {
+    const rows = await this.jobsDb.db.prepare(`
+      SELECT * FROM indexing_jobs 
+      WHERE job_type = 'video_processing' 
+        AND status IN ('processing', 'running', 'scheduled')
+      ORDER BY created_at DESC
+    `).all() as any[];
+
+    console.log(`[VIDEO-JOB-ADAPTER] 📊 Found ${rows.length} active video jobs in jobs.db`);
+
+    // Map to VideoProcessingJob format
+    return rows.map(row => ({
+      id: row.id,
+      videoPath: row.file_path,
+      fileName: row.file_name,
+      status: row.status,
+      progress: row.progress,
+      createdAt: row.created_at,
+      startedAt: row.started_at,
+      statusMessage: row.job_description
+    }));
   }
 
   /**

@@ -180,33 +180,22 @@ export class ProgressTracker {
 
   /**
    * Write progress update to database
-   * Uses VideoJobAdapter if available, falls back to VideoDatabase
+   * Uses VideoJobAdapter (jobs.db) - REQUIRED
    */
   private async writeProgressUpdate(jobId: string, progressUpdate: ProgressUpdate): Promise<void> {
-    if (this.videoJobAdapter) {
-      // Write to jobs.db via VideoJobAdapter
-      await this.videoJobAdapter.updateVideoJob(jobId, {
-        progress: progressUpdate.progress,
-        currentPhase: progressUpdate.currentPhase,
-        phase0Complete: progressUpdate.phase0Complete,
-        phase1Complete: progressUpdate.phase1Complete,
-        totalBatches: progressUpdate.totalBatches,
-        statusMessage: progressUpdate.actionTitle
-      });
-    } else {
-      // Fallback to video-rag.db
-      await this.videoDb.updateJob(jobId, {
-        progress: progressUpdate.progress,
-        statusMessage: progressUpdate.actionTitle,
-        metadata: JSON.stringify({
-          currentPhase: progressUpdate.currentPhase,
-          phase0Complete: progressUpdate.phase0Complete,
-          phase1Complete: progressUpdate.phase1Complete,
-          totalBatches: progressUpdate.totalBatches,
-          actionDescription: progressUpdate.actionDescription
-        })
-      });
+    if (!this.videoJobAdapter) {
+      throw new Error('[PROGRESS-TRACKER] VideoJobAdapter not available - cannot update progress');
     }
+    
+    // Write to jobs.db via VideoJobAdapter
+    await this.videoJobAdapter.updateVideoJob(jobId, {
+      progress: progressUpdate.progress,
+      currentPhase: progressUpdate.currentPhase,
+      phase0Complete: progressUpdate.phase0Complete,
+      phase1Complete: progressUpdate.phase1Complete,
+      totalBatches: progressUpdate.totalBatches,
+      statusMessage: progressUpdate.actionTitle
+    });
   }
 
   /**

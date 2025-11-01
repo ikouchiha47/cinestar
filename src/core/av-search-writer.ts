@@ -113,9 +113,26 @@ export class AVSearchWriter {
    * Update or insert transcription in FTS index
    */
   updateTranscription(segmentId: string, transcription: string): void {
-    // FTS5 virtual tables don't support ON CONFLICT, so we delete first then insert
-    this.db.prepare(`DELETE FROM transcripts_fts WHERE segment_id = ?`).run(segmentId);
-    this.db.prepare(`INSERT INTO transcripts_fts(segment_id, transcript) VALUES (?, ?)`).run(segmentId, transcription);
+    console.log(`[AV-SEARCH-WRITER] 📝 updateTranscription called: segmentId=${segmentId}, transcription length=${transcription?.length || 0}`);
+    
+    if (!transcription || transcription.length === 0) {
+      console.warn(`[AV-SEARCH-WRITER] ⚠️  Empty transcription provided for segment ${segmentId}, skipping FTS write`);
+      return;
+    }
+    
+    try {
+      // FTS5 virtual tables don't support ON CONFLICT, so we delete first then insert
+      console.log(`[AV-SEARCH-WRITER] 🗑️  Deleting existing FTS entry for segment ${segmentId}`);
+      this.db.prepare(`DELETE FROM transcripts_fts WHERE segment_id = ?`).run(segmentId);
+      
+      console.log(`[AV-SEARCH-WRITER] ➕ Inserting transcription into FTS (${transcription.length} chars)`);
+      this.db.prepare(`INSERT INTO transcripts_fts(segment_id, transcript) VALUES (?, ?)`).run(segmentId, transcription);
+      
+      console.log(`[AV-SEARCH-WRITER] ✅ Transcription written to FTS for segment ${segmentId}`);
+    } catch (error) {
+      console.error(`[AV-SEARCH-WRITER] ❌ Failed to write transcription to FTS:`, error);
+      throw error;
+    }
   }
 
   /**

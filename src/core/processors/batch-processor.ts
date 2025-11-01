@@ -763,14 +763,30 @@ export class BatchProcessor {
    * Update batch keyframe with caption
    */
   async updateKeyframeCaption(keyframeId: string, caption: string, confidence?: number): Promise<void> {
-    const stmt = this.getDb().prepare(`
-      UPDATE batch_keyframes 
-      SET caption = ?, caption_confidence = ?
-      WHERE id = ?
-    `);
+    console.log(`[BATCH-PROCESSOR] 📝 updateKeyframeCaption called: keyframeId=${keyframeId}, caption length=${caption?.length || 0}, confidence=${confidence}`);
+    
+    if (!caption || caption.length === 0) {
+      console.warn(`[BATCH-PROCESSOR] ⚠️  Empty caption provided for keyframe ${keyframeId}, skipping update`);
+      return;
+    }
+    
+    try {
+      const stmt = this.getDb().prepare(`
+        UPDATE batch_keyframes 
+        SET caption = ?, caption_confidence = ?
+        WHERE id = ?
+      `);
 
-    stmt.run(caption, confidence, keyframeId);
-    console.log(`[BATCH-PROCESSOR] Updated keyframe ${keyframeId} with caption`);
+      const result = stmt.run(caption, confidence, keyframeId);
+      console.log(`[BATCH-PROCESSOR] ✅ Updated keyframe ${keyframeId} with caption (${caption.length} chars), rows affected: ${result.changes}`);
+      
+      if (result.changes === 0) {
+        console.warn(`[BATCH-PROCESSOR] ⚠️  No rows updated for keyframe ${keyframeId} - keyframe may not exist in database`);
+      }
+    } catch (error) {
+      console.error(`[BATCH-PROCESSOR] ❌ Failed to update keyframe caption:`, error);
+      throw error;
+    }
   }
 
   /**

@@ -34,6 +34,9 @@ export class LLMExtractionService {
   async extractElements(caption: string): Promise<ExtractedElements> {
     const prompt = this.buildExtractionPrompt(caption);
     
+    console.log(`[LLM-EXTRACTION] Extracting from caption (${caption.length} chars)...`);
+    console.log(`[LLM-EXTRACTION] Using model: ${this.model} at ${this.baseUrl}`);
+    
     try {
       const response = await fetch(`${this.baseUrl}/api/generate`, {
         method: 'POST',
@@ -50,21 +53,36 @@ export class LLMExtractionService {
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[LLM-EXTRACTION] HTTP error: ${response.status} ${response.statusText}`);
+        console.error(`[LLM-EXTRACTION] Error body:`, errorText);
         throw new Error(`LLM extraction failed: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
       const extractedText = data.response?.trim() || '';
       
+      console.log(`[LLM-EXTRACTION] Response length: ${extractedText.length} chars`);
+      console.log(`[LLM-EXTRACTION] Response preview:`, extractedText.substring(0, 200));
+      
       if (!extractedText) {
-        console.warn('[LLM-EXTRACTION] Empty response from LLM, using fallback values');
+        console.warn('[LLM-EXTRACTION] ⚠️  Empty response from LLM, using fallback values');
+        console.warn('[LLM-EXTRACTION] Caption was:', caption.substring(0, 200));
         return this.getFallbackElements();
       }
 
-      return this.parseExtractedElements(extractedText);
+      const parsed = this.parseExtractedElements(extractedText);
+      console.log(`[LLM-EXTRACTION] ✅ Extracted:`, {
+        objects: parsed.objects.length,
+        people: parsed.people.length,
+        colors: parsed.colors.length
+      });
+      
+      return parsed;
       
     } catch (error) {
-      console.error('[LLM-EXTRACTION] Extraction failed:', error);
+      console.error('[LLM-EXTRACTION] ❌ Extraction failed:', error);
+      console.error('[LLM-EXTRACTION] Caption was:', caption.substring(0, 200));
       return this.getFallbackElements();
     }
   }

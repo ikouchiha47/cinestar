@@ -224,9 +224,9 @@ export class VideoJobOrchestrator {
       console.log(`[ORCHESTRATOR-${this.workerId}] 🚀 Starting Phase 0...`);
       const phase0Results = await this.batchManager.processPhase0(context);
       
-      // Note: Batches are already stored by BatchProcessor.storeBatch()
-      // TODO: Refactor persistence service to only handle search indexing
-      // await this.persistenceService.storeBatchResults(phase0Results);
+      // Store batch results to search databases (av_search.db)
+      // This writes transcriptions to FTS and embeddings to vec tables
+      await this.persistenceService.storeBatchResults(phase0Results);
       
       // Update progress
       await this.progressTracker.updateProgress(job.id);
@@ -237,9 +237,8 @@ export class VideoJobOrchestrator {
       console.log(`[ORCHESTRATOR-${this.workerId}] 🎨 Starting Phase 1...`);
       const phase1Results = await this.batchManager.processPhase1(context);
       
-      // Note: Batches are already stored by BatchProcessor.storeBatch()
-      // TODO: Refactor persistence service to only handle search indexing
-      // await this.persistenceService.storeBatchResults(phase1Results);
+      // Store enhanced batch results with keyframe captions to search databases
+      await this.persistenceService.storeBatchResults(phase1Results);
       
       // Index for search
       await this.searchService.indexBatches(phase1Results);
@@ -272,24 +271,18 @@ export class VideoJobOrchestrator {
     progress: number,
     error?: string
   ): Promise<void> {
-    if (this.videoJobAdapter) {
-      await this.videoJobAdapter.updateVideoJob(jobId, {
-        status,
-        progress,
-        error,
-        ...(status === 'processing' && { startedAt: new Date() }),
-        ...(status === 'completed' && { completedAt: new Date() }),
-        ...(status === 'failed' && { completedAt: new Date() })
-      });
-    } else {
-      await this.videoDb.updateJob(jobId, {
-        status,
-        progress,
-        error,
-        ...(status === 'completed' && { endTime: new Date() }),
-        ...(status === 'failed' && { endTime: new Date() })
-      });
+    if (!this.videoJobAdapter) {
+      throw new Error('[ORCHESTRATOR] VideoJobAdapter not available - cannot update job status');
     }
+    
+    await this.videoJobAdapter.updateVideoJob(jobId, {
+      status,
+      progress,
+      error,
+      ...(status === 'processing' && { startedAt: new Date() }),
+      ...(status === 'completed' && { completedAt: new Date() }),
+      ...(status === 'failed' && { completedAt: new Date() })
+    });
   }
 
   /**

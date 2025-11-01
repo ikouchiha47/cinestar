@@ -51,18 +51,15 @@ export class VideoJobCoordinator {
     }
     
     // Immediately mark as running to prevent other workers from taking them
+    if (!this.videoJobAdapter) {
+      throw new Error('[VIDEO-COORDINATOR] VideoJobAdapter not available - cannot update jobs');
+    }
+    
     for (const job of pendingJobs) {
-      if (this.videoJobAdapter) {
-        await this.videoJobAdapter.updateVideoJob(job.id, {
-          status: 'processing',
-          startedAt: new Date()
-        });
-      } else {
-        await this.videoDb.updateJob(job.id, {
-          status: 'processing',
-          startTime: new Date()
-        });
-      }
+      await this.videoJobAdapter.updateVideoJob(job.id, {
+        status: 'processing',
+        startedAt: new Date()
+      });
     }
     
     const videoPaths = pendingJobs.map(j => j.videoPath).slice(0, 2).join(', ');
@@ -83,13 +80,31 @@ export class VideoJobCoordinator {
       });
       console.log(`[VIDEO-COORDINATOR] ✅ Worker ${workerId} completed job ${jobId}`);
     } else {
-      await this.videoJobAdapter!.updateVideoJob(jobId, {
-        status: 'failed',
-        progress: 0,
-        error: error,
-        completedAt: new Date()
-      });
-      console.log(`[VIDEO-COORDINATOR] ❌ Worker ${workerId} failed job ${jobId}: ${error}`);
+      // Get current job to check retry count
+      const job = await this.videoJobAdapter!.getVideoJob(jobId);
+      
+      const maxRetries = 3;
+      const currentRetryCount = job?.retry_count || 0;
+      
+      if (job && currentRetryCount < maxRetries) {
+        // Re-enqueue for retry - set status back to 'pending' and increment retry_count
+        await this.videoJobAdapter!.updateVideoJob(jobId, {
+          status: 'pending',
+          retry_count: currentRetryCount + 1,
+          last_error: error || 'Unknown error'
+        });
+        
+        console.log(`[VIDEO-COORDINATOR] 🔄 Worker ${workerId} job ${jobId} failed, re-enqueued for retry (attempt ${currentRetryCount + 1}/${maxRetries}): ${error}`);
+      } else {
+        // Max retries exceeded or job not found - mark as permanently failed
+        await this.videoJobAdapter!.updateVideoJob(jobId, {
+          status: 'failed',
+          progress: 0,
+          error: error,
+          completedAt: new Date()
+        });
+        console.error(`[VIDEO-COORDINATOR] ❌ Worker ${workerId} job ${jobId} permanently failed after ${maxRetries} attempts: ${error}`);
+      }
     }
   }
 }
