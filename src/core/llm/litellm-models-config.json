@@ -1,0 +1,103 @@
+{
+  "provider": "litellm",
+  "name": "LiteLLM (Multi-Provider)",
+  "baseUrl": "http://localhost:4000",
+  "docsUrl": "https://docs.litellm.ai/docs/providers",
+  "apiKey": {
+    "required": false,
+    "editable": true,
+    "label": "LiteLLM API Key (Optional)",
+    "placeholder": "Optional if using proxy without auth"
+  },
+  "defaults": {
+    "vision": "gemini/gemini-2.0-flash-exp",
+    "text": "gemini/gemini-2.0-flash-exp",
+    "embedding": "text-embedding-3-large"
+  },
+  "categories": {
+    "vision": {
+      "label": "Vision Models (via LiteLLM)",
+      "description": "Multi-provider vision models through LiteLLM proxy",
+      "models": [
+        {
+          "id": "gemini/gemini-2.0-flash-exp",
+          "name": "Gemini 2.0 Flash",
+          "description": "Google's latest multimodal model (fast)",
+          "capabilities": ["text", "vision"],
+          "contextWindow": 1000000,
+          "default": true
+        },
+        {
+          "id": "claude-3-5-sonnet-20241022",
+          "name": "Claude 3.5 Sonnet",
+          "description": "Anthropic's most intelligent model with vision",
+          "capabilities": ["text", "vision"],
+          "contextWindow": 200000
+        },
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "description": "OpenAI's multimodal model",
+          "capabilities": ["text", "vision"],
+          "contextWindow": 128000
+        }
+      ]
+    },
+    "text": {
+      "label": "Text Models (via LiteLLM)",
+      "description": "Multi-provider text generation models",
+      "models": [
+        {
+          "id": "gemini/gemini-2.0-flash-exp",
+          "name": "Gemini 2.0 Flash",
+          "description": "Fast and efficient from Google",
+          "capabilities": ["text"],
+          "contextWindow": 1000000,
+          "default": true
+        },
+        {
+          "id": "claude-3-5-sonnet-20241022",
+          "name": "Claude 3.5 Sonnet",
+          "description": "Anthropic's most intelligent model",
+          "capabilities": ["text"],
+          "contextWindow": 200000
+        },
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "description": "OpenAI's flagship model",
+          "capabilities": ["text"],
+          "contextWindow": 128000
+        }
+      ]
+    },
+    "embedding": {
+      "label": "Embedding Models (via LiteLLM)",
+      "description": "Text embedding models through LiteLLM",
+      "models": [
+        {
+          "id": "text-embedding-3-large",
+          "name": "OpenAI Embedding Large",
+          "description": "Most capable OpenAI embedding model",
+          "capabilities": ["embedding"],
+          "dimensions": 3072,
+          "default": true
+        },
+        {
+          "id": "text-embedding-3-small",
+          "name": "OpenAI Embedding Small",
+          "description": "Smaller, faster OpenAI embedding",
+          "capabilities": ["embedding"],
+          "dimensions": 1536
+        },
+        {
+          "id": "voyage-3",
+          "name": "Voyage AI v3",
+          "description": "High-quality embeddings from Voyage AI",
+          "capabilities": ["embedding"],
+          "dimensions": 1024
+        }
+      ]
+    }
+  }
+}

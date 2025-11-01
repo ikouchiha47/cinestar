@@ -4,6 +4,7 @@ import { DrillbitLogoImage } from './DrillbitLogoImage';
 import PortalSplash from './PortalSplash';
 import { SetupProgress } from './SetupProgress';
 import { ModelManager } from '../core/model-manager';
+import { ProviderSettingsV2 } from './ProviderSettingsV2';
 
 interface SimplifiedOnboardingProps {
   onComplete: () => void;
@@ -20,8 +21,9 @@ interface SetupTask {
 }
 
 export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: SimplifiedOnboardingProps) {
-  const [currentStep, setCurrentStep] = useState<'splash' | 'welcome' | 'features' | 'download' | 'complete'>('splash');
+  const [currentStep, setCurrentStep] = useState<'splash' | 'welcome' | 'features' | 'provider' | 'download' | 'complete'>('splash');
   const [selectedFeatures, setSelectedFeatures] = useState({ videos: false, audio: false });
+  const [selectedProvider, setSelectedProvider] = useState<'ollama' | 'openai' | 'litellm'>('ollama');
   const [setupTasks, setSetupTasks] = useState<SetupTask[]>([]);
 
   console.log('[SIMPLIFIED-ONBOARDING] Component mounted, currentStep:', currentStep);
@@ -94,16 +96,23 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
       console.error('[SIMPLIFIED-ONBOARDING] Failed to save preferences:', error);
     }
 
-    // If user selected videos or audio, show download screen
+    // If user selected videos or audio, show provider selection
     if (features.videos || features.audio) {
-      console.log('[SIMPLIFIED-ONBOARDING] Videos/audio selected - showing download screen');
-      setCurrentStep('download');
-      startModelDownload();
+      console.log('[SIMPLIFIED-ONBOARDING] Videos/audio selected - showing provider selection');
+      setCurrentStep('provider');
     } else {
-      // Skip download, go straight to app
+      // Skip provider selection and download, go straight to app
       console.log('[SIMPLIFIED-ONBOARDING] Only images selected - completing onboarding');
       completeOnboarding();
     }
+  };
+
+  const handleProviderComplete = async () => {
+    console.log('[SIMPLIFIED-ONBOARDING] Provider configuration complete');
+    
+    // Always show download screen to setup whisper (needed for all providers)
+    setCurrentStep('download');
+    startModelDownload();
   };
 
   const updateTask = (id: string, updates: Partial<SetupTask>) => {
@@ -650,6 +659,296 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:shadow-2xl hover:shadow-blue-500/50 transition-all duration-300"
           >
             Continue →
+          </motion.button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Render provider selection screen
+  if (currentStep === 'provider') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950 p-8">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="w-full max-w-5xl mx-auto px-4"
+        >
+          {/* Logo */}
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.5 }}
+            className="mb-8 text-center"
+          >
+            <DrillbitLogoImage className="w-16 h-16 mx-auto mb-4" />
+          </motion.div>
+
+          {/* Title */}
+          <motion.h1
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1, duration: 0.5 }}
+            className="text-3xl font-bold mb-3 text-center bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent"
+          >
+            Configure AI Models
+          </motion.h1>
+
+          <motion.p
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2, duration: 0.5 }}
+            className="text-neutral-400 mb-12 max-w-2xl mx-auto text-center"
+          >
+            Choose your AI provider and models for video processing. You can change these later in Settings.
+          </motion.p>
+
+          {/* Provider Settings Component */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3, duration: 0.5 }}
+            className="mb-8"
+          >
+            <ProviderSettingsV2
+              onProviderChange={async (providerId: string) => {
+                console.log('[ONBOARDING] Provider changed to:', providerId);
+              }}
+              onModelChange={async (task: string, modelId: string) => {
+                console.log('[ONBOARDING] Model changed:', task, modelId);
+              }}
+              onApiKeyChange={async (providerId: string, apiKey: string) => {
+                console.log('[ONBOARDING] API key updated for:', providerId);
+              }}
+            />
+          </motion.div>
+
+          {/* Continue button */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4, duration: 0.5 }}
+            className="text-center"
+          >
+            <button
+              onClick={handleProviderComplete}
+              className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:shadow-2xl hover:shadow-blue-500/50 transition-all duration-300"
+            >
+              Continue →
+            </button>
+          </motion.div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // OLD PROVIDER CARDS - DELETE THIS ENTIRE SECTION
+  if (false) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950 p-8">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="w-full max-w-5xl mx-auto text-center"
+        >
+          {/* Feature-based Configuration */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3, duration: 0.5 }}
+            className="space-y-6 mb-8 text-left"
+          >
+            {/* Ollama - Local */}
+            <div 
+              className={`border-2 rounded-2xl p-6 cursor-pointer transition-all ${
+                selectedProvider === 'ollama'
+                  ? 'bg-green-500/10 border-green-500'
+                  : 'bg-neutral-800/30 border-neutral-700 hover:border-neutral-600'
+              }`}
+              onClick={() => setSelectedProvider('ollama')}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                {selectedProvider === 'ollama' && (
+                  <div className="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+              <h3 className="text-xl font-bold text-white mb-2 text-left">Ollama (Local)</h3>
+              <p className="text-sm text-neutral-400 mb-4 text-left">
+                Run AI models on your machine. Complete privacy, no internet required.
+              </p>
+              <div className="space-y-2 text-left">
+                <div className="flex items-center gap-2 text-xs text-green-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>100% Private</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-green-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Works Offline</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-green-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>No API Costs</span>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-neutral-700 text-left">
+                <span className="text-xs font-medium text-neutral-400">📦 ~2GB download</span>
+              </div>
+            </div>
+
+            {/* OpenAI */}
+            <div 
+              className={`border-2 rounded-2xl p-6 cursor-pointer transition-all ${
+                selectedProvider === 'openai'
+                  ? 'bg-blue-500/10 border-blue-500'
+                  : 'bg-neutral-800/30 border-neutral-700 hover:border-neutral-600'
+              }`}
+              onClick={() => setSelectedProvider('openai')}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
+                    <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
+                  </svg>
+                </div>
+                {selectedProvider === 'openai' && (
+                  <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+              <h3 className="text-xl font-bold text-white mb-2 text-left">OpenAI</h3>
+              <p className="text-sm text-neutral-400 mb-4 text-left">
+                Use GPT-4 and other advanced models. Requires API key.
+              </p>
+              <div className="space-y-2 text-left">
+                <div className="flex items-center gap-2 text-xs text-blue-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Most Advanced</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-blue-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>No Local Setup</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-blue-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Fast Processing</span>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-neutral-700 text-left">
+                <span className="text-xs font-medium text-neutral-400">💳 Pay per use</span>
+              </div>
+            </div>
+
+            {/* LiteLLM */}
+            <div 
+              className={`border-2 rounded-2xl p-6 cursor-pointer transition-all ${
+                selectedProvider === 'litellm'
+                  ? 'bg-purple-500/10 border-purple-500'
+                  : 'bg-neutral-800/30 border-neutral-700 hover:border-neutral-600'
+              }`}
+              onClick={() => setSelectedProvider('litellm')}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-purple-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                  </svg>
+                </div>
+                {selectedProvider === 'litellm' && (
+                  <div className="w-6 h-6 rounded-full bg-purple-500 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                )}
+              </div>
+              <h3 className="text-xl font-bold text-white mb-2 text-left">LiteLLM Proxy</h3>
+              <p className="text-sm text-neutral-400 mb-4 text-left">
+                Access Gemini, Claude, and more through a unified proxy.
+              </p>
+              <div className="space-y-2 text-left">
+                <div className="flex items-center gap-2 text-xs text-purple-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Multi-Provider</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-purple-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Flexible</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-purple-400">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                  </svg>
+                  <span>Cost Effective</span>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-neutral-700 text-left">
+                <span className="text-xs font-medium text-neutral-400">🔧 Requires setup</span>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Info box */}
+          {selectedProvider !== 'ollama' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-4 mb-8 max-w-2xl mx-auto"
+            >
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <div className="text-left">
+                  <p className="text-sm text-orange-300 font-medium mb-1">Cloud Provider Selected</p>
+                  <p className="text-xs text-orange-400">
+                    Your media will be sent to {selectedProvider === 'openai' ? 'OpenAI' : 'LiteLLM proxy'} for processing. 
+                    You can configure API keys in Settings after setup.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Continue button */}
+          <motion.button
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4, duration: 0.5 }}
+            onClick={() => handleProviderSelection(selectedProvider)}
+            className="px-8 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-xl hover:shadow-2xl hover:shadow-blue-500/50 transition-all duration-300"
+          >
+            {selectedProvider === 'ollama' ? 'Download Models →' : 'Complete Setup →'}
           </motion.button>
         </motion.div>
       </div>

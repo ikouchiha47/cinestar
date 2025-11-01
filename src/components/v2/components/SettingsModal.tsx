@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Icon } from './Icons';
+import { ProviderSettingsV2 } from '../../ProviderSettingsV2';
+import { llmConfigService } from '../../../services/llm-config-service';
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -74,6 +76,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [hasChanges, setHasChanges] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState<'idle' | 'downloading' | 'success' | 'error'>('idle');
+  const [activeTab, setActiveTab] = useState<'general' | 'llm'>('general');
 
   // Load config on mount
   useEffect(() => {
@@ -233,8 +236,33 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           </button>
         </div>
 
+        {/* Tabs */}
+        <div className="flex border-b border-neutral-700">
+          <button
+            onClick={() => setActiveTab('general')}
+            className={`px-6 py-3 font-medium transition-colors ${
+              activeTab === 'general'
+                ? 'text-white border-b-2 border-blue-500'
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            General
+          </button>
+          <button
+            onClick={() => setActiveTab('llm')}
+            className={`px-6 py-3 font-medium transition-colors ${
+              activeTab === 'llm'
+                ? 'text-white border-b-2 border-blue-500'
+                : 'text-neutral-400 hover:text-white'
+            }`}
+          >
+            LLM Providers
+          </button>
+        </div>
+
         {/* Content */}
         <div className="p-6 overflow-y-auto max-h-[calc(90vh-140px)]">
+          {activeTab === 'general' && (
           <div className="space-y-8">
             
             {/* AI Services Configuration */}
@@ -458,6 +486,34 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
               </div>
             </div>
           </div>
+          )}
+
+          {activeTab === 'llm' && (
+            <div className="space-y-6">
+              <div>
+                <h3 className="text-lg font-medium text-white mb-2">LLM Provider Configuration</h3>
+                <p className="text-sm text-neutral-400 mb-6">
+                  Configure your language model providers for vision, text generation, embeddings, and transcription.
+                  Choose between local (Ollama) for privacy or cloud providers (OpenAI, LiteLLM) for advanced capabilities.
+                </p>
+              </div>
+              
+              <ProviderSettingsV2
+                onProviderChange={async (providerId: string) => {
+                  console.log('[SETTINGS] Provider changed to:', providerId);
+                  // Provider change is handled by llmConfigService internally
+                }}
+                onModelChange={async (task: string, modelId: string) => {
+                  console.log('[SETTINGS] Model changed:', task, modelId);
+                  // Model change is handled by llmConfigService internally
+                }}
+                onApiKeyChange={async (providerId: string, apiKey: string) => {
+                  console.log('[SETTINGS] API key updated for:', providerId);
+                  // API key change is handled by llmConfigService internally
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Footer */}

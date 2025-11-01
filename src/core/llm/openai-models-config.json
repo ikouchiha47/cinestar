@@ -1,0 +1,228 @@
+{
+  "provider": "openai",
+  "name": "OpenAI",
+  "baseUrl": "https://api.openai.com/v1",
+  "docsUrl": "https://platform.openai.com/docs/models",
+  "apiKey": {
+    "required": true,
+    "editable": true,
+    "envVar": "OPENAI_API_KEY",
+    "label": "OpenAI API Key",
+    "placeholder": "sk-..."
+  },
+  "defaults": {
+    "vision": "gpt-4.1-mini",
+    "text": "gpt-4.1",
+    "embedding": "text-embedding-3-large",
+    "transcription": "gpt-4o-transcribe"
+  },
+  "categories": {
+    "frontier": {
+      "label": "Frontier Models",
+      "description": "Most capable models for complex tasks",
+      "models": [
+        {
+          "id": "gpt-5",
+          "name": "GPT-5",
+          "description": "The best model for coding and agentic tasks across domains",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000
+        },
+        {
+          "id": "gpt-5-mini",
+          "name": "GPT-5 mini",
+          "description": "A faster, cost-efficient version of GPT-5 for well-defined tasks",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000
+        },
+        {
+          "id": "gpt-5-nano",
+          "name": "GPT-5 nano",
+          "description": "Fastest, most cost-efficient version of GPT-5",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000
+        }
+      ]
+    },
+    "vision": {
+      "label": "Vision Models",
+      "description": "Models with image understanding capabilities",
+      "models": [
+        {
+          "id": "gpt-4.1-mini",
+          "name": "GPT-4.1 mini",
+          "description": "Smaller, faster version of GPT-4.1 with vision",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000,
+          "default": true
+        },
+        {
+          "id": "gpt-4.1",
+          "name": "GPT-4.1",
+          "description": "Smartest non-reasoning model with vision",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000
+        },
+        {
+          "id": "gpt-4.1-nano",
+          "name": "GPT-4.1 nano",
+          "description": "Fastest, most cost-efficient version of GPT-4.1",
+          "capabilities": ["text", "vision", "function-calling"],
+          "contextWindow": 128000
+        }
+      ]
+    },
+    "transcription": {
+      "label": "Speech-to-Text",
+      "description": "Models for audio transcription",
+      "models": [
+        {
+          "id": "gpt-4o-transcribe",
+          "name": "GPT-4o Transcribe",
+          "description": "Speech-to-text model powered by GPT-4o",
+          "capabilities": ["transcription"],
+          "default": true
+        },
+        {
+          "id": "gpt-4o-mini-transcribe",
+          "name": "GPT-4o mini Transcribe",
+          "description": "Speech-to-text model powered by GPT-4o mini",
+          "capabilities": ["transcription"]
+        },
+        {
+          "id": "gpt-4o-transcribe-diarize",
+          "name": "GPT-4o Transcribe Diarize",
+          "description": "Transcription model that identifies who's speaking when",
+          "capabilities": ["transcription", "diarization"]
+        }
+      ]
+    },
+    "realtime": {
+      "label": "Realtime Models",
+      "description": "Models for realtime audio and text interactions",
+      "models": [
+        {
+          "id": "gpt-realtime",
+          "name": "gpt-realtime",
+          "description": "Model capable of realtime text and audio inputs and outputs",
+          "capabilities": ["text", "audio-input", "audio-output", "realtime"]
+        },
+        {
+          "id": "gpt-realtime-mini",
+          "name": "gpt-realtime-mini",
+          "description": "A cost-efficient version of GPT Realtime",
+          "capabilities": ["text", "audio-input", "audio-output", "realtime"]
+        },
+        {
+          "id": "gpt-4o-realtime-preview",
+          "name": "GPT-4o Realtime",
+          "description": "Model capable of realtime text and audio inputs and outputs",
+          "capabilities": ["text", "audio-input", "audio-output", "realtime"]
+        }
+      ]
+    },
+    "reasoning": {
+      "label": "Reasoning Models",
+      "description": "Models optimized for complex reasoning tasks",
+      "models": [
+        {
+          "id": "o3",
+          "name": "o3",
+          "description": "Reasoning model for complex tasks, succeeded by GPT-5",
+          "capabilities": ["text", "reasoning"],
+          "contextWindow": 128000
+        },
+        {
+          "id": "o4-mini",
+          "name": "o4-mini",
+          "description": "Fast, cost-efficient reasoning model, succeeded by GPT-5 mini",
+          "capabilities": ["text", "reasoning"],
+          "contextWindow": 128000
+        },
+        {
+          "id": "o3-pro",
+          "name": "o3-pro",
+          "description": "Version of o3 with more compute for better responses",
+          "capabilities": ["text", "reasoning"],
+          "contextWindow": 128000
+        }
+      ]
+    },
+    "embedding": {
+      "label": "Embedding Models",
+      "description": "Models for generating text embeddings",
+      "models": [
+        {
+          "id": "text-embedding-3-large",
+          "name": "text-embedding-3-large",
+          "description": "Most capable embedding model",
+          "capabilities": ["embedding"],
+          "dimensions": 3072,
+          "default": true
+        },
+        {
+          "id": "text-embedding-3-small",
+          "name": "text-embedding-3-small",
+          "description": "Small embedding model",
+          "capabilities": ["embedding"],
+          "dimensions": 1536
+        },
+        {
+          "id": "text-embedding-ada-002",
+          "name": "text-embedding-ada-002",
+          "description": "Older embedding model",
+          "capabilities": ["embedding"],
+          "dimensions": 1536
+        }
+      ]
+    },
+    "specialized": {
+      "label": "Specialized Models",
+      "description": "Models for specific use cases",
+      "models": [
+        {
+          "id": "gpt-image-1",
+          "name": "GPT Image 1",
+          "description": "State-of-the-art image generation model",
+          "capabilities": ["image-generation"]
+        },
+        {
+          "id": "dall-e-3",
+          "name": "DALL·E 3",
+          "description": "Previous generation image generation model",
+          "capabilities": ["image-generation"]
+        },
+        {
+          "id": "tts-1",
+          "name": "TTS-1",
+          "description": "Text-to-speech model optimized for speed",
+          "capabilities": ["text-to-speech"]
+        }
+      ]
+    },
+    "chatgpt": {
+      "label": "ChatGPT Models",
+      "description": "Models used in ChatGPT",
+      "models": [
+        {
+          "id": "gpt-5-chat-latest",
+          "name": "GPT-5 Chat",
+          "description": "GPT-5 model used in ChatGPT",
+          "capabilities": ["text", "vision", "function-calling"]
+        },
+        {
+          "id": "chatgpt-4o-latest",
+          "name": "ChatGPT-4o",
+          "description": "GPT-4o model used in ChatGPT",
+          "capabilities": ["text", "vision", "function-calling"]
+        },
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "description": "Fast, intelligent, flexible GPT model",
+          "capabilities": ["text", "vision", "function-calling"]
+        }
+      ]
+    }
+  }
+}

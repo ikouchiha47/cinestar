@@ -11,6 +11,7 @@ import { ImageJobProcessor } from '../src/core/image-job-processor'
 import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 import { getMimeType } from '../src/core/utils'
+import { initializeLLMConfigHandler } from '../src/main/llm-config-handler'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -1257,12 +1258,15 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
           try {
             const obj = JSON.parse(line);
             if (obj.type === 'whisper:setup:progress' && typeof obj.progress === 'number') {
+              console.log(`[WHISPER-SETUP] Progress: ${obj.progress}% - ${obj.message || ''}`);
               evt.sender.send('whisper:setup:progress', obj.progress);
             } else if (obj.type === 'whisper:setup:signal' && obj.status) {
+              console.log(`[WHISPER-SETUP] Signal: ${obj.status}${obj.error ? ` - ${obj.error}` : ''}`);
               evt.sender.send('whisper:setup:signal', { status: obj.status, error: obj.error });
             }
           } catch {
-            // Non-JSON line; ignore
+            // Non-JSON line; log it for debugging
+            console.log('[WHISPER-SETUP][stdout]', line);
           }
         }
       } catch {}
@@ -1353,6 +1357,15 @@ app.whenReady().then(async () => {
     console.log('[MAIN-PROCESS] Headless mode enabled, no browser window');
   }
   
+  // Initialize LLM Config Handler (lightweight, no async needed)
+  try {
+    const llmConfigHandler = initializeLLMConfigHandler();
+    await llmConfigHandler.initialize();
+    console.log('[MAIN-PROCESS] LLM Config Handler initialized');
+  } catch (error) {
+    console.warn('[MAIN-PROCESS] LLM Config Handler init failed:', error);
+  }
+
   // Defer heavy initialization so the UI can appear immediately
   setTimeout(async () => {
     // Initialize MediaAPI first to set up globalJobsDb

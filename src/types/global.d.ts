@@ -123,6 +123,10 @@ declare global {
         error?: string;
       }>;
     };
+
+    electron: {
+      invoke: (channel: string, ...args: any[]) => Promise<any>;
+    };
   }
 }
 

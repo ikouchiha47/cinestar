@@ -68,6 +68,12 @@ async function downloadAndBuildWhisper(modelName = 'base.en', useCuda = null) {
     const modelFile = MODEL_OBJECT[modelName];
     const modelPath = path.join(modelsPath, modelFile);
     
+    // Check if whisper binary is already built
+    const binaryName = process.platform === 'win32' ? 'main.exe' : 'main';
+    const binaryPath = path.join(whisperCppPath, 'build', 'bin', binaryName);
+    const altBinaryPath = path.join(whisperCppPath, 'build', binaryName); // Some builds put it here
+    const isBinaryBuilt = fs.existsSync(binaryPath) || fs.existsSync(altBinaryPath);
+    
     if (fs.existsSync(modelPath)) {
       reportProgress('whisper:setup:progress', { progress: 50, message: 'Model already exists, skipping download' });
     } else {
@@ -94,7 +100,21 @@ async function downloadAndBuildWhisper(modelName = 'base.en', useCuda = null) {
       reportProgress('whisper:setup:progress', { progress: 60, message: 'Model downloaded successfully' });
     }
 
-    // Build whisper.cpp
+    // Build whisper.cpp only if not already built
+    if (isBinaryBuilt) {
+      reportProgress('whisper:setup:progress', { progress: 100, message: 'Whisper already built, skipping compilation' });
+      reportProgress('whisper:setup:signal', { status: 'completed', model: modelName, cuda: useCudaFlag });
+      
+      return {
+        success: true,
+        model: modelName,
+        modelPath: modelPath,
+        cuda: useCudaFlag,
+        whisperCppPath: whisperCppPath,
+        alreadyBuilt: true
+      };
+    }
+    
     reportProgress('whisper:setup:progress', { progress: 70, message: 'Building whisper.cpp...' });
     
     shell.cd(whisperCppPath);
