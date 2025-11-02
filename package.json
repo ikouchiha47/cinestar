@@ -1,7 +1,7 @@
 {
   "name": "cinestar.app",
   "private": true,
-  "version": "0.1.54",
+  "version": "0.1.61",
   "type": "module",
   "scripts": {
     "dev": "node scripts/reset-preferences.js && vite",
@@ -16,7 +16,8 @@
     "preview": "vite preview",
     "postinstall": "npx electron-rebuild -f -w better-sqlite3 && npm rebuild sharp",
     "clean:db": "rm -f data/*.db data/*.db-shm data/*.db-wal",
-    "restart": "npm run clean:db && npm run postinstall && node scripts/reset-preferences.js && npm run dev"
+    "restart": "npm run clean:db && npm run postinstall && node scripts/reset-preferences.js && npm run dev",
+    "diagnose:paths": "node scripts/diagnose-paths.cjs"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

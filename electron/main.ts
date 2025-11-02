@@ -1,6 +1,12 @@
 import '../src/core/logger'
 import '../src/core/ffmpeg-bootstrap'
 import { app, BrowserWindow, ipcMain, dialog, BrowserView } from 'electron'
+
+// Log version info IMMEDIATELY
+console.log('[APP-VERSION] Cinestar version: 0.1.56');
+console.log('[APP-VERSION] Packaged:', app?.isPackaged ?? 'unknown');
+console.log('[APP-VERSION] Resources path:', process.resourcesPath || 'N/A');
+
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -1215,6 +1221,79 @@ ipcMain.handle('config:set', async (_, config) => {
   }
 });
 
+// Startup config normalizer to ensure consistency
+async function normalizeConfigAtStartup() {
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) {
+      console.log('[CONFIG-NORMALIZE] No config file found, skipping normalization');
+      return;
+    }
+    
+    const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+    let cfg = JSON.parse(configData);
+    let changed = false;
+    
+    // Initialize resources section if missing
+    if (!cfg.resources) {
+      cfg.resources = {};
+      changed = true;
+    }
+    
+    // Check if Whisper model file actually exists
+    const whisperModelName = cfg.aiServices?.transcription?.model?.replace('whisper-', '') || 'base.en';
+    const whisperModelPath = path.join(app.getPath('userData'), 'whisper-models', `ggml-${whisperModelName}.bin`);
+    const whisperExists = fs.existsSync(whisperModelPath);
+    
+    // Update whisper resource status based on actual file
+    if (whisperExists && !cfg.resources.whisper?.downloaded) {
+      cfg.resources.whisper = {
+        downloaded: true,
+        path: whisperModelPath,
+        model: whisperModelName,
+        lastChecked: new Date().toISOString()
+      };
+      cfg.aiServices = cfg.aiServices || {};
+      cfg.aiServices.transcription = cfg.aiServices.transcription || {};
+      cfg.aiServices.transcription.modelDownloaded = true;
+      changed = true;
+      console.log('[CONFIG-NORMALIZE] Detected existing Whisper model, updated resources.whisper.downloaded=true');
+    } else if (!whisperExists && cfg.resources.whisper?.downloaded) {
+      cfg.resources.whisper.downloaded = false;
+      cfg.aiServices.transcription.modelDownloaded = false;
+      changed = true;
+      console.log('[CONFIG-NORMALIZE] Whisper model file missing, updated resources.whisper.downloaded=false');
+    }
+    
+    // Enforce invariant: if (features.videos || features.audio) && whisperExists && !enabled, set enabled=true
+    const hasMediaFeatures = cfg.features?.videos || cfg.features?.audio;
+    const whisperDownloaded = cfg.resources.whisper?.downloaded || false;
+    const transcriptionEnabled = cfg.aiServices?.transcription?.enabled || false;
+    
+    if (hasMediaFeatures && whisperDownloaded && !transcriptionEnabled) {
+      cfg.aiServices.transcription.enabled = true;
+      changed = true;
+      console.log('[CONFIG-NORMALIZE] Enabled transcription because features require it and model is present');
+    }
+    
+    // If features are OFF but enabled is true, turn it off
+    if (!hasMediaFeatures && transcriptionEnabled) {
+      cfg.aiServices.transcription.enabled = false;
+      changed = true;
+      console.log('[CONFIG-NORMALIZE] Disabled transcription because media features are off');
+    }
+    
+    if (changed) {
+      cfg.lastModified = new Date().toISOString();
+      await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+      console.log('[CONFIG-NORMALIZE] Config normalized and saved');
+    } else {
+      console.log('[CONFIG-NORMALIZE] Config is consistent, no changes needed');
+    }
+  } catch (error) {
+    console.error('[CONFIG-NORMALIZE] Failed to normalize config:', error);
+  }
+}
+
 ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCuda?: boolean } = {}) => {
   try {
     const modelName = options.modelName || 'base.en';
@@ -1223,14 +1302,24 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
     
     const { spawn } = await import('child_process');
 
-    // Resolve script path for dev vs packaged
-    const devScriptPath = path.join(process.cwd(), 'scripts', 'whisper-setup.js');
+    // Resolve script path for dev vs packaged (prefer .cjs fallback to .js)
+    const devScriptPathCjs = path.join(process.cwd(), 'scripts', 'whisper-setup.cjs');
+    const devScriptPathJs  = path.join(process.cwd(), 'scripts', 'whisper-setup.js');
     // Prefer unpacked in production so Node can execute it directly
-    const prodUnpackedScriptPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'whisper-setup.js');
-    const prodAsarScriptPath = path.join(process.resourcesPath, 'app.asar', 'scripts', 'whisper-setup.js');
-    const scriptPath = isDev
-      ? devScriptPath
-      : (fs.existsSync(prodUnpackedScriptPath) ? prodUnpackedScriptPath : prodAsarScriptPath);
+    const prodUnpackedScriptCjs = path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'whisper-setup.cjs');
+    const prodUnpackedScriptJs  = path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'whisper-setup.js');
+    const prodAsarScriptCjs     = path.join(process.resourcesPath, 'app.asar', 'scripts', 'whisper-setup.cjs');
+    const prodAsarScriptJs      = path.join(process.resourcesPath, 'app.asar', 'scripts', 'whisper-setup.js');
+
+    let scriptPath = '';
+    if (isDev) {
+      scriptPath = fs.existsSync(devScriptPathCjs) ? devScriptPathCjs : devScriptPathJs;
+    } else {
+      if (fs.existsSync(prodUnpackedScriptCjs)) scriptPath = prodUnpackedScriptCjs;
+      else if (fs.existsSync(prodUnpackedScriptJs)) scriptPath = prodUnpackedScriptJs;
+      else if (fs.existsSync(prodAsarScriptCjs)) scriptPath = prodAsarScriptCjs;
+      else scriptPath = prodAsarScriptJs;
+    }
 
     console.log(`[WHISPER-SETUP] Spawning setup for model: ${modelName}, CUDA: ${useCuda}, scriptPath: ${scriptPath}`);
 
@@ -1239,6 +1328,7 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
     const env = { ...process.env } as NodeJS.ProcessEnv;
     if (!isDev) env.ELECTRON_RUN_AS_NODE = '1';
 
+    // Build arguments for the setup script (no ESM flags; script runs as CommonJS)
     const args = [scriptPath, modelName];
     if (useCuda !== '') args.push(useCuda);
 
@@ -1296,7 +1386,7 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
       } catch (e) {
         console.warn('[WHISPER-SETUP] Failed updating preferences after setup:', e);
       }
-      // Also persist onboarding completion to unified config so renderer skips welcome on next launch
+      // Also persist onboarding completion and modelDownloaded to unified config so renderer can gate onboarding/dev flow
       try {
         let cfg: any = {};
         if (fs.existsSync(CONFIG_FILE)) {
@@ -1309,10 +1399,32 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
         }
         const firstLaunchDate = cfg?.onboarding?.firstLaunchDate || new Date().toISOString();
         cfg.onboarding = { ...(cfg.onboarding || {}), complete: true, firstLaunchDate };
+        cfg.aiServices = { ...(cfg.aiServices || {}) };
+        cfg.aiServices.transcription = { ...(cfg.aiServices.transcription || {}), modelDownloaded: true };
+        
+        // Initialize resources section if not present
+        cfg.resources = cfg.resources || {};
+        
+        // Set whisper resource as downloaded
+        const whisperModelPath = path.join(app.getPath('userData'), 'whisper-models', `ggml-${modelName}.bin`);
+        cfg.resources.whisper = {
+          downloaded: true,
+          path: whisperModelPath,
+          model: modelName,
+          lastChecked: new Date().toISOString()
+        };
+        
+        // If videos or audio features are enabled, also enable transcription
+        const hasMediaFeatures = cfg.features?.videos || cfg.features?.audio;
+        if (hasMediaFeatures) {
+          cfg.aiServices.transcription.enabled = true;
+          console.log('[CONFIG] Transcription enabled after setup success (features require it)');
+        }
+        
         cfg.lastModified = new Date().toISOString();
         await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
         await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
-        console.log('[CONFIG] Onboarding marked complete in config');
+        console.log('[CONFIG] Whisper setup complete: modelDownloaded=true, resources.whisper.downloaded=true, enabled=' + (hasMediaFeatures ? 'true' : 'false'));
       } catch (e) {
         console.warn('[WHISPER-SETUP] Failed updating config onboarding state:', e);
       }
@@ -1366,6 +1478,15 @@ app.whenReady().then(async () => {
     console.warn('[MAIN-PROCESS] LLM Config Handler init failed:', error);
   }
 
+  // Normalize config at startup to ensure consistency
+  setTimeout(async () => {
+    try {
+      await normalizeConfigAtStartup();
+    } catch (e) {
+      console.warn('[CONFIG-NORMALIZE] Startup normalization failed:', e);
+    }
+  }, 100);
+  
   // Defer heavy initialization so the UI can appear immediately
   setTimeout(async () => {
     // Initialize MediaAPI first to set up globalJobsDb

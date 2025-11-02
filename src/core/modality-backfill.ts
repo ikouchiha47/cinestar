@@ -1,7 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import { fileURLToPath } from 'url';
+import { isPackaged, getResourcesPath } from './utils/is-packaged';
 
 function openDb(file: string, mustExist = true) {
   const exists = fs.existsSync(file);
@@ -17,22 +17,29 @@ function openDb(file: string, mustExist = true) {
     file.includes('vector.db')
   ) {
     try {
-      // Find the platform-specific vec0 binary
-      const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
+      // Use the same path resolution logic as UnifiedMigrator
+      const packed = isPackaged();
+      const basePath = packed
+        ? path.join(getResourcesPath(), 'app.asar.unpacked')
+        : process.cwd();
+      
+      const platform = process.platform;
       const arch = process.arch;
       
-      // ESM-compatible: resolve the package path manually instead of using require.resolve
-      const packageName = `sqlite-vec-${platform}-${arch}`;
-      const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      
-      // Try to find the package in node_modules
       let vec0Path: string;
-      const possiblePaths = [
-        path.join(__dirname, '../../node_modules', packageName, 'vec0.dylib'),
-        path.join(process.cwd(), 'node_modules', packageName, 'vec0.dylib'),
-      ];
-      
-      vec0Path = possiblePaths.find(p => fs.existsSync(p)) || possiblePaths[0];
+      if (platform === 'darwin' && arch === 'arm64') {
+        vec0Path = path.resolve(basePath, 'node_modules/sqlite-vec-darwin-arm64/vec0.dylib');
+      } else if (platform === 'darwin' && arch === 'x64') {
+        vec0Path = path.resolve(basePath, 'node_modules/sqlite-vec-darwin-x64/vec0.dylib');
+      } else if (platform === 'linux' && arch === 'x64') {
+        vec0Path = path.resolve(basePath, 'node_modules/sqlite-vec-linux-x64/vec0.so');
+      } else if (platform === 'linux' && arch === 'arm64') {
+        vec0Path = path.resolve(basePath, 'node_modules/sqlite-vec-linux-arm64/vec0.so');
+      } else if (platform === 'win32' && arch === 'x64') {
+        vec0Path = path.resolve(basePath, 'node_modules/sqlite-vec-windows-x64/vec0.dll');
+      } else {
+        throw new Error(`Unsupported platform for sqlite-vec: ${platform}-${arch}`);
+      }
       
       if (fs.existsSync(vec0Path)) {
         db.loadExtension(vec0Path);

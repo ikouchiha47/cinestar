@@ -1,5 +1,6 @@
 import { BaseVideoProcessor, ProcessingContext, ProcessingResult } from '../video-pipeline';
 import { NodeJsWhisperService } from './whisper-node-service';
+import { WhisperDirectService } from './whisper-direct-service';
 import { DockerWhisperService } from './docker-whisper-service';
 // import { WhisperCppService } from './whisper-cpp-service';
 // import { WhisperCliService } from './whisper-cli-service';
@@ -106,10 +107,10 @@ export class TranscriptionProcessor extends BaseVideoProcessor {
     if (config.services) {
       this.services = config.services;
     } else {
-      // Priority order: NodeJS Whisper (bundled) -> Docker (if available) -> HTTP fallback
+      // Priority order: WhisperDirect (bypasses ASAR issues) -> Docker -> HTTP fallback
       const baseUrl = config.baseUrl || 'http://localhost:9001';
       this.services = [
-        new NodeJsWhisperService(), // PRIMARY: No Docker required, bundled with app
+        new WhisperDirectService(), // PRIMARY: Direct binary execution, bypasses nodejs-whisper ASAR issues
         new DockerWhisperService(baseUrl), // FALLBACK: If user has Docker running
         new HttpTranscriptionService() // LAST RESORT: External service
       ];

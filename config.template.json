@@ -6,7 +6,7 @@
   },
   "features": {
     "images": true,
-    "videos": true,
+    "videos": false,
     "audio": false
   },
   "workers": {
@@ -27,8 +27,33 @@
     },
     "sceneReconstruction": {
       "baseUrl": "http://localhost:11434",
-      "model": "llama3.2:3b",
+      "model": "qwen3:4b",
       "enabled": true
+    }
+  },
+  "resources": {
+    "whisper": {
+      "downloaded": false,
+      "model": "base.en",
+      "lastChecked": null
+    },
+    "imageModel": {
+      "provider": "ollama",
+      "model": "moondream:v2",
+      "downloaded": false,
+      "lastChecked": null
+    },
+    "generalModel": {
+      "provider": "ollama",
+      "model": "qwen3:4b",
+      "downloaded": false,
+      "lastChecked": null
+    },
+    "embeddingModel": {
+      "provider": "ollama",
+      "model": "bge-m3",
+      "downloaded": false,
+      "lastChecked": null
     }
   },
   "lastModified": null

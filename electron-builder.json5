@@ -7,7 +7,7 @@
   "directories": {
     "output": "release/${version}"
   },
-  "icon": "public/icons/cinestar-app.png",
+  "icon": "public/cinestar-app.png",
   "files": [
     "dist",
     "dist-electron",
@@ -23,6 +23,9 @@
     "node_modules/ffprobe-static/**/*",
     "node_modules/sqlite-vec*/**/*",
     "node_modules/better-sqlite3/**/*",
+    "node_modules/bindings/**/*",
+    "node_modules/file-uri-to-path/**/*",
+    "node_modules/nodejs-whisper/**/*",
     "node_modules/nodejs-whisper/**/*",
     "scripts/**/*",
     "migrations_flat/**/*",
@@ -32,7 +35,7 @@
     "target": [
       "dmg"
     ],
-    "icon": "public/icons/cinestar-app.png",
+    "icon": "public/cinestar-app.png",
     "artifactName": "${productName}-${version}-mac.${ext}"
   },
   "win": {
@@ -44,7 +47,7 @@
         ]
       }
     ],
-    "icon": "public/icons/cinestar-app.png",
+    "icon": "public/cinestar-app.png",
     "artifactName": "${productName}-${version}-win.${ext}"
   },
   "nsis": {
@@ -60,7 +63,7 @@
         "arch": ["x64", "arm64"]
       }
     ],
-    "icon": "public/icons/cinestar-app.png",
+    "icon": "public/cinestar-app.png",
     "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
   }
 }

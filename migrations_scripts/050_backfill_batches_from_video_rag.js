@@ -112,3 +112,7 @@ export function down(context) {
   // No rollback - backfill is idempotent
   console.log('[BACKFILL-050] Rollback not needed (idempotent migration)');
 }
+
+// Alias for unified migrator compatibility
+export const run = up;
+export default { run, up, down };

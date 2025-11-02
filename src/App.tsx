@@ -84,10 +84,42 @@ function App() {
     try {
       // @ts-ignore exposed by preload
       const config = await (window as any).ipcRenderer?.invoke('config:get');
-      if (config && config.onboarding && config.onboarding.complete === true) {
-        return false; // onboarding not needed
+      const onboardingComplete = !!(config && config.onboarding && config.onboarding.complete === true);
+
+      // In development, also require whisper model flags to be true
+      const isDev = !!import.meta.env.DEV;
+      if (isDev) {
+        // Check config flag
+        const cfgModelDownloaded = !!(config?.aiServices?.transcription?.modelDownloaded === true);
+
+        // Check preferences flag from DATA_DIR/preferences.json
+        let prefsModelDownloaded = false;
+        try {
+          // @ts-ignore
+          const dataDir: string = await (window as any).electronAPI?.getDataDir();
+          if (dataDir) {
+            // @ts-ignore
+            const prefsPath = `${dataDir.replace(/\/$/, '')}/preferences.json`;
+            // @ts-ignore
+            const exists = await (window as any).electronAPI?.fileExists(prefsPath);
+            if (exists) {
+              // @ts-ignore
+              const prefsRaw = await (window as any).electronAPI?.readFile(prefsPath);
+              try {
+                const prefs = JSON.parse(prefsRaw || '{}');
+                prefsModelDownloaded = !!prefs.whisperModelDownloaded;
+              } catch {}
+            }
+          }
+        } catch {}
+
+        // In dev, show onboarding unless onboardingComplete && both flags are true
+        const allowSkip = onboardingComplete && cfgModelDownloaded && prefsModelDownloaded;
+        return !allowSkip;
       }
-      return true; // needs onboarding
+
+      // In production, rely on onboarding.complete only
+      return !onboardingComplete;
     } catch (e) {
       // On error, show onboarding to recover
       return true;

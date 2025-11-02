@@ -9,6 +9,7 @@
 import path from 'path';
 import shell from 'shelljs';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -59,16 +60,32 @@ async function downloadAndBuildWhisper(modelName = 'base.en', useCuda = null) {
     reportProgress('whisper:setup:signal', { status: 'started', model: modelName, cuda: useCudaFlag });
 
     const whisperCppPath = path.join(__dirname, '..', 'node_modules', 'nodejs-whisper', 'cpp', 'whisper.cpp');
-    const modelsPath = path.join(whisperCppPath, 'models');
+    const scriptDir = path.join(whisperCppPath, 'models');
 
-    // Ensure directories exist
-    shell.mkdir('-p', modelsPath);
+    // Compute target models cache path used by runtime (matches WhisperDirectService)
+    function getUserWhisperModelsPath() {
+      // macOS: ~/Library/Application Support/Cinestar/whisper-models
+      // Linux: ~/.config/Cinestar/whisper-models
+      // Windows: %APPDATA%/Cinestar/whisper-models
+      if (process.platform === 'win32') {
+        const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+        return path.join(appData, 'Cinestar', 'whisper-models');
+      }
+      const base = process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Application Support')
+        : path.join(os.homedir(), '.config');
+      return path.join(base, 'Cinestar', 'whisper-models');
+    }
+    const targetModelsPath = getUserWhisperModelsPath();
+
+    // Ensure target cache directory exists
+    shell.mkdir('-p', targetModelsPath);
 
     // Check if model already exists
     const modelFile = MODEL_OBJECT[modelName];
-    const modelPath = path.join(modelsPath, modelFile);
+    const modelPath = path.join(targetModelsPath, modelFile);
     
-    // Check if whisper binary is already built
+    // Check if whisper binary is already built (optional; bundled in production)
     const binaryName = process.platform === 'win32' ? 'main.exe' : 'main';
     const binaryPath = path.join(whisperCppPath, 'build', 'bin', binaryName);
     const altBinaryPath = path.join(whisperCppPath, 'build', binaryName); // Some builds put it here
@@ -79,19 +96,21 @@ async function downloadAndBuildWhisper(modelName = 'base.en', useCuda = null) {
     } else {
       reportProgress('whisper:setup:progress', { progress: 10, message: 'Starting model download...' });
 
-      shell.cd(modelsPath);
+      // Locate upstream downloader in whisper.cpp models folder
+      const scriptFile = process.platform === 'win32' ? 'download-ggml-model.cmd' : 'download-ggml-model.sh';
+      const scriptPathAbs = path.join(scriptDir, scriptFile);
 
-      let scriptPath = './download-ggml-model.sh';
-      if (process.platform === 'win32') scriptPath = 'download-ggml-model.cmd';
-
-      if (!shell.which(scriptPath)) {
-        throw new Error('Downloader script not found');
+      if (!fs.existsSync(scriptPathAbs)) {
+        throw new Error(`Downloader script not found at ${scriptPathAbs}`);
       }
 
-      shell.chmod('+x', scriptPath);
-      
-      // Execute download with progress
-      const downloadResult = shell.exec(`${scriptPath} ${modelName}`, { silent: false });
+      shell.chmod('+x', scriptPathAbs);
+
+      // Execute download with explicit target models_path (do NOT cd)
+      // Usage: download-ggml-model.sh <model> [models_path]
+      const quotedTarget = `"${targetModelsPath}"`;
+      const cmd = `${scriptPathAbs} ${modelName} ${quotedTarget}`;
+      const downloadResult = shell.exec(cmd, { silent: false });
       
       if (downloadResult.code !== 0) {
         throw new Error(`Model download failed: ${downloadResult.stderr}`);

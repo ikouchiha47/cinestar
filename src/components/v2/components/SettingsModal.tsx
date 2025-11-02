@@ -36,6 +36,32 @@ export interface UnifiedConfig {
       enabled: boolean;
     };
   };
+  resources?: {
+    whisper?: {
+      downloaded: boolean;
+      path?: string;
+      model: string;
+      lastChecked: string;
+    };
+    imageModel?: {
+      provider: string;
+      model: string;
+      downloaded: boolean;
+      lastChecked: string;
+    };
+    generalModel?: {
+      provider: string;
+      model: string;
+      downloaded: boolean;
+      lastChecked: string;
+    };
+    embeddingModel?: {
+      provider: string;
+      model: string;
+      downloaded: boolean;
+      lastChecked: string;
+    };
+  };
   lastModified: string;
 }
 
@@ -301,18 +327,18 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                           setConfig(updatedConfig);
                           setHasChanges(true);
                           
-                          // If enabling and model not downloaded, trigger download
+                          // If enabling and model not downloaded, trigger setup
                           if (e.target.checked && !config.aiServices.transcription.modelDownloaded) {
-                            console.log('[SETTINGS] Media processing enabled, starting Whisper model download...');
+                            console.log('[SETTINGS] Media processing enabled, starting Whisper setup...');
                             setDownloadStatus('downloading');
                             setIsDownloading(true);
                             
                             try {
                               // @ts-ignore
-                              const result = await window.electronAPI?.downloadWhisperModel({ modelName: 'base.en' });
+                              const result = await window.electronAPI?.setupWhisper({ modelName: 'base.en' });
                               
                               if (result?.success) {
-                                console.log('[SETTINGS] ✅ Whisper model downloaded successfully');
+                                console.log('[SETTINGS] ✅ Whisper setup completed successfully');
                                 
                                 const finalConfig = {
                                   ...updatedConfig,
@@ -320,7 +346,16 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                     ...updatedConfig.aiServices,
                                     transcription: {
                                       ...updatedConfig.aiServices.transcription,
-                                      modelDownloaded: true
+                                      modelDownloaded: true,
+                                      enabled: true
+                                    }
+                                  },
+                                  resources: {
+                                    ...updatedConfig.resources,
+                                    whisper: {
+                                      downloaded: true,
+                                      model: 'base.en',
+                                      lastChecked: new Date().toISOString()
                                     }
                                   }
                                 };
@@ -329,22 +364,64 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                                 setDownloadStatus('success');
                                 setIsDownloading(false);
                                 
+                                // Save to disk
+                                // @ts-ignore
+                                await window.ipcRenderer?.invoke('config:set', finalConfig);
+                                
                                 // Show success alert
                                 alert('✅ Whisper model downloaded successfully! You can now upload and process video/audio files.');
                               } else {
-                                console.error('[SETTINGS] ❌ Whisper model download failed:', result?.error);
+                                console.error('[SETTINGS] ❌ Whisper setup failed:', result?.error);
                                 setDownloadStatus('error');
                                 setIsDownloading(false);
                                 
+                                // Revert toggle to OFF on failure
+                                setConfig(config);
+                                
                                 // Show error alert
-                                alert(`❌ Failed to download Whisper model: ${result?.error || 'Unknown error'}. Please try again.`);
+                                alert(`❌ Failed to setup Whisper: ${result?.error || 'Unknown error'}. Please try again.`);
                               }
                             } catch (error) {
-                              console.error('[SETTINGS] Error downloading Whisper model:', error);
+                              console.error('[SETTINGS] Error during Whisper setup:', error);
                               setDownloadStatus('error');
                               setIsDownloading(false);
-                              alert('❌ Failed to download Whisper model. Please try again.');
+                              
+                              // Revert toggle to OFF on error
+                              setConfig(config);
+                              alert('❌ Failed to setup Whisper. Please try again.');
                             }
+                          } else if (e.target.checked && config.aiServices.transcription.modelDownloaded) {
+                            // Model already exists, just enable transcription
+                            const finalConfig = {
+                              ...updatedConfig,
+                              aiServices: {
+                                ...updatedConfig.aiServices,
+                                transcription: {
+                                  ...updatedConfig.aiServices.transcription,
+                                  enabled: true
+                                }
+                              }
+                            };
+                            setConfig(finalConfig);
+                            // @ts-ignore
+                            await window.ipcRenderer?.invoke('config:set', finalConfig);
+                            console.log('[SETTINGS] Transcription enabled (model already present)');
+                          } else if (!e.target.checked) {
+                            // Disabling media processing - turn off transcription but keep model
+                            const finalConfig = {
+                              ...updatedConfig,
+                              aiServices: {
+                                ...updatedConfig.aiServices,
+                                transcription: {
+                                  ...updatedConfig.aiServices.transcription,
+                                  enabled: false
+                                }
+                              }
+                            };
+                            setConfig(finalConfig);
+                            // @ts-ignore
+                            await window.ipcRenderer?.invoke('config:set', finalConfig);
+                            console.log('[SETTINGS] Transcription disabled (model retained)');
                           }
                         }}
                         className="rounded"

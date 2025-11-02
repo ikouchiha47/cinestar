@@ -9,6 +9,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { isPackaged, getResourcesPath } from './utils/is-packaged';
 import { pathToFileURL } from 'url';
+import Database from 'better-sqlite3';
 
 export interface UnifiedMigrationResult {
   success: boolean;
@@ -257,19 +258,9 @@ export class UnifiedMigrator {
       };
       const preludeLines: string[] = [];
       if (needsVecExtension) {
-        try {
-          const extPath = this.getSqliteVecExtensionPath();
-          const exists = fs.existsSync(extPath);
-          console.log(`[UNIFIED-MIGRATION-DEBUG] Loading sqlite-vec for CLI migration: ${extPath} (exists: ${exists})`);
-          if (exists) {
-            // Use sqlite3 CLI dot-command to load extension
-            preludeLines.push(`.load '${extPath.replace(/'/g, "''")}'`);
-          } else {
-            console.warn(`[UNIFIED-MIGRATION-DEBUG] sqlite-vec extension not found at ${extPath}. Migration may fail if it uses vec0.`);
-          }
-        } catch (e) {
-          console.warn(`[UNIFIED-MIGRATION-DEBUG] Could not resolve sqlite-vec extension path:`, e);
-        }
+        // Skip .load command for CLI - it's not supported in older sqlite3 versions
+        // The extension is loaded at runtime by better-sqlite3 instead
+        console.log(`[UNIFIED-MIGRATION-DEBUG] Migration requires vec extension - will be loaded at runtime by better-sqlite3`);
       }
       if (uniqueAttaches.length > 0) {
         preludeLines.push(
@@ -296,12 +287,34 @@ export class UnifiedMigrator {
     }
     
     try {
-      // Apply the migration (with pre-attached schemas if requested)
-      execSync(`sqlite3 "${targetDb}" < "${scriptPathToApply}"`, { stdio: 'pipe' });
-      
-      // Record the migration
-      const recordSql = `INSERT INTO schema_migrations (version, filename) VALUES (${normalizedVersion}, '${migrationFile}');`;
-      execSync(`sqlite3 "${targetDb}" "${recordSql}"`, { stdio: 'pipe' });
+      // If migration needs vec extension, use better-sqlite3 instead of CLI
+      if (needsVecExtension) {
+        console.log(`[UNIFIED-MIGRATION-DEBUG] Using better-sqlite3 for vec migration`);
+        const db = new Database(targetDb);
+        try {
+          // Load vec extension
+          const extPath = this.getSqliteVecExtensionPath();
+          db.loadExtension(extPath);
+          
+          // Read and execute migration SQL
+          const sql = fs.readFileSync(scriptPathToApply, 'utf-8');
+          db.exec(sql);
+          
+          // Record the migration
+          db.prepare(`INSERT INTO schema_migrations (version, filename) VALUES (?, ?)`).run(normalizedVersion, migrationFile);
+          db.close();
+        } catch (err) {
+          db.close();
+          throw err;
+        }
+      } else {
+        // Use CLI for regular migrations
+        execSync(`sqlite3 "${targetDb}" < "${scriptPathToApply}"`, { stdio: 'pipe' });
+        
+        // Record the migration
+        const recordSql = `INSERT INTO schema_migrations (version, filename) VALUES (${normalizedVersion}, '${migrationFile}');`;
+        execSync(`sqlite3 "${targetDb}" "${recordSql}"`, { stdio: 'pipe' });
+      }
       
       try {
         console.log(`[UNIFIED-MIGRATION] ✅ Applied ${migrationFile}`);
@@ -325,8 +338,19 @@ export class UnifiedMigrator {
         } catch {}
         // Still record the migration so we don't retry it
         try {
-          const recordSql = `INSERT INTO schema_migrations (version, filename) VALUES (${normalizedVersion}, '${migrationFile}');`;
-          execSync(`sqlite3 "${targetDb}" "${recordSql}"`, { stdio: 'pipe' });
+          if (needsVecExtension) {
+            const db = new Database(targetDb);
+            try {
+              db.prepare(`INSERT INTO schema_migrations (version, filename) VALUES (?, ?)`).run(normalizedVersion, migrationFile);
+              db.close();
+            } catch (e) {
+              db.close();
+              // If recording fails due to PK conflict, it's already recorded; continue
+            }
+          } else {
+            const recordSql = `INSERT INTO schema_migrations (version, filename) VALUES (${normalizedVersion}, '${migrationFile}');`;
+            execSync(`sqlite3 "${targetDb}" "${recordSql}"`, { stdio: 'pipe' });
+          }
         } catch (e) {
           // If recording fails due to PK conflict, it's already recorded; continue
         }

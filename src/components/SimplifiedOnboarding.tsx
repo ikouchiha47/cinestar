@@ -195,6 +195,34 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             throw new Error(result.error || 'Whisper setup failed');
           }
           
+          // After successful setup, ensure transcription is enabled in config
+          try {
+            const config = await window.ipcRenderer.invoke('config:get');
+            const updatedConfig = {
+              ...config,
+              aiServices: {
+                ...config.aiServices,
+                transcription: {
+                  ...config.aiServices.transcription,
+                  enabled: true,
+                  modelDownloaded: true
+                }
+              },
+              resources: {
+                ...config.resources,
+                whisper: {
+                  downloaded: true,
+                  model: 'base.en',
+                  lastChecked: new Date().toISOString()
+                }
+              }
+            };
+            await window.ipcRenderer.invoke('config:set', updatedConfig);
+            console.log('[SIMPLIFIED-ONBOARDING] Transcription enabled after Whisper setup success');
+          } catch (e) {
+            console.warn('[SIMPLIFIED-ONBOARDING] Failed to update config after Whisper setup:', e);
+          }
+          
           updateTask('whisper-check', { 
             status: 'completed',
             progress: 100,
@@ -252,6 +280,17 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
       
       console.log('[SIMPLIFIED-ONBOARDING] All setup tasks completed successfully');
       
+      // Verify all required resources are present before completing
+      const allCompleted = setupTasks.every(task => task.status === 'completed');
+      if (!allCompleted) {
+        const failedTasks = setupTasks.filter(t => t.status === 'error').map(t => t.name);
+        console.error('[SIMPLIFIED-ONBOARDING] Some tasks failed:', failedTasks);
+        // Don't complete onboarding - user must retry or fix issues
+        return;
+      }
+      
+      console.log('[SIMPLIFIED-ONBOARDING] All required resources downloaded, completing onboarding');
+      
       // Small delay to show completion state
       setTimeout(() => {
         completeOnboarding();
@@ -259,10 +298,9 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
       
     } catch (error) {
       console.error('[SIMPLIFIED-ONBOARDING] Setup error:', error);
-      // Don't block onboarding on errors - user can retry later
-      setTimeout(() => {
-        completeOnboarding();
-      }, 2000);
+      // Show error state - user must retry or fix the issue
+      // Don't complete onboarding on failure - keep them on download screen
+      // The error state is already shown in setupTasks
     }
   };
 
