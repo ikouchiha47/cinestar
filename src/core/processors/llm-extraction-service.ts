@@ -1,4 +1,4 @@
-import { ConfigManager } from '../config.js';
+import { ProviderManager } from '../llm/provider-manager';
 
 /**
  * Structured elements extracted from image captions
@@ -15,17 +15,16 @@ export interface ExtractedElements {
 
 /**
  * LLM-based extraction service for converting natural language captions
- * into structured metadat
+ * into structured metadata using any configured LLM provider
  */
 export class LLMExtractionService {
-  private baseUrl: string;
-  private model: string;
+  private providerManager: ProviderManager;
 
-  constructor(baseUrl?: string, model?: string) {
-    const config = ConfigManager.getConfig();
-    this.baseUrl = (baseUrl || config.ai.embedUrl).replace(/\/$/, '');
-    this.model = model || config.ai.generalPurposeModel || 'qwen3:4b';
-    console.log(`[LLM-EXTRACTION] Using model: ${this.model} at ${this.baseUrl}`);
+  constructor(providerManager: ProviderManager) {
+    this.providerManager = providerManager;
+    const activeProvider = providerManager.getActiveProvider();
+    const model = providerManager.getModelForTask('text');
+    console.log(`[LLM-EXTRACTION] Using provider: ${activeProvider.name}, model: ${model}`);
   }
 
   /**
@@ -34,33 +33,32 @@ export class LLMExtractionService {
   async extractElements(caption: string): Promise<ExtractedElements> {
     const prompt = this.buildExtractionPrompt(caption);
     
+    const activeProvider = this.providerManager.getActiveProvider();
+    const model = this.providerManager.getModelForTask('text');
+    
     console.log(`[LLM-EXTRACTION] Extracting from caption (${caption.length} chars)...`);
-    console.log(`[LLM-EXTRACTION] Using model: ${this.model} at ${this.baseUrl}`);
+    console.log(`[LLM-EXTRACTION] Using provider: ${activeProvider.name}, model: ${model}`);
     
     try {
-      const response = await fetch(`${this.baseUrl}/api/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.model,
-          prompt,
-          stream: false,
-          options: {
-            temperature: 0.7, // Low temperature for consistent extraction
-            num_predict: 10000,
-          }
-        })
+      const adapter = this.providerManager.getProviderForTask('text');
+      
+      // Use chat API with system message for extraction
+      const response = await adapter.chat([
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that extracts structured information from image descriptions.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ], {
+        model,
+        temperature: 0.7,
+        maxTokens: 500
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[LLM-EXTRACTION] HTTP error: ${response.status} ${response.statusText}`);
-        console.error(`[LLM-EXTRACTION] Error body:`, errorText);
-        throw new Error(`LLM extraction failed: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      const extractedText = data.response?.trim() || '';
+      const extractedText = response.content?.trim() || '';
       
       console.log(`[LLM-EXTRACTION] Response length: ${extractedText.length} chars`);
       console.log(`[LLM-EXTRACTION] Response preview:`, extractedText.substring(0, 200));
@@ -68,7 +66,6 @@ export class LLMExtractionService {
       if (!extractedText) {
         console.warn('[LLM-EXTRACTION] ⚠️  Empty response from LLM, using fallback values');
         console.warn('[LLM-EXTRACTION] Caption was:', caption.substring(0, 200));
-        console.warn('[LLM-EXTRACTION] Full API response:', JSON.stringify(data, null, 2));
         return this.getFallbackElements();
       }
 
@@ -182,12 +179,10 @@ Description: ${caption}`;
    */
   async isAvailable(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, { method: 'GET' });
-      if (!response.ok) return false;
-      
-      const data = await response.json();
-      return data.models?.some((m: any) => m.name.includes(this.model)) || false;
-    } catch {
+      const adapter = this.providerManager.getProviderForTask('text');
+      return await adapter.isAvailable();
+    } catch (error) {
+      console.error('[LLM-EXTRACTION] Availability check failed:', error);
       return false;
     }
   }

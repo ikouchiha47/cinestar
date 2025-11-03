@@ -1,7 +1,8 @@
-import { OllamaCaptioningService } from './ollama-captioning-service.js';
+import { VisionService } from './vision-service';
 import { LLMExtractionService, ExtractedElements } from './llm-extraction-service.js';
 import { PhaseQueryBuilder } from './phase-query-builder.js';
 import { ConfigManager } from '../config.js';
+import { ProviderManager } from '../llm/provider-manager';
 
 /**
  * Result from multi-pass captioning
@@ -25,20 +26,23 @@ export interface MultiPassResult {
  * Multi-pass captioning service using LLM extraction chain approach
  * 
  * Flow:
- * 1. Phase 1: Moondream generates comprehensive caption
- * 2. Phase 2: LLM (llama3.2) extracts structured elements
- * 3. Phase 3: Moondream spatial analysis (optional)
- * 4. Phase 4: Moondream temporal analysis (optional)
+ * 1. Phase 1: Vision model generates comprehensive caption
+ * 2. Phase 2: LLM extracts structured elements
+ * 3. Phase 3: Vision model spatial analysis (optional)
+ * 4. Phase 4: Vision model temporal analysis (optional)
  */
 export class MultiPassCaptioningService {
-  private moondreamService: OllamaCaptioningService;
+  private visionService: VisionService;
   private extractionService: LLMExtractionService;
   private queryBuilder: PhaseQueryBuilder;
 
-  constructor() {
-    this.moondreamService = new OllamaCaptioningService();
-    this.extractionService = new LLMExtractionService();
+  constructor(providerManager: ProviderManager) {
+    this.visionService = new VisionService(providerManager);
+    this.extractionService = new LLMExtractionService(providerManager);
     this.queryBuilder = new PhaseQueryBuilder();
+    
+    const activeProvider = providerManager.getActiveProvider();
+    console.log(`[MULTI-PASS] Initialized with provider: ${activeProvider.name}`);
   }
 
   /**
@@ -51,7 +55,7 @@ export class MultiPassCaptioningService {
     const multiPassConfig = config.multiPass;
     const contextConfig = context === 'image' ? multiPassConfig?.image : multiPassConfig?.video;
 
-    // Phase 1: Comprehensive caption from moondream
+    // Phase 1: Comprehensive caption from vision model
     const useSinglePass = contextConfig?.singlePassMode ?? false;
     const prompt = useSinglePass
       ? `Describe this image in detail, including:
@@ -63,7 +67,7 @@ export class MultiPassCaptioningService {
 Provide a rich, comprehensive description covering all these aspects.`
       : 'What do you see in this image? Describe everything including the setting, objects, people, activities, colors, lighting, and mood.';
     
-    const captionResult = await this.moondreamService.caption(imagePath, { prompt });
+    const captionResult = await this.visionService.caption(imagePath, { prompt });
 
     const tokens = {
       caption: captionResult.metadata?.tokens || 0,
@@ -97,7 +101,7 @@ Provide a rich, comprehensive description covering all these aspects.`
     if (contextConfig?.enableSpatial && elements.objects.length > 0) {
       console.log('[MULTI-PASS] Phase 3: Spatial analysis...');
       const spatialPrompt = this.queryBuilder.buildSpatialPrompt(elements);
-      const spatialResult = await this.moondreamService.caption(imagePath, {
+      const spatialResult = await this.visionService.caption(imagePath, {
         prompt: spatialPrompt
       });
       spatial = spatialResult.caption;
@@ -110,7 +114,7 @@ Provide a rich, comprehensive description covering all these aspects.`
     if (contextConfig?.enableTemporal && elements.objects.length > 0) {
       console.log('[MULTI-PASS] Phase 4: Temporal analysis...');
       const temporalPrompt = this.queryBuilder.buildTemporalPrompt(elements);
-      const temporalResult = await this.moondreamService.caption(imagePath, {
+      const temporalResult = await this.visionService.caption(imagePath, {
         prompt: temporalPrompt
       });
       temporal = temporalResult.caption;
@@ -145,9 +149,9 @@ Provide a rich, comprehensive description covering all these aspects.`
    * Check if all required services are available
    */
   async isAvailable(): Promise<boolean> {
-    const moondreamAvailable = await this.moondreamService.isAvailable();
+    const visionAvailable = await this.visionService.isAvailable();
     const extractionAvailable = await this.extractionService.isAvailable();
     
-    return moondreamAvailable && extractionAvailable;
+    return visionAvailable && extractionAvailable;
   }
 }

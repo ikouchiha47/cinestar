@@ -1,8 +1,7 @@
 /**
- * LiteLLM Adapter
+ * OpenAI Adapter
  * 
- * Supports both local models (via LiteLLM proxy to Ollama) and cloud providers
- * (OpenAI, Anthropic, etc.) through a unified API.
+ * Implements OpenAI API for chat, vision, and embeddings
  */
 
 import {
@@ -16,36 +15,44 @@ import {
   ProviderRuntimeConfig
 } from './types';
 
-export class LiteLLMAdapter implements ILLMAdapter {
+export class OpenAIAdapter implements ILLMAdapter {
   private baseUrl: string;
-  private apiKey?: string;
-  private defaultModel: string;
+  private apiKey: string;
   private timeout: number;
   
   constructor(config: ProviderRuntimeConfig) {
-    this.baseUrl = config.baseUrl || 'http://localhost:4000';
-    this.apiKey = config.apiKey;
-    this.defaultModel = config.models.find(m => m.task === 'text')?.modelName || 'gpt-4';
-    this.timeout = config.timeout || 300000; // 5 minutes default
+    this.baseUrl = config.baseUrl || 'https://api.openai.com/v1';
+    this.apiKey = config.apiKey || '';
+    this.timeout = config.timeout || 60000; // 60 seconds default
+    
+    if (!this.apiKey) {
+      console.warn('[OPENAI-ADAPTER] No API key provided');
+    }
   }
   
   /**
-   * Check if LiteLLM server is available
+   * Check if OpenAI API is available
    */
   async isAvailable(): Promise<boolean> {
+    if (!this.apiKey) {
+      console.error('[OPENAI-ADAPTER] API key is required');
+      return false;
+    }
+    
     try {
-      const response = await fetch(`${this.baseUrl}/health`, {
+      const response = await fetch(`${this.baseUrl}/models`, {
+        headers: this.getHeaders(),
         signal: AbortSignal.timeout(5000)
       });
       return response.ok;
     } catch (error) {
-      console.error('[LITELLM-ADAPTER] Health check failed:', error);
+      console.error('[OPENAI-ADAPTER] Availability check failed:', error);
       return false;
     }
   }
   
   /**
-   * Get available models from LiteLLM
+   * Get available models from OpenAI
    */
   async getModels(): Promise<string[]> {
     try {
@@ -53,10 +60,14 @@ export class LiteLLMAdapter implements ILLMAdapter {
         headers: this.getHeaders()
       });
       
+      if (!response.ok) {
+        throw this.handleError(response.status, await response.text());
+      }
+      
       const data = await response.json();
       return data.data?.map((m: any) => m.id) || [];
     } catch (error) {
-      console.error('[LITELLM-ADAPTER] Failed to get models:', error);
+      console.error('[OPENAI-ADAPTER] Failed to get models:', error);
       return [];
     }
   }
@@ -65,9 +76,9 @@ export class LiteLLMAdapter implements ILLMAdapter {
    * Chat completion
    */
   async chat(messages: Message[], options?: ChatOptions): Promise<ChatResponse> {
-    const model = options?.model || this.defaultModel;
+    const model = options?.model || 'gpt-4';
     
-    console.log(`[LITELLM-ADAPTER] Chat request to ${model}`);
+    console.log(`[OPENAI-ADAPTER] Chat request to ${model}`);
     
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -84,8 +95,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
       });
       
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`LiteLLM chat failed: ${error}`);
+        throw this.handleError(response.status, await response.text());
       }
       
       const data = await response.json();
@@ -100,7 +110,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
         } : undefined
       };
     } catch (error) {
-      console.error('[LITELLM-ADAPTER] Chat error:', error);
+      console.error('[OPENAI-ADAPTER] Chat error:', error);
       throw error;
     }
   }
@@ -111,7 +121,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
   async embed(text: string, options?: EmbedOptions): Promise<EmbedResponse> {
     const model = options?.model || 'text-embedding-3-large';
     
-    console.log(`[LITELLM-ADAPTER] Embedding request to ${model}`);
+    console.log(`[OPENAI-ADAPTER] Embedding request to ${model}`);
     
     try {
       const response = await fetch(`${this.baseUrl}/embeddings`, {
@@ -126,8 +136,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
       });
       
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`LiteLLM embedding failed: ${error}`);
+        throw this.handleError(response.status, await response.text());
       }
       
       const data = await response.json();
@@ -138,20 +147,23 @@ export class LiteLLMAdapter implements ILLMAdapter {
         dimensions: data.data[0].embedding.length
       };
     } catch (error) {
-      console.error('[LITELLM-ADAPTER] Embedding error:', error);
+      console.error('[OPENAI-ADAPTER] Embedding error:', error);
       throw error;
     }
   }
   
   /**
-   * Vision/image understanding
+   * Vision/image understanding using GPT-4 Vision
    */
   async vision(imageUrl: string, prompt: string, options?: VisionOptions): Promise<ChatResponse> {
     const model = options?.model || 'gpt-4-vision-preview';
     
-    console.log(`[LITELLM-ADAPTER] Vision request to ${model}`);
+    console.log(`[OPENAI-ADAPTER] Vision request to ${model}`);
     
     try {
+      // Convert file path to data URL if needed
+      const imageDataUrl = await this.prepareImageUrl(imageUrl);
+      
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: this.getHeaders(),
@@ -164,7 +176,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
               { 
                 type: 'image_url', 
                 image_url: { 
-                  url: imageUrl,
+                  url: imageDataUrl,
                   detail: options?.detail || 'auto'
                 } 
               }
@@ -176,8 +188,7 @@ export class LiteLLMAdapter implements ILLMAdapter {
       });
       
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`LiteLLM vision failed: ${error}`);
+        throw this.handleError(response.status, await response.text());
       }
       
       const data = await response.json();
@@ -192,33 +203,86 @@ export class LiteLLMAdapter implements ILLMAdapter {
         } : undefined
       };
     } catch (error) {
-      console.error('[LITELLM-ADAPTER] Vision error:', error);
+      console.error('[OPENAI-ADAPTER] Vision error:', error);
       throw error;
     }
   }
   
   /**
-   * Get request headers
+   * Get request headers with authentication
    */
   private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.apiKey}`
     };
-    
-    if (this.apiKey) {
-      headers['Authorization'] = `Bearer ${this.apiKey}`;
-    }
-    
-    return headers;
   }
   
   /**
-   * Format messages for LiteLLM API
+   * Format messages for OpenAI API
    */
   private formatMessages(messages: Message[]): any[] {
     return messages.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
+  }
+  
+  /**
+   * Prepare image URL for OpenAI API
+   * Converts file paths to data URLs
+   */
+  private async prepareImageUrl(imageUrl: string): Promise<string> {
+    // If already a data URL or HTTP URL, return as is
+    if (imageUrl.startsWith('data:') || imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      return imageUrl;
+    }
+    
+    // If file path, convert to data URL
+    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/')) {
+      const fs = await import('fs');
+      const path = imageUrl.replace('file://', '');
+      const buffer = fs.readFileSync(path);
+      const base64 = buffer.toString('base64');
+      
+      // Detect image type from extension
+      const ext = path.split('.').pop()?.toLowerCase();
+      const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+      
+      return `data:${mimeType};base64,${base64}`;
+    }
+    
+    return imageUrl;
+  }
+  
+  /**
+   * Handle API errors and throw appropriate error types
+   */
+  private handleError(status: number, body: string): Error {
+    let errorMessage = 'OpenAI API error';
+    
+    try {
+      const errorData = JSON.parse(body);
+      errorMessage = errorData.error?.message || errorMessage;
+    } catch {
+      errorMessage = body.substring(0, 200);
+    }
+    
+    switch (status) {
+      case 401:
+        return new Error(`Authentication failed: ${errorMessage}. Please check your API key.`);
+      case 429:
+        return new Error(`Rate limit exceeded: ${errorMessage}. Please try again later.`);
+      case 404:
+        return new Error(`Model not found: ${errorMessage}. Please check the model name.`);
+      case 400:
+        return new Error(`Bad request: ${errorMessage}`);
+      case 500:
+      case 502:
+      case 503:
+        return new Error(`OpenAI service error: ${errorMessage}. Please try again.`);
+      default:
+        return new Error(`OpenAI API error (${status}): ${errorMessage}`);
+    }
   }
 }

@@ -1,7 +1,9 @@
 import { MultiPassCaptioningService } from '../processors/multi-pass-captioning-service';
 import { LLMExtractionService } from '../processors/llm-extraction-service';
 import { PhaseQueryBuilder } from '../processors/phase-query-builder';
+import { VisionService } from '../processors/vision-service';
 import { ConfigManager } from '../config';
+import { ProviderManager } from '../llm/provider-manager';
 import { KeyframeData } from './types';
 
 /**
@@ -14,19 +16,22 @@ import { KeyframeData } from './types';
  * - Manage captioning service lifecycle
  */
 export class CaptioningCoordinator {
+  private providerManager: ProviderManager;
   private multiPassService?: MultiPassCaptioningService;
   private extractionService?: LLMExtractionService;
+  private visionService?: VisionService;
   private queryBuilder?: PhaseQueryBuilder;
   private multiPassEnabled: boolean = false;
 
-  constructor() {
+  constructor(providerManager: ProviderManager) {
+    this.providerManager = providerManager;
     const config = ConfigManager.getConfig();
     this.multiPassEnabled = config.multiPass?.enabled || false;
 
     if (this.multiPassEnabled) {
       try {
-        this.multiPassService = new MultiPassCaptioningService();
-        this.extractionService = new LLMExtractionService();
+        this.multiPassService = new MultiPassCaptioningService(providerManager);
+        this.extractionService = new LLMExtractionService(providerManager);
         this.queryBuilder = new PhaseQueryBuilder();
         console.log('[CAPTIONING-COORDINATOR] ✅ Multi-pass captioning enabled');
       } catch (error) {
@@ -36,6 +41,9 @@ export class CaptioningCoordinator {
     } else {
       console.log('[CAPTIONING-COORDINATOR] Multi-pass captioning disabled');
     }
+    
+    // Initialize vision service for simple captioning fallback
+    this.visionService = new VisionService(providerManager);
   }
 
   /**
@@ -187,30 +195,30 @@ Scene Description:`;
    * Call LLM API for scene reconstruction
    */
   private async callLLMForSceneReconstruction(prompt: string): Promise<string> {
-    const config = ConfigManager.getConfig();
-    const baseUrl = config.ai.embedUrl;
-    const model = config.ai.generalPurposeModel;
+    try {
+      const adapter = this.providerManager.getProviderForTask('text');
+      const model = this.providerManager.getModelForTask('text');
 
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        options: {
-          temperature: 0.7,
-          num_predict: 150 // Slightly more tokens for richer descriptions
+      const response = await adapter.chat([
+        {
+          role: 'system',
+          content: 'You are a helpful assistant that creates concise scene descriptions from audio and visual context.'
+        },
+        {
+          role: 'user',
+          content: prompt
         }
-      })
-    });
+      ], {
+        model,
+        temperature: 0.7,
+        maxTokens: 150
+      });
 
-    if (!response.ok) {
-      throw new Error(`LLM API returned ${response.status}`);
+      return response.content?.trim() || '';
+    } catch (error) {
+      console.error('[CAPTIONING-COORDINATOR] Scene reconstruction LLM call failed:', error);
+      throw error;
     }
-
-    const data = await response.json();
-    return data.response?.trim() || '';
   }
 
   /**
@@ -218,10 +226,19 @@ Scene Description:`;
    * Returns a basic caption when multi-pass is unavailable or fails
    */
   private async simpleCaptioning(imagePath: string): Promise<string> {
-    // TODO: Implement simple captioning using moondream or similar
-    // For now, return placeholder
-    console.log(`[CAPTIONING-COORDINATOR] Using simple captioning for ${imagePath}`);
-    return 'Visual content';
+    if (!this.visionService) {
+      console.warn(`[CAPTIONING-COORDINATOR] No vision service available for ${imagePath}`);
+      return 'Visual content';
+    }
+    
+    try {
+      console.log(`[CAPTIONING-COORDINATOR] Using simple captioning for ${imagePath}`);
+      const result = await this.visionService.caption(imagePath);
+      return result.caption || 'Visual content';
+    } catch (error) {
+      console.error(`[CAPTIONING-COORDINATOR] Simple captioning failed:`, error);
+      return 'Visual content';
+    }
   }
 
   /**

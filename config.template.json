@@ -13,6 +13,131 @@
     "imageWorkers": 2,
     "videoWorkers": 2
   },
+  "llm": {
+    "activeProvider": "ollama-local",
+    "privacyMode": "private",
+    "providers": {
+      "ollama-local": {
+        "id": "ollama-local",
+        "name": "Ollama (Local)",
+        "type": "local",
+        "adapter": "ollama",
+        "privacy": "private",
+        "config": {
+          "baseUrl": "http://localhost:11434",
+          "models": [
+            {
+              "task": "vision",
+              "modelName": "moondream:v2",
+              "displayName": "Moondream v2"
+            },
+            {
+              "task": "embedding",
+              "modelName": "qllama/bge-large-en-v1.5:latest",
+              "displayName": "BGE Large"
+            },
+            {
+              "task": "text",
+              "modelName": "qwen3:4b",
+              "displayName": "Qwen3 4B"
+            }
+          ],
+          "timeout": 300000
+        },
+        "enabled": true
+      },
+      "openai-cloud": {
+        "id": "openai-cloud",
+        "name": "OpenAI",
+        "type": "cloud",
+        "adapter": "openai",
+        "privacy": "cloud",
+        "config": {
+          "baseUrl": "https://api.openai.com/v1",
+          "apiKey": "",
+          "models": [
+            {
+              "task": "vision",
+              "modelName": "gpt-4-vision-preview",
+              "displayName": "GPT-4 Vision"
+            },
+            {
+              "task": "embedding",
+              "modelName": "text-embedding-3-large",
+              "displayName": "Text Embedding 3 Large"
+            },
+            {
+              "task": "text",
+              "modelName": "gpt-4",
+              "displayName": "GPT-4"
+            }
+          ],
+          "timeout": 60000
+        },
+        "enabled": false
+      },
+      "gemini-cloud": {
+        "id": "gemini-cloud",
+        "name": "Google Gemini",
+        "type": "cloud",
+        "adapter": "gemini",
+        "privacy": "cloud",
+        "config": {
+          "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+          "apiKey": "",
+          "models": [
+            {
+              "task": "vision",
+              "modelName": "gemini-pro-vision",
+              "displayName": "Gemini Pro Vision"
+            },
+            {
+              "task": "embedding",
+              "modelName": "text-embedding-004",
+              "displayName": "Text Embedding 004"
+            },
+            {
+              "task": "text",
+              "modelName": "gemini-pro",
+              "displayName": "Gemini Pro"
+            }
+          ],
+          "timeout": 60000
+        },
+        "enabled": false
+      },
+      "litellm-proxy": {
+        "id": "litellm-proxy",
+        "name": "LiteLLM Proxy",
+        "type": "cloud",
+        "adapter": "litellm",
+        "privacy": "cloud",
+        "config": {
+          "baseUrl": "http://localhost:4000",
+          "apiKey": "",
+          "models": [
+            {
+              "task": "vision",
+              "modelName": "gpt-4-vision-preview",
+              "displayName": "GPT-4 Vision (via LiteLLM)"
+            },
+            {
+              "task": "embedding",
+              "modelName": "text-embedding-3-large",
+              "displayName": "Text Embedding (via LiteLLM)"
+            },
+            {
+              "task": "text",
+              "modelName": "gpt-4",
+              "displayName": "GPT-4 (via LiteLLM)"
+            }
+          ],
+          "timeout": 60000
+        },
+        "enabled": false
+      }
+    }
+  },
   "aiServices": {
     "transcription": {
       "baseUrl": "http://localhost:9001/asr",

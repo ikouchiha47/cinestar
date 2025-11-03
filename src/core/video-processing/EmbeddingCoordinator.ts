@@ -1,4 +1,5 @@
 import { EmbeddingService } from '../embedding-service';
+import { ProviderManager } from '../llm/provider-manager';
 import { KeyframeData } from './types';
 
 /**
@@ -12,11 +13,17 @@ import { KeyframeData } from './types';
  */
 export class EmbeddingCoordinator {
   private embeddingService: EmbeddingService;
+  private providerManager: ProviderManager;
   private cache: Map<string, Float32Array> = new Map();
   private readonly CACHE_SIZE_LIMIT = 1000; // Prevent unbounded memory growth
 
-  constructor() {
-    this.embeddingService = new EmbeddingService();
+  constructor(providerManager: ProviderManager) {
+    this.providerManager = providerManager;
+    this.embeddingService = new EmbeddingService(providerManager);
+    
+    const activeProvider = providerManager.getActiveProvider();
+    const model = providerManager.getModelForTask('embedding');
+    console.log(`[EMBEDDING-COORDINATOR] Using provider: ${activeProvider.name}, model: ${model}`);
   }
 
   /**
@@ -29,7 +36,8 @@ export class EmbeddingCoordinator {
       return new Float32Array(1024).fill(0); // BGE-large dimension
     }
 
-    const cacheKey = `audio:${this.hashString(transcription)}`;
+    const providerId = this.providerManager.getActiveProvider().id;
+    const cacheKey = `${providerId}:audio:${this.hashString(transcription)}`;
     
     // Check cache
     if (this.cache.has(cacheKey)) {
@@ -45,7 +53,7 @@ export class EmbeddingCoordinator {
     this.validateEmbedding(embedding);
     
     // Cache with size limit
-    this.cacheEmbedding(cacheKey, embedding);
+    this.cacheEmbedding(`audio:${this.hashString(transcription)}`, embedding);
     
     return embedding;
   }
@@ -93,7 +101,8 @@ export class EmbeddingCoordinator {
       return new Float32Array(1024).fill(0); // BGE-large dimension
     }
 
-    const cacheKey = `enhanced:${this.hashString(combinedText)}`;
+    const providerId = this.providerManager.getActiveProvider().id;
+    const cacheKey = `${providerId}:enhanced:${this.hashString(combinedText)}`;
     
     // Check cache
     if (this.cache.has(cacheKey)) {
@@ -109,7 +118,7 @@ export class EmbeddingCoordinator {
     this.validateEmbedding(embedding);
     
     // Cache with size limit
-    this.cacheEmbedding(cacheKey, embedding);
+    this.cacheEmbedding(`enhanced:${this.hashString(combinedText)}`, embedding);
     
     return embedding;
   }
@@ -152,8 +161,13 @@ export class EmbeddingCoordinator {
 
   /**
    * Cache embedding with size limit to prevent unbounded memory growth
+   * Include provider ID in cache key to handle provider switches
    */
   private cacheEmbedding(key: string, embedding: Float32Array): void {
+    // Include provider ID in cache key
+    const providerId = this.providerManager.getActiveProvider().id;
+    const cacheKey = `${providerId}:${key}`;
+    
     // If cache is full, remove oldest entry (FIFO)
     if (this.cache.size >= this.CACHE_SIZE_LIMIT) {
       const firstKey = this.cache.keys().next().value;
@@ -163,7 +177,7 @@ export class EmbeddingCoordinator {
       }
     }
 
-    this.cache.set(key, embedding);
+    this.cache.set(cacheKey, embedding);
   }
 
   /**
