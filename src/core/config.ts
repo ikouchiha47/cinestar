@@ -231,12 +231,38 @@ console.log(`📦 [CONFIG] Vector DB path: ${DEFAULT_CONFIG.vectorDbPath}`);
  */
 export class ConfigManager {
   private static config: AppConfig = { ...DEFAULT_CONFIG };
+  private static migrationApplied: boolean = false;
 
   /**
    * Get current configuration
+   * Applies migration if needed on first access
    */
   static getConfig(): AppConfig {
+    // Apply migration on first access if needed
+    if (!this.migrationApplied) {
+      this.applyMigrationIfNeeded();
+      this.migrationApplied = true;
+    }
     return { ...this.config };
+  }
+
+  /**
+   * Apply config migration if needed
+   */
+  private static applyMigrationIfNeeded(): void {
+    try {
+      const { ConfigMigration } = require('./config-migration');
+      
+      if (ConfigMigration.needsMigration(this.config)) {
+        console.log('[CONFIG-MANAGER] Applying config migration...');
+        const migratedConfig = ConfigMigration.applyMigration(this.config);
+        this.config = migratedConfig;
+        console.log('[CONFIG-MANAGER] ✅ Config migration complete');
+      }
+    } catch (error) {
+      console.error('[CONFIG-MANAGER] Config migration failed:', error);
+      // Continue with existing config if migration fails
+    }
   }
 
   /**

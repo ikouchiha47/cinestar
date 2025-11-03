@@ -3,7 +3,7 @@
  */
 
 export type ProviderType = 'local' | 'cloud';
-export type AdapterType = 'ollama' | 'litellm';
+export type AdapterType = 'ollama' | 'litellm' | 'openai' | 'gemini';
 export type PrivacyMode = 'private' | 'cloud';
 export type TaskType = 'vision' | 'embedding' | 'text' | 'transcription';
 

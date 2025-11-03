@@ -11,6 +11,8 @@ import { CaptioningCoordinator } from './CaptioningCoordinator';
 import { EmbeddingCoordinator } from './EmbeddingCoordinator';
 import { ProgressTracker } from './ProgressTracker';
 import { VideoProcessingContext } from './types';
+import { ProviderManager } from '../llm/provider-manager';
+import { ConfigManager } from '../config';
 import { randomUUID } from 'crypto';
 
 /**
@@ -27,6 +29,7 @@ import { randomUUID } from 'crypto';
  */
 export class VideoJobOrchestrator {
   private videoDb: VideoDatabase;
+  private providerManager: ProviderManager;
   private batchManager: BatchManager;
   private persistenceService: VideoPersistenceService;
   private searchService: VideoSearchService;
@@ -60,9 +63,17 @@ export class VideoJobOrchestrator {
       console.log(`[ORCHESTRATOR-${this.workerId}] ⚠️  Using legacy VideoDatabase for job tracking (video-rag.db)`);
     }
 
-    // Initialize sub-components
-    const captioningCoordinator = new CaptioningCoordinator();
-    const embeddingCoordinator = new EmbeddingCoordinator();
+    // Initialize ProviderManager from config
+    const config = ConfigManager.getConfig();
+    const llmConfig = (config as any).llm || ProviderManager.getDefaultConfig();
+    this.providerManager = new ProviderManager(llmConfig);
+    
+    const activeProvider = this.providerManager.getActiveProvider();
+    console.log(`[ORCHESTRATOR-${this.workerId}] 🤖 Using LLM provider: ${activeProvider.name}`);
+
+    // Initialize sub-components with ProviderManager
+    const captioningCoordinator = new CaptioningCoordinator(this.providerManager);
+    const embeddingCoordinator = new EmbeddingCoordinator(this.providerManager);
 
     this.batchManager = new BatchManager(
       videoDb,

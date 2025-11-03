@@ -12,14 +12,14 @@ import {
   VisionOptions,
   ChatResponse,
   EmbedResponse,
-  ProviderConfig
+  ProviderRuntimeConfig
 } from './types';
 
 export class OllamaAdapter implements ILLMAdapter {
   private baseUrl: string;
   private timeout: number;
   
-  constructor(config: ProviderConfig) {
+  constructor(config: ProviderRuntimeConfig) {
     this.baseUrl = config.baseUrl || 'http://localhost:11434';
     this.timeout = config.timeout || 300000;
   }
@@ -74,22 +74,25 @@ export class OllamaAdapter implements ILLMAdapter {
   async embed(text: string, options?: EmbedOptions): Promise<EmbedResponse> {
     const model = options?.model || 'qllama/bge-large-en-v1.5:latest';
     
-    const response = await fetch(`${this.baseUrl}/api/embeddings`, {
+    const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        prompt: text
+        input: text
       }),
       signal: AbortSignal.timeout(this.timeout)
     });
     
     const data = await response.json();
     
+    // Ollama returns {embeddings: [number[]]} or {embedding: number[]}
+    const embedding = data.embeddings?.[0] || data.embedding;
+    
     return {
-      embedding: data.embedding,
+      embedding,
       model: data.model,
-      dimensions: data.embedding.length
+      dimensions: embedding.length
     };
   }
   

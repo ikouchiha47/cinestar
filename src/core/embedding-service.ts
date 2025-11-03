@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { ConfigManager } from './config.js';
+import { ProviderManager } from './llm/provider-manager';
 
 export interface EmbeddingRequest {
   input: string | string[];
@@ -42,40 +43,18 @@ export interface RerankResponse {
 }
 
 export class EmbeddingService {
-  private baseUrl: string;
-  private apiKey: string;
-  private embeddingModel: string;
+  private providerManager: ProviderManager;
   private rerankModel: string;
-  private provider: 'ollama' | 'openai';
+  private rerankBaseUrl?: string;
 
-  constructor(
-    baseUrl?: string,
-    apiKey?: string,
-    embeddingModel?: string,
-    rerankModel?: string
-  ) {
-    const cfg = ConfigManager.getConfig();
-    const envProvider = (process.env.EMBEDDINGS_PROVIDER || '').toLowerCase();
-
-    // PERFORMANCE: Use specialized embed URL for embedding generation
-    const finalBase = (baseUrl || cfg.ai.embedUrl).replace(/\/$/, '');
-    this.baseUrl = finalBase;
-    
-    const finalProvider = envProvider === 'openai' ? 'openai' : 'ollama';
-    this.provider = finalProvider;
-    this.apiKey = apiKey || process.env.EMBEDDINGS_API_KEY || '';
-    
-    // Choose sensible defaults per provider
-    if (finalProvider === 'ollama') {
-      this.embeddingModel = embeddingModel
-        || process.env.OLLAMA_EMBED_MODEL
-        || cfg.ai.embeddingModel
-        || 'qllama/bge-large-en-v1.5';
-    } else {
-      this.embeddingModel = embeddingModel || cfg.ai.embeddingModel || 'text-embedding-3-large';
-    }
-    
+  constructor(providerManager: ProviderManager, rerankModel?: string, rerankBaseUrl?: string) {
+    this.providerManager = providerManager;
     this.rerankModel = rerankModel || 'BAAI/bge-reranker-large';
+    this.rerankBaseUrl = rerankBaseUrl;
+    
+    const activeProvider = providerManager.getActiveProvider();
+    const model = providerManager.getModelForTask('embedding');
+    console.log(`[EMBEDDING-SERVICE] Using provider: ${activeProvider.name}, model: ${model}`);
   }
 
   private debugEnabled(): boolean {
@@ -93,63 +72,25 @@ export class EmbeddingService {
     }
   }
 
-  /**
-   * Build the correct embeddings endpoint based on provider and base URL
-   */
-  private getEmbeddingsUrl(): string {
-    // If baseUrl already includes a versioned path, assume caller provided full API root
-    // e.g., https://api.openai.com/v1
-    const hasV1 = /\/v1\/?$/.test(this.baseUrl);
-    if (this.provider === 'openai') {
-      return hasV1 ? `${this.baseUrl}/embeddings` : `${this.baseUrl}/v1/embeddings`;
-    }
-    // Ollama's embeddings endpoint
-    return `${this.baseUrl}/api/embed`;
-  }
+
 
   /**
    * Generate embeddings for text input
    */
   async embed(input: string | string[]): Promise<Float32Array[]> {
     try {
-      // For Ollama, call embedSingle for each input to send {prompt}
-      if (this.provider === 'ollama') {
-        if (Array.isArray(input)) {
-          const results: Float32Array[] = [];
-          for (const text of input) {
-            results.push(await this.embedSingle(text));
-          }
-          return results;
+      // Handle batch embedding
+      if (Array.isArray(input)) {
+        const results: Float32Array[] = [];
+        for (const text of input) {
+          results.push(await this.embedSingle(text));
         }
-        return [await this.embedSingle(input)];
+        return results;
       }
-
-      // OpenAI-compatible path (input can be string or string[])
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-      const url = this.getEmbeddingsUrl();
-      const payload = { input, model: this.embeddingModel } as EmbeddingRequest;
-      this.logDebug('embed request', { provider: this.provider, url, model: this.embeddingModel, items: Array.isArray(input) ? input.length : 1 });
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const raw = await response.text();
-      this.logDebug('embed response', { status: response.status, statusText: response.statusText, body: raw.slice(0, 200) });
-      if (!response.ok) {
-        throw new Error(`Embedding API error: ${response.status} ${response.statusText}: ${raw.slice(0, 200)}`);
-      }
-
-      const data = raw ? JSON.parse(raw) as any : {};
-      if (Array.isArray(data?.data)) {
-        return data.data.map((item: any) => new Float32Array(item.embedding));
-      }
-      throw new Error('Unexpected embeddings response format');
+      
+      return [await this.embedSingle(input)];
     } catch (error) {
-      console.error('Failed to generate embeddings:', error);
+      console.error('[EMBEDDING-SERVICE] Failed to generate embeddings:', error);
       throw error;
     }
   }
@@ -158,61 +99,43 @@ export class EmbeddingService {
    * Generate single embedding for text
    */
   async embedSingle(text: string): Promise<Float32Array> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+    try {
+      const adapter = this.providerManager.getProviderForTask('embedding');
+      const model = this.providerManager.getModelForTask('embedding');
+      
+      this.logDebug('embedSingle request', { 
+        provider: this.providerManager.getActiveProvider().name, 
+        model, 
+        inputPreview: String(text).slice(0, 80) 
+      });
 
-    const body = this.provider === 'ollama'
-      ? { model: this.embeddingModel, input: text }
-      : { model: this.embeddingModel, input: text };
+      const response = await adapter.embed(text, { model });
+      
+      this.logDebug('embedSingle response', { 
+        dimensions: response.dimensions,
+        model: response.model 
+      });
 
-    const url = this.getEmbeddingsUrl();
-    this.logDebug('embedSingle request', { provider: this.provider, url, model: this.embeddingModel, inputPreview: String(text).slice(0, 80) });
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
-
-    const raw = await response.text();
-    this.logDebug('embedSingle response', { status: response.status, statusText: response.statusText, body: raw.slice(0, 200) });
-    if (!response.ok) {
-      throw new Error(`Embedding API error: ${response.status} ${response.statusText}: ${raw.slice(0, 200)}`);
+      return new Float32Array(response.embedding);
+    } catch (error) {
+      console.error('[EMBEDDING-SERVICE] embedSingle failed:', error);
+      throw error;
     }
-
-    const data = raw ? JSON.parse(raw) as any : {};
-    // Support OpenAI-style and Ollama-style responses
-    // OpenAI: { data: [{ embedding: number[] }] }
-    if (Array.isArray(data?.data)) {
-      const emb = data.data[0]?.embedding;
-      if (Array.isArray(emb)) return new Float32Array(emb);
-    }
-    // Ollama single: { embedding: number[] }
-    if (Array.isArray(data?.embedding)) {
-      return new Float32Array(data.embedding);
-    }
-    // Ollama batch style: { embeddings: number[][] }
-    if (Array.isArray(data?.embeddings) && Array.isArray(data.embeddings[0])) {
-      return new Float32Array(data.embeddings[0]);
-    }
-    // Ollama single response format: { embeddings: [number[]] }
-    if (Array.isArray(data?.embeddings) && data.embeddings.length === 1 && Array.isArray(data.embeddings[0])) {
-      return new Float32Array(data.embeddings[0]);
-    }
-    throw new Error(`Unexpected embedding response format: ${JSON.stringify(Object.keys(data))}`);
   }
 
   /**
    * Rerank documents based on query relevance
+   * Note: This uses a separate rerank service, not the LLM provider
    */
   async rerank(query: string, documents: string[], topK?: number): Promise<RerankResponse> {
+    if (!this.rerankBaseUrl) {
+      throw new Error('Rerank service URL not configured');
+    }
+    
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-
-      const response = await fetch(`${this.baseUrl}/rerank`, {
+      const response = await fetch(`${this.rerankBaseUrl}/rerank`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: this.rerankModel,
           query,
@@ -227,7 +150,7 @@ export class EmbeddingService {
 
       return await response.json() as RerankResponse;
     } catch (error) {
-      console.error('Failed to rerank documents:', error);
+      console.error('[EMBEDDING-SERVICE] Failed to rerank documents:', error);
       throw error;
     }
   }
@@ -294,11 +217,14 @@ export class EmbeddingService {
   /**
    * Get embedding model info
    */
-  getModelInfo(): { embeddingModel: string; rerankModel: string; baseUrl: string } {
+  getModelInfo(): { embeddingModel: string; rerankModel: string; provider: string } {
+    const activeProvider = this.providerManager.getActiveProvider();
+    const model = this.providerManager.getModelForTask('embedding');
+    
     return {
-      embeddingModel: this.embeddingModel,
+      embeddingModel: model,
       rerankModel: this.rerankModel,
-      baseUrl: this.baseUrl,
+      provider: activeProvider.name,
     };
   }
 }
