@@ -451,11 +451,18 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
     }
   };
 
-  // Handle item deletion - optimistically remove from UI
-  const handleItemDeleted = (itemId: string) => {
+  // Handle item deletion - optimistically remove from UI and trigger refresh
+  const handleItemDeleted = async (itemId: string) => {
+    console.log('[DRILLER] Item deleted, removing from UI:', itemId);
+    // Optimistically remove from UI immediately
     setLibrary(prev => prev.filter(item => item.id !== itemId));
     setSearchResults(prev => prev.filter(item => item.id !== itemId));
-    // setVideoSearchResults(prev => prev.filter(item => item.id !== itemId));
+    
+    // Force a refresh after a short delay to ensure backend state is synced
+    setTimeout(async () => {
+      console.log('[DRILLER] Refreshing library after deletion');
+      await refreshGroupedLibrary();
+    }, 500);
   };
 
   // Handle video item click - open video player

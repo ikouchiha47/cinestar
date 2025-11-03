@@ -217,8 +217,13 @@ export class VideoMediaAPI {
         return (existingJobs[0] as any).id;
       }
 
+      // Ensure videoJobAdapter is initialized
+      if (!this.videoJobAdapter) {
+        throw new Error('VideoJobAdapter not initialized. Call setJobsDatabase() before processVideo()');
+      }
+
       // Create job in database for background processing (Pass 1 scheduled)
-      const jobId = await this.videoJobAdapter!.createVideoJob({
+      const jobId = await this.videoJobAdapter.createVideoJob({
         videoPath,
         fileName,
         refinementPass: 1,

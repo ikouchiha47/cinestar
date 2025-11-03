@@ -3,7 +3,7 @@ import '../src/core/ffmpeg-bootstrap'
 import { app, BrowserWindow, ipcMain, dialog, BrowserView } from 'electron'
 
 // Log version info IMMEDIATELY
-console.log('[APP-VERSION] Cinestar version: 0.1.56');
+console.log('[APP-VERSION] Cinestar version: 0.1.62');
 console.log('[APP-VERSION] Packaged:', app?.isPackaged ?? 'unknown');
 console.log('[APP-VERSION] Resources path:', process.resourcesPath || 'N/A');
 
@@ -65,6 +65,18 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
+
+// Calculate isPackaged using the same logic as WhisperDirectService
+const isPackaged = process.resourcesPath && !process.resourcesPath.includes('Electron.app');
+
+console.log('[WhisperDebug] isPackaged detection:', {
+      isPackaged,
+      'app.isPackaged': app.isPackaged,
+      hasResourcesPath: !!process.resourcesPath,
+      hasElectronApp: process.resourcesPath?.includes('Electron.app'),
+      defaultApp: process.defaultApp,
+      execPath: process.execPath,
+    });
 
 async function waitForUrl(url: string, timeoutMs = 15000, intervalMs = 250): Promise<boolean> {
   const start = Date.now();

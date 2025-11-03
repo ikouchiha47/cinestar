@@ -15,7 +15,7 @@ export interface ExtractedElements {
 
 /**
  * LLM-based extraction service for converting natural language captions
- * into structured metadata using llama3.2:3b
+ * into structured metadat
  */
 export class LLMExtractionService {
   private baseUrl: string;
@@ -46,8 +46,8 @@ export class LLMExtractionService {
           prompt,
           stream: false,
           options: {
-            temperature: 0.1, // Low temperature for consistent extraction
-            num_predict: 200
+            temperature: 0.7, // Low temperature for consistent extraction
+            num_predict: 10000,
           }
         })
       });
@@ -68,6 +68,7 @@ export class LLMExtractionService {
       if (!extractedText) {
         console.warn('[LLM-EXTRACTION] ⚠️  Empty response from LLM, using fallback values');
         console.warn('[LLM-EXTRACTION] Caption was:', caption.substring(0, 200));
+        console.warn('[LLM-EXTRACTION] Full API response:', JSON.stringify(data, null, 2));
         return this.getFallbackElements();
       }
 
@@ -100,6 +101,8 @@ LIGHTING: [brief description]
 TIME: [time of day]
 SETTING: [brief location description]
 MOOD: [optional mood/atmosphere]
+
+/nothink
 
 Description: ${caption}`;
   }

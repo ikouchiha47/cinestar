@@ -1104,24 +1104,34 @@ export class MainMediaAPI {
     try {
       await this.ensureInitialized();
 
-      // Get the item details before deletion
-      const items = await this.db.getMediaItems();
-      const item = items.find((i: any) => i.id === itemId);
+      // Get the item details before deletion from canonical media.db
+      if (!this.canonical) {
+        return { success: false, error: 'Canonical media database not initialized' };
+      }
+
+      const item = await this.canonical.getMediaItem(itemId);
 
       if (!item) {
         return { success: false, error: 'Media item not found' };
       }
 
-      console.log(`[MEDIA-DELETE] Removing media item from library: ${item.name} (${itemId})`);
+      // Extract filename from path and decode URI components
+      const fileName = item.path ? decodeURIComponent(path.basename(item.path)) : 'unknown';
+      console.log(`[MEDIA-DELETE] Removing media item from library: ${fileName} (${itemId}), type: ${item.type}`);
 
-      // Remove from main database only - let triggers handle FTS cleanup
-      await this.db.removeMediaItem(itemId);
+      // STEP 1: Remove from canonical media.db listing FIRST
+      // This ensures the item disappears from UI immediately
+      await this.canonical.deleteMediaItem(itemId);
+      console.log(`[MEDIA-DELETE] ✅ Step 1: Deleted from media.db listing: ${itemId}`);
 
-      // Do not write to legacy vector.db during cutover
-
-      // CRITICAL: Also delete associated video processing jobs to prevent resurrection
+      // STEP 2: Clean up related data based on type
       if (item.type === 'video' && item.path) {
+        console.log(`[MEDIA-DELETE] Step 2: Cleaning up video-related data...`);
+        
         try {
+          // Import better-sqlite3 once
+          const Database = (await import('better-sqlite3')).default;
+          
           const { VideoMediaAPI } = await import('./video-media-api');
           const videoAPI = VideoMediaAPI.getInstance();
 
@@ -1130,15 +1140,73 @@ export class MainMediaAPI {
             videoAPI.setJobsDatabase(this.jobsDb);
           }
 
-          // Delete all jobs for this video path
-          const deleted = await videoAPI.deleteJobsByVideoPath(item.path);
-          console.log(`[MEDIA-DELETE] Deleted ${deleted} video processing jobs for: ${item.path}`);
+          // Delete video processing jobs
+          const deletedJobs = await videoAPI.deleteJobsByVideoPath(item.path);
+          console.log(`[MEDIA-DELETE] ✅ Deleted ${deletedJobs} video processing jobs`);
+
+          // Delete video segments and their embeddings from video-rag.db
+          const videoDbPath = path.join(this.dataDirPath, 'video-rag.db');
+          const videoDb = new Database(videoDbPath);
+          
+          // Delete all segments for this parent video
+          const deleteSegmentsStmt = `DELETE FROM video_segments WHERE video_id = ?`;
+          videoDb.prepare(deleteSegmentsStmt).run(itemId);
+          videoDb.close();
+          console.log(`[MEDIA-DELETE] ✅ Deleted video segments from video-rag.db for parent: ${itemId}`);
+          
+          // Delete from av_search.db (transcripts, embeddings, FTS, vector embeddings)
+          const avSearchPath = path.join(this.dataDirPath, 'av_search.db');
+          const avDb = new Database(avSearchPath);
+          
+          // Delete from main tables and FTS (using LIKE to match all segments for this video)
+          avDb.prepare(`DELETE FROM transcripts_fts WHERE segment_id LIKE ?`).run(`video_segment_${itemId}_%`);
+          avDb.prepare(`DELETE FROM video_segment_embeddings WHERE segment_id LIKE ?`).run(`video_segment_${itemId}_%`);
+          avDb.prepare(`DELETE FROM av_meta_cache WHERE item_id = ?`).run(itemId);
+          // Note: video_segment_vec is a virtual table, deletions cascade from embeddings
+          avDb.close();
+          console.log(`[MEDIA-DELETE] ✅ Deleted from av_search.db for video: ${itemId}`);
         } catch (error) {
-          console.warn(`[MEDIA-DELETE] Failed to delete video jobs (non-critical):`, error);
+          console.warn(`[MEDIA-DELETE] ⚠️  Failed to delete video-related data (non-critical):`, error);
+        }
+      } else if (item.type === 'image') {
+        console.log(`[MEDIA-DELETE] Step 2: Cleaning up image-related data...`);
+        
+        try {
+          // Import better-sqlite3
+          const Database = (await import('better-sqlite3')).default;
+          
+          // Delete from image_search.db (embeddings, FTS, vector embeddings)
+          const imageSearchPath = path.join(this.dataDirPath, 'image_search.db');
+          const imageDb = new Database(imageSearchPath);
+          
+          // Load sqlite-vec extension for vec0 virtual tables
+          const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
+          const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+          const extName = platform === 'win32' ? 'vec0.dll' : platform === 'darwin' ? 'vec0.dylib' : 'vec0.so';
+          const vecExtPath = path.join(process.cwd(), 'node_modules', `sqlite-vec-${platform}-${arch}`, extName);
+          try {
+            imageDb.loadExtension(vecExtPath);
+          } catch (e) {
+            console.warn(`[MEDIA-DELETE] Could not load vec extension, skipping vec table cleanup:`, e);
+          }
+          
+          // Delete from main tables and FTS
+          imageDb.prepare(`DELETE FROM image_embeddings WHERE item_id = ?`).run(itemId);
+          imageDb.prepare(`DELETE FROM image_fts WHERE item_id = ?`).run(itemId);
+          // Only delete from vec table if extension loaded successfully
+          try {
+            imageDb.prepare(`DELETE FROM image_vec_embeddings WHERE item_id = ?`).run(itemId);
+          } catch (e) {
+            console.warn(`[MEDIA-DELETE] Could not delete from vec table:`, e);
+          }
+          imageDb.close();
+          console.log(`[MEDIA-DELETE] ✅ Deleted from image_search.db for image: ${itemId}`);
+        } catch (error) {
+          console.warn(`[MEDIA-DELETE] ⚠️  Failed to delete image-related data (non-critical):`, error);
         }
       }
 
-      console.log(`[MEDIA-DELETE] Successfully removed ${item.name} from library`);
+      console.log(`[MEDIA-DELETE] ✅ Successfully removed ${fileName} from library`);
       return { success: true };
 
     } catch (error) {
@@ -1402,7 +1470,6 @@ export class MainMediaAPI {
 
       // Get media indexing jobs
       const mediaJobs = await this.jobsDb!.getActiveJobs();
-      console.log(`[INDEXING-STATUS-DEBUG] Media jobs from DB:`, mediaJobs.map((j: any) => ({ id: j.id, status: j.status, sourceId: j.sourceId })));
 
       // Get video processing jobs using singleton VideoMediaAPI
       let videoJobs: any[] = [];
@@ -1426,13 +1493,6 @@ export class MainMediaAPI {
           if (!byId[j.id]) byId[j.id] = j;
         }
         videoJobs = Object.values(byId);
-        console.log(`[INDEXING-STATUS-DEBUG] Video jobs:`, videoJobs.map((j: any) => ({ id: j.id, status: j.status })));
-
-        // [DEBUG] Log actual video job structure
-        if (videoJobs.length > 0) {
-          console.log(`[VIDEO-JOB-STRUCTURE-DEBUG] First video job fields:`, Object.keys(videoJobs[0]));
-          console.log(`[VIDEO-JOB-STRUCTURE-DEBUG] First video job data:`, videoJobs[0]);
-        }
       } catch (e) {
         console.error('[MainMediaAPI] Failed to get video jobs:', e);
         console.error('[MainMediaAPI] Video job error stack:', e instanceof Error ? e.stack : e);
@@ -1444,7 +1504,6 @@ export class MainMediaAPI {
       const activeJobs = allJobs
         .filter((j: any) => ['running', 'processing', 'pending', 'scheduled'].includes(j.status))
         .map((j: any) => j.id);
-      console.log(`[INDEXING-STATUS-DEBUG] Active jobs (queued/processing):`, activeJobs);
 
       // Get detailed job info for UI display (only active/pending jobs)
       const relevantJobs = [...mediaJobs, ...videoJobs].filter(j =>
@@ -1465,15 +1524,6 @@ export class MainMediaAPI {
           const videoPath = j.videoPath || j.video_path;
           const fileName = videoPath ? videoPath.split('/').pop() : (j.file_name || j.fileName || 'video');
 
-          // [DEBUG] Log video job mapping
-          console.log(`[VIDEO-JOB-MAPPING-DEBUG] Processing video job ${j.id}:`, {
-            isVideoJob,
-            videoPath,
-            fileName,
-            status: j.status,
-            progress: j.progress
-          });
-
           // Set descriptive titles based on video job status/progress
           if (j.status === 'scheduled' || j.status === 'pending') {
             // Explicitly show queued state, not processing
@@ -1482,7 +1532,6 @@ export class MainMediaAPI {
             operationType = 'video_queue';
           } else if (j.status === 'running' || j.status === 'processing') {
             // Use stored status message and metadata instead of hardcoded progress thresholds
-            console.log(`[UI-DEBUG] Job ${j.id}: statusMessage="${j.statusMessage}", progress=${j.progress}`);
             if (j.statusMessage) {
               // Use stored status message as job title
               jobTitle = j.statusMessage;
@@ -1540,26 +1589,7 @@ export class MainMediaAPI {
           targetFile: targetFile
         };
 
-        // [DEBUG] Log final mapped job
-        if (isVideoJob) {
-          console.log(`[VIDEO-JOB-FINAL-DEBUG] Final mapped job for ${j.id}:`, mappedJob);
-        }
-
         return mappedJob;
-      });
-
-      // [DEBUG] Log job details being sent to UI
-      console.log(`[INDEXING-API-DEBUG] Sending ${jobDetails.length} jobs to UI:`);
-      jobDetails.forEach((job, index) => {
-        console.log(`[INDEXING-API-DEBUG] Job ${index + 1}:`, {
-          id: job.id,
-          status: job.status,
-          type: job.type,
-          title: job.title,
-          description: job.description,
-          operationType: job.operationType,
-          targetFile: job.targetFile
-        });
       });
 
       return { success: true, activeJobs, jobs: jobDetails };

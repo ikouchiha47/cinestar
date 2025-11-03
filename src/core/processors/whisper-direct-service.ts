@@ -47,10 +47,26 @@ export class WhisperDirectService implements TranscriptionService {
       argv: process.argv,
       platform: process.platform,
       arch: process.arch,
+      execPath: process.execPath,
+      defaultApp: process.defaultApp,
+      type: process.type,
     });
     
-    // Check if we have resourcesPath (production DMG)
-    if (process.resourcesPath && fs.existsSync(process.resourcesPath)) {
+    // Check if we're in a packaged app (production DMG)
+    // In production: resourcesPath = /Applications/Cinestar.app/Contents/Resources
+    // In dev: resourcesPath = /path/to/Electron.app/Contents/Resources
+    // Also check: process.defaultApp is undefined in packaged apps
+    const isPackaged = process.resourcesPath && !process.resourcesPath.includes('Electron.app');
+    
+    console.log('[WhisperDebug] isPackaged detection:', {
+      isPackaged,
+      hasResourcesPath: !!process.resourcesPath,
+      hasElectronApp: process.resourcesPath?.includes('Electron.app'),
+      defaultApp: process.defaultApp,
+      execPath: process.execPath,
+    });
+    
+    if (isPackaged && process.resourcesPath) {
       // Production: Binary is in app.asar.unpacked
       // process.resourcesPath = /Applications/Cinestar.app/Contents/Resources
       // Binary location = /Applications/Cinestar.app/Contents/Resources/app.asar.unpacked/node_modules/...

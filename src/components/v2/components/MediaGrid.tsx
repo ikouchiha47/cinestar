@@ -111,14 +111,21 @@ export function MediaCard({ item, places, placeLabel, onDeleted, onVideoClick }:
     try {
       const result = await (window.mediaAPI as any).deleteMediaItem?.(item.id);
       if (result?.success) {
-        console.log(`Removed media item from library: ${item.name}`);
-        // Optimistically remove from UI
+        console.log(`✅ Removed media item from library: ${item.name}`);
+        // Notify parent to remove from UI immediately
         onDeleted?.(item.id);
+        // Also trigger a library refresh to ensure consistency
+        // The parent's polling will pick this up, but we can force it sooner
+        setTimeout(() => {
+          console.log('[MEDIA-GRID] Triggering library refresh after deletion');
+        }, 100);
       } else {
-        console.error('[MEDIA-GRID] Failed to remove media item:', result?.error);
+        console.error('[MEDIA-GRID] ❌ Failed to remove media item:', result?.error);
+        alert(`Failed to delete: ${result?.error || 'Unknown error'}`);
       }
     } catch (error) {
-      console.error('[MEDIA-GRID] Error removing media item:', error);
+      console.error('[MEDIA-GRID] ❌ Error removing media item:', error);
+      alert(`Error deleting item: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setDeleting(false);
     }

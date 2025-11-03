@@ -53,8 +53,6 @@ export class MultiPassCaptioningService {
 
     // Phase 1: Comprehensive caption from moondream
     const useSinglePass = contextConfig?.singlePassMode ?? false;
-    
-    console.log(`[MULTI-PASS] Phase 1: Generating ${useSinglePass ? 'comprehensive' : 'basic'} caption... (context: ${context})`);
     const prompt = useSinglePass
       ? `Describe this image in detail, including:
 1. CONTENT: What objects, people, and elements are present?
