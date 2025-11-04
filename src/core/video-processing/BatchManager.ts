@@ -179,6 +179,19 @@ export class BatchManager {
           const captionedKeyframes = await this.captioningCoordinator.captionKeyframes(keyframes);
           console.log(`[BATCH-MANAGER] ✅ Captioned ${captionedKeyframes.length} keyframes`);
 
+          // Update individual keyframe captions in database
+          for (const keyframeData of captionedKeyframes) {
+            await this.batchProcessor.updateKeyframeCaption(
+              keyframeData.id,
+              keyframeData.caption,
+              keyframeData.confidence,
+              keyframeData.spatial,
+              keyframeData.temporal,
+              keyframeData.elements
+            );
+          }
+          console.log(`[BATCH-MANAGER] ✅ Updated ${captionedKeyframes.length} keyframe captions in database`);
+
           // Scene reconstruction
           console.log(`[BATCH-MANAGER] Reconstructing scene for batch ${i + 1}...`);
           const sceneReconstruction = await this.captioningCoordinator.reconstructScene(

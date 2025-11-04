@@ -54,9 +54,9 @@ export class ModelManager {
       required: true
     },
     {
-      name: 'qwen3:4b',
+      name: 'phi3:3.8b',
       purpose: 'Text Generation',
-      size: '~2.5GB',
+      size: '~2.2GB',
       required: false // Usually already installed
     }
   ];

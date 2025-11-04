@@ -6,6 +6,7 @@ export type SearchItem = {
   size?: number;
   mimeType?: string | null;
   sourceId?: string;
+  thumb?: string;  // Thumbnail path for videos
   startMs?: number | null;
   endMs?: number | null;
   score?: number;

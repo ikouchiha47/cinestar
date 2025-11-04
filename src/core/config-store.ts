@@ -33,20 +33,14 @@ export class ConfigStore {
     this.dataDir = dataDir;
   }
 
+  /**
+   * @deprecated Strategy flags are now derived from config.json features.
+   * This method is kept for backward compatibility but will be removed in future versions.
+   */
   loadFlags(): StrategyFlags {
-    try {
-      const row = this.db.prepare(`SELECT value_json FROM configs WHERE key = 'strategy.flags'`).get() as any;
-      if (row && row.value_json) {
-        const val = JSON.parse(row.value_json);
-        return {
-          dualWrite: !!val.dualWrite,
-          useNewCatalog: !!val.useNewCatalog,
-          useNewImageSearch: !!val.useNewImageSearch,
-          useNewAVSearch: !!val.useNewAVSearch,
-        };
-      }
-    } catch {}
-    return { dualWrite: false, useNewCatalog: false, useNewImageSearch: false, useNewAVSearch: false };
+    console.warn('[ConfigStore] loadFlags() is deprecated - strategy flags are now derived from config.json');
+    // Return safe defaults - actual flags are derived from config.json in MainMediaAPI
+    return { dualWrite: true, useNewCatalog: true, useNewImageSearch: true, useNewAVSearch: false };
   }
 
   loadPartitions(): Record<string, Partition> {

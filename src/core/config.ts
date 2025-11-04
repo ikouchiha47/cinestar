@@ -109,10 +109,11 @@ export interface AppConfig {
 
 import os from 'os';
 import path from 'path';
+import { ConfigMigration } from './config-migration';
 
 // Use project-relative path for development, system path for production
 const isDev = process.env.NODE_ENV === 'development' || process.env.DEBUG_MODE === 'true';
-const defaultDbPath = process.env.VECTOR_DB_PATH || 
+const defaultDbPath = process.env.VECTOR_DB_PATH ||
   (isDev ? './data/vector.db' : path.join(os.homedir(), '.cinestar', 'vector.db'));
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -148,7 +149,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     embeddingDimensions: 1024,
     visionModel: 'moondream:v2',
     visionModelDims: [378, 378], // Moondream v2 dimensions
-    generalPurposeModel: 'qwen3:4b', // For text generation (scene reconstruction, Q&A)
+    generalPurposeModel: 'phi3:3.8b', // For text generation (scene reconstruction, Q&A)
     maxTokens: 2048,
     temperature: 0.1,
   },
@@ -192,7 +193,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   multiPass: {
     enabled: true, // ✅ ENABLED - Multi-pass captioning active
-    extractionModel: 'qwen3:4b',
+    extractionModel: 'phi3:3.8b',
     extractionUrl: '', // Will use ai.embedUrl if empty
     image: {
       singlePassMode: true,     // ✅ TESTED & VERIFIED - moondream handles comprehensive prompt correctly
@@ -251,8 +252,6 @@ export class ConfigManager {
    */
   private static applyMigrationIfNeeded(): void {
     try {
-      const { ConfigMigration } = require('./config-migration');
-      
       if (ConfigMigration.needsMigration(this.config)) {
         console.log('[CONFIG-MANAGER] Applying config migration...');
         const migratedConfig = ConfigMigration.applyMigration(this.config);
@@ -290,7 +289,7 @@ export class ConfigManager {
       // Ensure visionModelDims is always present
       ...(updates.ai?.visionModelDims ? { ai: { ...this.config.ai, visionModelDims: updates.ai.visionModelDims } } : {})
     };
-    
+
     console.log('📋 [CONFIG] Configuration updated:', this.config);
   }
 
@@ -308,7 +307,7 @@ export class ConfigManager {
     if (limit < 1 || limit > 10) {
       throw new Error('Concurrency limit must be between 1 and 10');
     }
-    
+
     this.config.indexing.concurrencyLimit = limit;
     console.log(`📋 [CONFIG] Concurrency limit set to: ${limit}`);
   }
@@ -322,7 +321,7 @@ export class ConfigManager {
       if (process.platform === 'darwin') {
         return true; // macOS typically has Metal GPU support
       }
-      
+
       // For other platforms, we could check for NVIDIA/AMD GPUs
       // For now, assume no GPU on non-macOS systems
       return false;
@@ -338,13 +337,13 @@ export class ConfigManager {
   static async getOptimalConcurrency(fileCount: number): Promise<number> {
     const baseLimit = this.config.indexing.concurrencyLimit;
     const hasGPU = await this.hasGPU();
-    
+
     // If no GPU, force concurrency to 1 to avoid overwhelming CPU
     if (!hasGPU) {
       console.log(`📋 [CONFIG] No GPU detected, using concurrency: 1`);
       return 1;
     }
-    
+
     // For small batches, use lower concurrency
     if (fileCount <= 5) {
       return Math.min(2, baseLimit);

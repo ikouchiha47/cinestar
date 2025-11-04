@@ -760,9 +760,16 @@ export class BatchProcessor {
   }
 
   /**
-   * Update batch keyframe with caption
+   * Update batch keyframe with caption and optional multi-pass data
    */
-  async updateKeyframeCaption(keyframeId: string, caption: string, confidence?: number): Promise<void> {
+  async updateKeyframeCaption(
+    keyframeId: string, 
+    caption: string, 
+    confidence?: number,
+    spatial?: string,
+    temporal?: string,
+    elements?: any
+  ): Promise<void> {
     console.log(`[BATCH-PROCESSOR] 📝 updateKeyframeCaption called: keyframeId=${keyframeId}, caption length=${caption?.length || 0}, confidence=${confidence}`);
     
     if (!caption || caption.length === 0) {
@@ -773,11 +780,22 @@ export class BatchProcessor {
     try {
       const stmt = this.getDb().prepare(`
         UPDATE batch_keyframes 
-        SET caption = ?, caption_confidence = ?
+        SET caption = ?, 
+            caption_confidence = ?,
+            caption_spatial = ?,
+            caption_temporal = ?,
+            caption_elements = ?
         WHERE id = ?
       `);
 
-      const result = stmt.run(caption, confidence, keyframeId);
+      const result = stmt.run(
+        caption, 
+        confidence, 
+        spatial || null,
+        temporal || null,
+        elements ? JSON.stringify(elements) : null,
+        keyframeId
+      );
       console.log(`[BATCH-PROCESSOR] ✅ Updated keyframe ${keyframeId} with caption (${caption.length} chars), rows affected: ${result.changes}`);
       
       if (result.changes === 0) {

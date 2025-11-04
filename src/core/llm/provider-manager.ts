@@ -408,7 +408,7 @@ export class ProviderManager extends EventEmitter {
             models: [
               { task: 'vision', modelName: 'moondream:v2', displayName: 'Moondream v2' },
               { task: 'embedding', modelName: 'qllama/bge-large-en-v1.5:latest', displayName: 'BGE Large' },
-              { task: 'text', modelName: 'qwen3:4b', displayName: 'Qwen3 4B' }
+              { task: 'text', modelName: 'phi3:3.8b', displayName: 'Phi-3 3.8B' }
             ],
             timeout: 300000
           },

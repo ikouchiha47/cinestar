@@ -333,7 +333,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
           type: 'video',
           name: String(r.name || 'video'),
           path: String(r.path || ''),
-          thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
+          thumb: String(r.thumb || r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
         } as MediaT));
 
         // Set results - combine images and videos into single searchResults array
@@ -604,7 +604,7 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
                         type: 'video',
                         name: String(r.name || 'video'),
                         path: String(r.path || ''),
-                        thumb: String(r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
+                        thumb: String(r.thumb || r.metadata?.thumbnailPath || r.metadata?.thumbnailUrl || ''),
                       } as MediaT));
                       // Set results - COMBINE images and videos into searchResults
                       const allResults = [...mediaItems, ...videoItems];

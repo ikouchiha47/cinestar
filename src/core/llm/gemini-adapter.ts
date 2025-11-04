@@ -251,7 +251,7 @@ export class GeminiAdapter implements ILLMAdapter {
     }
     
     // If file path, read and convert to base64
-    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/')) {
+    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/') || imageUrl.startsWith('\\')) {
       const fs = await import('fs');
       const path = imageUrl.replace('file://', '');
       const buffer = fs.readFileSync(path);
@@ -272,6 +272,12 @@ export class GeminiAdapter implements ILLMAdapter {
       const mimeType = response.headers.get('content-type') || 'image/jpeg';
       
       return { base64, mimeType };
+    }
+    
+    // If plain base64 (no prefix), assume it's already base64
+    // This handles the case where VisionService passes plain base64 for Gemini
+    if (imageUrl.length > 100 && !imageUrl.includes(' ')) {
+      return { base64: imageUrl, mimeType: 'image/jpeg' };
     }
     
     throw new Error(`Unsupported image URL format: ${imageUrl}`);

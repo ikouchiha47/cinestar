@@ -36,7 +36,14 @@ export class MultiPassCaptioningService {
   private extractionService: LLMExtractionService;
   private queryBuilder: PhaseQueryBuilder;
 
-  constructor(providerManager: ProviderManager) {
+  constructor(providerManager?: ProviderManager) {
+    // Create default ProviderManager if not provided
+    if (!providerManager) {
+      const config = ConfigManager.getConfig();
+      const llmConfig = (config as any).llm || ProviderManager.getDefaultConfig();
+      providerManager = new ProviderManager(llmConfig);
+    }
+    
     this.visionService = new VisionService(providerManager);
     this.extractionService = new LLMExtractionService(providerManager);
     this.queryBuilder = new PhaseQueryBuilder();

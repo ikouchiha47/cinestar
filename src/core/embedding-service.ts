@@ -47,7 +47,14 @@ export class EmbeddingService {
   private rerankModel: string;
   private rerankBaseUrl?: string;
 
-  constructor(providerManager: ProviderManager, rerankModel?: string, rerankBaseUrl?: string) {
+  constructor(providerManager?: ProviderManager, rerankModel?: string, rerankBaseUrl?: string) {
+    // Create default ProviderManager if not provided
+    if (!providerManager) {
+      const config = ConfigManager.getConfig();
+      const llmConfig = (config as any).llm || ProviderManager.getDefaultConfig();
+      providerManager = new ProviderManager(llmConfig);
+    }
+    
     this.providerManager = providerManager;
     this.rerankModel = rerankModel || 'BAAI/bge-reranker-large';
     this.rerankBaseUrl = rerankBaseUrl;

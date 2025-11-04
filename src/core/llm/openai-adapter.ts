@@ -239,7 +239,7 @@ export class OpenAIAdapter implements ILLMAdapter {
     }
     
     // If file path, convert to data URL
-    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/')) {
+    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/') || imageUrl.startsWith('\\')) {
       const fs = await import('fs');
       const path = imageUrl.replace('file://', '');
       const buffer = fs.readFileSync(path);
@@ -250,6 +250,12 @@ export class OpenAIAdapter implements ILLMAdapter {
       const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
       
       return `data:${mimeType};base64,${base64}`;
+    }
+    
+    // If plain base64 (no prefix), wrap in data URL
+    // Assume JPEG if we can't determine type
+    if (imageUrl.length > 100 && !imageUrl.includes(' ')) {
+      return `data:image/jpeg;base64,${imageUrl}`;
     }
     
     return imageUrl;

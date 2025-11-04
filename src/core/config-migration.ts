@@ -74,7 +74,7 @@ export class ConfigMigration {
       
     const textModel = oldConfig.aiServices?.sceneReconstruction?.model
       || oldConfig.ai?.generalPurposeModel
-      || 'qwen3:4b';
+      || 'phi3:3.8b';
       
     const embeddingModel = oldConfig.ai?.embeddingModel
       || 'qllama/bge-large-en-v1.5:latest';

@@ -51,6 +51,7 @@ export interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  format?: 'json' | object;  // Can be 'json' string or JSON schema object
 }
 
 export interface EmbedOptions {

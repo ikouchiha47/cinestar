@@ -1,6 +1,6 @@
 import '../src/core/logger'
 import '../src/core/ffmpeg-bootstrap'
-import { app, BrowserWindow, ipcMain, dialog, BrowserView } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, BrowserView, protocol } from 'electron'
 
 // Log version info IMMEDIATELY
 console.log('[APP-VERSION] Cinestar version: 0.1.62');
@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import Database from 'better-sqlite3'
 import { MainMediaAPI } from '../src/api/main-media-api'
 import { VideoMediaAPI } from '../src/api/video-media-api'
 import { ImageJobProcessor } from '../src/core/image-job-processor'
@@ -922,7 +923,13 @@ ipcMain.handle('video:getMetadata', async (_, videoPath: string) => {
 });
 
 ipcMain.handle('video:getSegmentsForPlayer', async (_, videoPath: string, searchQuery?: string) => {
-  if (!videoAPI) await initializeVideoAPI();
+  console.log(`[VIDEO-SEGMENTS-IPC] Handler called with path: ${videoPath}, query: ${searchQuery || 'none'}`);
+  
+  if (!videoAPI) {
+    console.log(`[VIDEO-SEGMENTS-IPC] VideoAPI not initialized, initializing now...`);
+    await initializeVideoAPI();
+  }
+  
   try {
     console.log(`[VIDEO-SEGMENTS-DEBUG] Getting segments for: ${videoPath}`);
     console.log(`[VIDEO-SEGMENTS-DEBUG] Search query: ${searchQuery || 'none'}`);
@@ -930,26 +937,59 @@ ipcMain.handle('video:getSegmentsForPlayer', async (_, videoPath: string, search
     // Get video file from database
     const videoFile = await videoAPI!.getVideoFile(videoPath);
     if (!videoFile) {
-      console.log(`[VIDEO-SEGMENTS-DEBUG] Video file not found in database`);
+      console.warn(`[VIDEO-SEGMENTS-DEBUG] ⚠️  Video file not found in database for path: ${videoPath}`);
+      console.warn(`[VIDEO-SEGMENTS-DEBUG] This usually means the video hasn't been processed yet or the path doesn't match`);
       return { success: true, segments: [] };
     }
     
     console.log(`[VIDEO-SEGMENTS-DEBUG] Found video file: ${videoFile.id}`);
     
-    // Get all segments for this video
-    const segments = await videoAPI!.getVideoSegments(videoFile.id);
-    console.log(`[VIDEO-SEGMENTS-DEBUG] Found ${segments.length} segments in database`);
+    // Query media.db.segments (source of truth for segment metadata)
+    const mediaDbPath = path.join(DATA_DIR, 'media.db');
+    const mediaDb = new Database(mediaDbPath);
     
-    // If we have a search query, filter and score segments by relevance
-    let processedSegments = segments.map(segment => ({
-      id: segment.id,
-      startTime: segment.startTime,
-      endTime: segment.endTime,
-      transcription: segment.transcription || '',
-      caption: segment.caption || '',
-      reconstructedScene: segment.reconstructedScene || '',
-      relevanceScore: searchQuery ? calculateRelevanceScore(segment, searchQuery) : undefined
-    }));
+    // Get segments from media.db.segments table
+    const segments = mediaDb.prepare(`
+      SELECT id, item_id, kind, start_ms, end_ms, transcript, caption, created_at, updated_at
+      FROM segments 
+      WHERE item_id = ?
+      ORDER BY start_ms
+    `).all(videoFile.id);
+    
+    console.log(`[VIDEO-SEGMENTS-DEBUG] Found ${segments.length} segments in media.db.segments`);
+    
+    // Get enhanced captions from av_meta_cache if available
+    const avSearchDbPath = path.join(DATA_DIR, 'av_search.db');
+    const avSearchDb = new Database(avSearchDbPath);
+    
+    const enhancedCaptions = new Map();
+    for (const seg of segments) {
+      const enhanced = avSearchDb.prepare(`
+        SELECT caption, caption_elements, caption_spatial, caption_temporal
+        FROM av_meta_cache 
+        WHERE segment_id = ?
+      `).get(seg.id);
+      if (enhanced) {
+        enhancedCaptions.set(seg.id, enhanced);
+      }
+    }
+    
+    avSearchDb.close();
+    mediaDb.close();
+    
+    // Map segments to player format
+    let processedSegments = segments.map((seg: any) => {
+      const enhanced = enhancedCaptions.get(seg.id);
+      return {
+        id: seg.id,
+        startTime: seg.start_ms / 1000, // Convert ms to seconds
+        endTime: seg.end_ms / 1000,
+        transcription: seg.transcript || '',
+        caption: enhanced?.caption || seg.caption || '',
+        reconstructedScene: enhanced ? [enhanced.caption_elements, enhanced.caption_spatial, enhanced.caption_temporal].filter(Boolean).join(' ') : '',
+        relevanceScore: searchQuery ? calculateRelevanceScore(seg, searchQuery) : undefined
+      };
+    });
     
     console.log(`[VIDEO-SEGMENTS-DEBUG] Mapped ${processedSegments.length} segments with scores:`, 
       processedSegments.map(s => ({ 
@@ -1453,6 +1493,18 @@ ipcMain.handle('whisper:setup', async (evt, options: { modelName?: string; useCu
 
 
 app.whenReady().then(async () => {
+  // Register custom protocol for local video files
+  protocol.registerFileProtocol('media-file', (request, callback) => {
+    const url = request.url.replace('media-file://', '');
+    try {
+      return callback(decodeURIComponent(url));
+    } catch (error) {
+      console.error('[PROTOCOL] Error serving media file:', error);
+      return callback({ error: -2 }); // net::FAILED
+    }
+  });
+  console.log('[PROTOCOL] Registered media-file:// protocol for local video streaming');
+
   // Run data migration ONLY in production (never in dev mode)
   const isDev = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
   

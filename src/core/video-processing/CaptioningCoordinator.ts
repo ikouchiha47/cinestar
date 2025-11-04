@@ -211,7 +211,7 @@ Scene Description:`;
       ], {
         model,
         temperature: 0.7,
-        maxTokens: 150
+        maxTokens: 1500
       });
 
       return response.content?.trim() || '';

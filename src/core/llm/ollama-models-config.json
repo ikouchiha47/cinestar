@@ -11,7 +11,7 @@
   },
   "defaults": {
     "vision": "moondream:v2",
-    "text": "qwen3:4b",
+    "text": "phi3:3.8b",
     "embedding": "qllama/bge-large-en-v1.5:latest",
     "transcription": "whisper:latest"
   },
@@ -46,11 +46,17 @@
       "description": "Local language models for text generation",
       "models": [
         {
-          "id": "qwen3:4b",
-          "name": "Qwen3 4B",
-          "description": "Fast and efficient 4B parameter model",
+          "id": "phi3:3.8b",
+          "name": "Phi-3 3.8B",
+          "description": "Microsoft's efficient 3.8B model - excellent for structured output",
           "capabilities": ["text"],
           "default": true
+        },
+        {
+          "id": "qwen3:4b",
+          "name": "Qwen3 4B",
+          "description": "Fast 4B model with extended reasoning (uses thinking mode)",
+          "capabilities": ["text"]
         },
         {
           "id": "llama3.2:1b",

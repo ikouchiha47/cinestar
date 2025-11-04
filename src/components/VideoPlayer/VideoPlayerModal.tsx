@@ -1,6 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Play, Pause, Volume2, VolumeX, Maximize, SkipBack, SkipForward } from 'lucide-react';
+import { parseWhisperTranscription, formatTimestamp as formatWhisperTimestamp } from '../../utils/whisper-parser';
 
 interface VideoSegment {
   id: string;
@@ -197,11 +198,48 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
     return 'bg-orange-500/20 text-orange-300 border-orange-500/30'; // Low relevance
   };
 
-  // Sort segments based on current sort mode
-  const sortedSegments = React.useMemo(() => {
+  // Expand segments by parsing Whisper transcription timestamps
+  const expandedSegments = useMemo(() => {
     if (!segments || segments.length === 0) return [];
     
-    const segmentsCopy = [...segments];
+    const expanded: VideoSegment[] = [];
+    
+    segments.forEach((segment) => {
+      // Parse Whisper transcription format to extract individual timestamped lines
+      if (segment.transcription) {
+        const whisperSegments = parseWhisperTranscription(segment.transcription);
+        
+        if (whisperSegments.length > 0) {
+          // Create individual segments for each Whisper timestamp
+          whisperSegments.forEach((ws, index) => {
+            expanded.push({
+              id: `${segment.id}_${index}`,
+              startTime: ws.startTime,
+              endTime: ws.endTime,
+              transcription: ws.text,
+              caption: segment.caption,
+              reconstructedScene: segment.reconstructedScene,
+              relevanceScore: segment.relevanceScore
+            });
+          });
+        } else {
+          // No Whisper timestamps found, use original segment
+          expanded.push(segment);
+        }
+      } else {
+        // No transcription, use original segment
+        expanded.push(segment);
+      }
+    });
+    
+    return expanded;
+  }, [segments]);
+
+  // Sort segments based on current sort mode
+  const sortedSegments = React.useMemo(() => {
+    if (expandedSegments.length === 0) return [];
+    
+    const segmentsCopy = [...expandedSegments];
     if (sortByRelevance) {
       // Sort by relevance score (already sorted from backend, but ensure it)
       return segmentsCopy.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
@@ -209,7 +247,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
       // Sort chronologically by start time
       return segmentsCopy.sort((a, b) => a.startTime - b.startTime);
     }
-  }, [segments, sortByRelevance]);
+  }, [expandedSegments, sortByRelevance]);
 
   const seekToTimestamp = (timestamp: number) => {
     if (!videoRef.current) return;
@@ -268,7 +306,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
 
             <video
               ref={videoRef}
-              src={`file://${videoPath}`}
+              src={`media-file://${videoPath}`}
               className="w-full h-full object-contain"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
@@ -390,7 +428,7 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({
               <div className="p-4 pb-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-white text-lg font-semibold">
-                    Matching Segments ({segments.length})
+                    Matching Segments ({sortedSegments.length})
                   </h3>
                   <div className="flex gap-2">
                     <button

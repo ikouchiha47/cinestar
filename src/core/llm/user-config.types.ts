@@ -38,7 +38,7 @@ export const DEFAULT_USER_CONFIG: UserLLMConfig = {
       enabled: true,
       selectedModels: {
         vision: 'moondream:v2',
-        text: 'qwen3:4b',
+        text: 'phi3:3.8b',
         embedding: 'qllama/bge-large-en-v1.5:latest',
         transcription: 'whisper:latest'
       }

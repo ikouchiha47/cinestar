@@ -17,6 +17,6 @@ VALUES
   ('default_image', 'default_image', 'image_search', 'image_search.db', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('default_av', 'default_av', 'av_search', 'av_search.db', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
--- Seed default strategy flags (optional, idempotent)
-INSERT OR IGNORE INTO configs (key, type, value_json)
-VALUES ('strategy.flags', 'json', '{"dualWrite": true, "useNewCatalog": true, "useNewImageSearch": true, "useNewAVSearch": false}');
+-- NOTE: Strategy flags (dualWrite, useNewCatalog, useNewImageSearch, useNewAVSearch) 
+-- are now derived from config.json features instead of being stored in config.db
+-- This migration no longer seeds strategy.flags to avoid dual sources of truth

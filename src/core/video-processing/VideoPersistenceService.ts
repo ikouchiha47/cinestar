@@ -95,7 +95,11 @@ export class VideoPersistenceService {
 
       // 3. Write transcription to av_search.db if present
       if (data.transcription) {
+        console.log(`[PERSISTENCE] Writing transcription to FTS: ${data.segmentId}, length: ${data.transcription.length}`);
         await this.writeTranscription(data.segmentId, data.transcription);
+        console.log(`[PERSISTENCE] ✅ Transcription written to FTS`);
+      } else {
+        console.warn(`[PERSISTENCE] ⚠️  No transcription data for segment ${data.segmentId}`);
       }
 
       // 4. Update metadata cache with multi-pass data
@@ -111,6 +115,7 @@ export class VideoPersistenceService {
 
   /**
    * Write segment metadata to media.db
+   * Writes to BOTH media_items (for catalog) AND segments (source of truth)
    */
   private async writeToMediaDb(data: SegmentStorageData): Promise<void> {
     const segmentPath = `${data.videoPath}#t=${data.startTime},${data.endTime}`;
@@ -121,6 +126,7 @@ export class VideoPersistenceService {
       throw new Error(`Cannot write segment to media.db: parentSourceId is missing for ${data.segmentId}`);
     }
 
+    // 1. Write to media_items (for catalog/listing)
     this.mediaDb.upsertMediaItemFromLegacy({
       id: data.segmentId,
       sourceId: data.parentSourceId,
@@ -133,6 +139,27 @@ export class VideoPersistenceService {
       height: null,
       modifiedAt: new Date()
     });
+
+    // 2. Write to segments table (source of truth for segment metadata)
+    // Get parent video ID from path
+    const parentItems = this.mediaDb.getMediaItemsByPath(data.videoPath, true);
+    if (parentItems && parentItems.length > 0) {
+      const parentId = parentItems[0].id;
+      
+      this.mediaDb.upsertSegment({
+        id: data.segmentId,
+        itemId: parentId,
+        kind: 'video',
+        startMs: data.startTime * 1000,
+        endMs: data.endTime * 1000,
+        transcript: data.transcription,
+        caption: data.caption
+      });
+      
+      console.log(`[PERSISTENCE] ✅ Wrote segment to media.db.segments: ${data.segmentId} (parent: ${parentId})`);
+    } else {
+      console.warn(`[PERSISTENCE] ⚠️  Parent video not found in media.db for ${data.videoPath}, skipping segments table write`);
+    }
   }
 
   /**

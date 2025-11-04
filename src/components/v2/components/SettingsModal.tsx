@@ -90,7 +90,7 @@ const DEFAULT_CONFIG: UnifiedConfig = {
     },
     sceneReconstruction: {
       baseUrl: 'http://localhost:11434',
-      model: 'qwen3:4b',
+      model: 'phi3:3.8b',
       enabled: true
     }
   },

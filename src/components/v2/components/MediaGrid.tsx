@@ -70,17 +70,28 @@ export function MediaCard({ item, places, placeLabel, onDeleted, onVideoClick }:
     let cancelled = false;
     const loadThumbnail = async () => {
       // For images, use the image file itself as thumbnail if no thumb is set
-      const thumbnailPath = item.thumb || (item.type === 'image' ? item.path : null);
+      // Check for empty string explicitly (videos may have thumb='')
+      const thumbnailPath = (item.thumb && item.thumb.trim()) || (item.type === 'image' ? item.path : null);
+      console.log(`[MediaCard] Loading thumbnail for ${item.type}:`, { 
+        itemThumb: item.thumb, 
+        itemPath: item.path, 
+        thumbnailPath 
+      });
       if (!thumbnailPath) return;
       
       setLoading(true);
       try {
+        console.log(`[MediaCard] Calling getImageThumbnail for: ${thumbnailPath}`);
         const res = await window.mediaAPI.getImageThumbnail(thumbnailPath);
+        console.log(`[MediaCard] getImageThumbnail response:`, { success: res.success, hasDataUrl: !!res.dataUrl, error: res.error });
         if (!cancelled && res.success && res.dataUrl) {
           setThumbUrl(res.dataUrl);
+          console.log(`[MediaCard] Thumbnail loaded successfully, dataUrl length: ${res.dataUrl.length}`);
+        } else if (!cancelled) {
+          console.warn(`[MediaCard] Thumbnail load failed:`, res.error || 'No dataUrl returned');
         }
       } catch (error) {
-        console.warn('Failed to load thumbnail:', error);
+        console.error('[MediaCard] Exception loading thumbnail:', error);
       } finally {
         if (!cancelled) setLoading(false);
       }

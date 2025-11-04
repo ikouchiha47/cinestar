@@ -55,13 +55,23 @@ export class AVHybridStore implements IAVSearchStore {
       limit,
       alpha: this.alpha,
       cutoff,
-      minSimilarity: 0.5,
-      maxDistance: 0.4
+      minSimilarity: 0.5,   // Hybrid score threshold (same as image search)
+      minVectorSim: 0.50    // Vector similarity threshold (lower than image's 0.60 for video)
     });
 
     const items: SearchItem[] = [];
     for (const r of res.results) {
       const meta = this.moddb.getSegmentMeta(r.id);
+      
+      // For video segments, construct thumbnail path from batch keyframes
+      // Segment ID format: batch_id (UUID)
+      // Keyframe path format: /tmp/drillbit_batches/{batch_id}_keyframe_0.jpg
+      let thumb: string | undefined;
+      if (meta?.mediaType === 'video' && r.id) {
+        thumb = `/tmp/drillbit_batches/${r.id}_keyframe_0.jpg`;
+        console.log(`[AV-HYBRID] Video segment ${r.id}: thumb=${thumb}, path=${r.path}`);
+      }
+      
       items.push({
         id: String(r.id),
         type: (meta?.mediaType === 'audio') ? 'audio' : 'video',
@@ -70,12 +80,20 @@ export class AVHybridStore implements IAVSearchStore {
         sourceId: meta?.itemId,
         size: undefined,
         mimeType: null,
+        thumb,
         startMs: meta?.startMs ?? null,
         endMs: meta?.endMs ?? null,
         score: r.similarity,
         createdAt: meta?.createdAt ? new Date(meta.createdAt) : undefined,
       });
     }
+    
+    console.log(`[AV-HYBRID] Returning ${items.length} items, first item:`, items[0] ? {
+      id: items[0].id,
+      type: items[0].type,
+      thumb: items[0].thumb,
+      path: items[0].path
+    } : 'none');
 
     let nextCursor: SearchCursor | undefined;
     if (items.length === limit && res.hasMore) {

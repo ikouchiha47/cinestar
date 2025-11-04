@@ -116,4 +116,53 @@ export class CanonicalMediaDatabase {
     `).get(path);
     return !!row;
   }
+
+  /**
+   * Insert or update a video segment
+   */
+  upsertSegment(segment: {
+    id: string;
+    itemId: string;
+    kind: 'video' | 'audio';
+    startMs: number;
+    endMs: number;
+    transcript?: string;
+    caption?: string;
+  }): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO segments (id, item_id, kind, start_ms, end_ms, transcript, caption, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        item_id = excluded.item_id,
+        kind = excluded.kind,
+        start_ms = excluded.start_ms,
+        end_ms = excluded.end_ms,
+        transcript = excluded.transcript,
+        caption = excluded.caption,
+        updated_at = excluded.updated_at
+    `).run(
+      segment.id,
+      segment.itemId,
+      segment.kind,
+      segment.startMs,
+      segment.endMs,
+      segment.transcript || null,
+      segment.caption || null,
+      now,
+      now
+    );
+  }
+
+  /**
+   * Get segments for a media item
+   */
+  getSegments(itemId: string): any[] {
+    return this.db.prepare(`
+      SELECT id, item_id, kind, start_ms, end_ms, transcript, caption, created_at, updated_at
+      FROM segments
+      WHERE item_id = ?
+      ORDER BY start_ms
+    `).all(itemId) as any[];
+  }
 }

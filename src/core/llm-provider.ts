@@ -48,11 +48,13 @@ export interface LLMProvider {
 
   /**
    * Classify query type for multi-modal search (spatial, temporal, audio, action)
+   * @deprecated Use classifyAndTransformQuery() instead - it's faster (single LLM call)
    */
   classifyQueryType(question: string): Promise<QueryClassification>;
 
   /**
    * Transform query based on classification for multi-modal search
+   * @deprecated Use classifyAndTransformQuery() instead - it's faster (single LLM call)
    */
   transformMultiModalQuery(question: string, classification: QueryClassification): Promise<MultiModalQuery>;
 
@@ -1133,6 +1135,63 @@ Output: ${JSON.stringify(example.output, null, 2)}`;
         .replace('{query}', question)
         .replace('{examples}', examplesList);
 
+      // Define JSON schema for structured output
+      const jsonSchema = {
+        type: 'object',
+        properties: {
+          classification: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['spatial', 'temporal', 'audio', 'action', 'mixed'] },
+              confidence: { type: 'number' },
+              subtypes: { type: 'array', items: { type: 'string' } },
+              temporalMarkers: {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: ['beginning', 'middle', 'end', 'specific', 'range'] },
+                  value: { type: 'string' }
+                }
+              },
+              spatialElements: { type: 'array', items: { type: 'string' } },
+              audioElements: { type: 'array', items: { type: 'string' } },
+              actionElements: { type: 'array', items: { type: 'string' } }
+            },
+            required: ['type', 'confidence', 'subtypes']
+          },
+          cleanedQueries: { type: 'array', items: { type: 'string' } },
+          stepBackQueries: { type: 'array', items: { type: 'string' } },
+          searchKeywords: {
+            type: 'object',
+            properties: {
+              text: { type: 'array', items: { type: 'string' } },
+              visual: { type: 'array', items: { type: 'string' } },
+              audio: { type: 'array', items: { type: 'string' } },
+              temporal: { type: 'array', items: { type: 'string' } },
+              action: { type: 'array', items: { type: 'string' } }
+            },
+            required: ['text', 'visual', 'audio', 'temporal', 'action']
+          },
+          embeddings: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              visual: { type: 'string' },
+              audio: { type: 'string' }
+            },
+            required: ['text']
+          },
+          filters: {
+            type: 'object',
+            properties: {
+              timeRange: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+              confidenceThreshold: { type: 'number' },
+              mediaTypes: { type: 'array', items: { type: 'string', enum: ['video', 'image', 'audio'] } }
+            }
+          }
+        },
+        required: ['classification', 'cleanedQueries', 'stepBackQueries', 'searchKeywords', 'embeddings', 'filters']
+      };
+
       let url = config.ai.embedUrl;
       url = `${url}/api/generate`;
 
@@ -1145,7 +1204,7 @@ Output: ${JSON.stringify(example.output, null, 2)}`;
           model,
           prompt,
           stream: false,
-          format: 'json',
+          format: jsonSchema,
           options: {
             temperature: 0.2,
             num_predict: 400

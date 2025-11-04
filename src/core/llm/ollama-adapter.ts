@@ -14,6 +14,7 @@ import {
   EmbedResponse,
   ProviderRuntimeConfig
 } from './types';
+import { readFileSync } from 'fs';
 
 export class OllamaAdapter implements ILLMAdapter {
   private baseUrl: string;
@@ -46,27 +47,42 @@ export class OllamaAdapter implements ILLMAdapter {
   }
   
   async chat(messages: Message[], options?: ChatOptions): Promise<ChatResponse> {
-    const model = options?.model || 'qwen3:4b';
+    const model = options?.model || 'phi3:3.8b';
+    
+    const requestBody: any = {
+      model,
+      messages: this.formatMessages(messages),
+      stream: false,
+      options: {
+        temperature: options?.temperature ?? 0.7,
+        num_predict: options?.maxTokens
+      }
+    };
+    
+    // Add format if specified (can be 'json' string or JSON schema object)
+    if (options?.format) {
+      requestBody.format = options.format;
+    }
     
     const response = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: this.formatMessages(messages),
-        stream: false,
-        options: {
-          temperature: options?.temperature ?? 0.7,
-          num_predict: options?.maxTokens
-        }
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(this.timeout)
     });
     
     const data = await response.json();
     
+    // Some models/endpoints may return content in different fields
+    // Qwen3 models use 'thinking' field for extended reasoning mode
+    const content = (data?.message && data.message.content)
+      || (data?.message && data.message.thinking)  // Qwen3 extended reasoning
+      || data?.response
+      || data?.content
+      || '';
+    
     return {
-      content: data.message.content,
+      content,
       model: data.model
     };
   }
@@ -130,22 +146,39 @@ export class OllamaAdapter implements ILLMAdapter {
   }
   
   private async loadImage(imageUrl: string): Promise<string> {
-    // If already base64, return as is
+    // If already base64 with data: prefix, extract base64 part
     if (imageUrl.startsWith('data:')) {
       return imageUrl.split(',')[1];
     }
     
+    // If the string looks like plain base64 (no prefix), return as-is
+    // Heuristics: long string, no whitespace, typical image prefixes or base64 charset
+    const looksLikeBase64 = (s: string): boolean => {
+      if (!s || s.length < 80) return false;
+      if (s.includes(' ') || s.includes('\n')) return false;
+      if (s.startsWith('/9j/') || s.startsWith('iVBORw0KG') || s.startsWith('R0lGOD') || s.startsWith('UklGR')) return true; // jpg/png/gif/webp
+      return /^[A-Za-z0-9+/=]+$/.test(s);
+    };
+    if (looksLikeBase64(imageUrl)) {
+      return imageUrl;
+    }
+    
     // If file path, read and convert to base64
-    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/')) {
-      const fs = require('fs');
+    if (imageUrl.startsWith('file://') || imageUrl.startsWith('/') || imageUrl.startsWith('\\')) {
       const path = imageUrl.replace('file://', '');
-      const buffer = fs.readFileSync(path);
+      const buffer = readFileSync(path);
       return buffer.toString('base64');
     }
     
-    // If HTTP URL, fetch and convert
-    const response = await fetch(imageUrl);
-    const buffer = await response.arrayBuffer();
-    return Buffer.from(buffer).toString('base64');
+    // If HTTP/HTTPS URL, fetch and convert
+    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      const response = await fetch(imageUrl);
+      const buffer = await response.arrayBuffer();
+      return Buffer.from(buffer).toString('base64');
+    }
+    
+    // Otherwise, assume it's already plain base64 (no prefix, no path)
+    // This handles the case where VisionService passes plain base64 for Ollama
+    return imageUrl;
   }
 }

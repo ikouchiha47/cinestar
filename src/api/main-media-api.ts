@@ -38,7 +38,7 @@ export class MainMediaAPI {
   private static reconciliationInterval: NodeJS.Timeout | null = null;
   private static mainWindow: any = null; // BrowserWindow reference for IPC events
   // Strategy/config
-  private static flags: StrategyFlags = { dualWrite: false, useNewCatalog: false, useNewImageSearch: true, useNewAVSearch: false };
+  private static flags: StrategyFlags = { dualWrite: false, useNewCatalog: false, useNewImageSearch: true, useNewAVSearch: true };
   private static partitions: Record<string, { id: string; role: string; file_path: string }> = {};
   private static sourcePartitionMap: Record<string, { catalog_partition_id: string; image_partition_id: string; av_partition_id: string }> = {};
   private static canonical: CanonicalMediaDatabase | null = null;
@@ -51,6 +51,28 @@ export class MainMediaAPI {
    */
   static setMainWindow(window: any): void {
     this.mainWindow = window;
+  }
+
+  /**
+   * Load user config from config.json (or config.dev.json in dev mode)
+   */
+  private static async loadUserConfig(baseDir: string): Promise<any> {
+    try {
+      const isDev = process.env.NODE_ENV === 'development';
+      const configFileName = isDev ? 'config.dev.json' : 'config.json';
+      const configPath = path.join(baseDir, configFileName);
+      
+      if (!await fs.access(configPath).then(() => true).catch(() => false)) {
+        console.log('[MainMediaAPI] Config file not found:', configPath);
+        return null;
+      }
+      
+      const configData = await fs.readFile(configPath, 'utf8');
+      return JSON.parse(configData);
+    } catch (error) {
+      console.warn('[MainMediaAPI] Failed to load user config:', error);
+      return null;
+    }
   }
 
   /**
@@ -244,16 +266,34 @@ export class MainMediaAPI {
     this.db = new SqliteMainDatabase(filePath);
     this.backendType = 'sqlite';
     this.dbPathInfo = filePath;
-    // Load config and strategy flags
+    // Load config and strategy flags from config.json
     try {
       const configDbPath = path.join(baseDir, 'config.db');
       this.configStore = new ConfigStore(configDbPath, baseDir);
-      this.flags = this.configStore.loadFlags();
       this.partitions = this.configStore.loadPartitions();
       this.sourcePartitionMap = this.configStore.loadSourcePartitionMap();
-      console.log('[STRATEGY] Selected flags:', this.flags);
+      
+      // Derive strategy flags from config.json features instead of config.db
+      const userConfig = await this.loadUserConfig(baseDir);
+      const hasVideoOrAudio = userConfig?.features?.videos || userConfig?.features?.audio;
+      
+      this.flags = {
+        dualWrite: true,
+        useNewCatalog: true,
+        useNewImageSearch: true,
+        useNewAVSearch: hasVideoOrAudio // Enable AV search if user selected video/audio features
+      };
+      
+      console.log('[STRATEGY] Derived flags from config.json:', this.flags, '(features:', userConfig?.features, ')');
     } catch (e) {
-      console.warn('[MainMediaAPI] Failed to load config store/flags - defaulting', e);
+      console.warn('[MainMediaAPI] Failed to load config - using defaults', e);
+      // Safe defaults
+      this.flags = {
+        dualWrite: true,
+        useNewCatalog: true,
+        useNewImageSearch: true,
+        useNewAVSearch: false
+      };
     }
 
     // Seed modality caches (idempotent) right after migrations and config load
@@ -1976,6 +2016,7 @@ export class MainMediaAPI {
               type,
               mimeType,
               sourceId: r.sourceId,
+              thumb: r.thumb,  // Preserve thumbnail path for videos
               createdAt: r.createdAt || new Date(),
               score: typeof r.score === 'number' ? r.score : undefined,
             };
@@ -2304,7 +2345,7 @@ export class MainMediaAPI {
   }
 
   /**
-   * Reload configuration from config.db and rebuild strategy/search stores.
+   * Reload configuration from config.json and rebuild strategy/search stores.
    */
   static async reloadConfiguration(): Promise<{ success: boolean; error?: string }> {
     try {
@@ -2312,10 +2353,21 @@ export class MainMediaAPI {
       const baseDir = this.dataDirPath || getDefaultDataDir();
       const configDbPath = path.join(baseDir, 'config.db');
       this.configStore = new ConfigStore(configDbPath, baseDir);
-      this.flags = this.configStore.loadFlags();
       this.partitions = this.configStore.loadPartitions();
       this.sourcePartitionMap = this.configStore.loadSourcePartitionMap();
-      console.log('[STRATEGY] Reloaded flags:', this.flags);
+      
+      // Derive strategy flags from config.json features
+      const userConfig = await this.loadUserConfig(baseDir);
+      const hasVideoOrAudio = userConfig?.features?.videos || userConfig?.features?.audio;
+      
+      this.flags = {
+        dualWrite: true,
+        useNewCatalog: true,
+        useNewImageSearch: true,
+        useNewAVSearch: hasVideoOrAudio
+      };
+      
+      console.log('[STRATEGY] Reloaded flags from config.json:', this.flags);
 
       // Recreate canonical adapter
       try {

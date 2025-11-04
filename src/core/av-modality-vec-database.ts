@@ -158,16 +158,18 @@ export class AVModalityVecDatabase {
     limit?: number; 
     alpha?: number; 
     cutoff?: { tsISO: string; id: string }; 
-    minSimilarity?: number;
-    maxDistance?: number;
+    minSimilarity?: number;    // Hybrid score cutoff
+    minVectorSim?: number;     // Vector similarity cutoff (pre-merge)
+    maxDistance?: number;      // Legacy distance cutoff (deprecated)
   } = {}) {
     const limit = options.limit || 10;
     const alpha = options.alpha ?? 0.75;
     const minSimilarity = options.minSimilarity ?? 0.5;
-    const maxDistance = options.maxDistance ?? 0.4;
+    const minVectorSim = options.minVectorSim ?? 0.50;  // Lower than image (0.60) for video
+    const maxDistance = options.maxDistance ?? 0;
 
     console.log(`[AV-HYBRID] Starting hybrid search for: "${query}"`);
-    console.log(`[AV-HYBRID] alpha=${alpha}, minSimilarity=${minSimilarity}, maxDistance=${maxDistance}, limit=${limit}`);
+    console.log(`[AV-HYBRID] alpha=${alpha}, minSimilarity=${minSimilarity}, minVectorSim=${minVectorSim}, maxDistance=${maxDistance}, limit=${limit}`);
 
     const [vec, fts] = await Promise.all([
       this.searchSimilar(embedding, limit * 3, options.cutoff),
@@ -175,10 +177,23 @@ export class AVModalityVecDatabase {
     ]);
 
     console.log(`[AV-HYBRID] Raw results - Vector: ${vec.results.length}, FTS: ${fts.results.length}`);
+    
+    // Log actual distances and similarities for debugging
+    if (vec.results.length > 0) {
+      const top5 = vec.results.slice(0, 5);
+      console.log(`[AV-HYBRID] Top vector results (distance → similarity):`);
+      top5.forEach((r, i) => {
+        console.log(`  ${i + 1}. dist=${r.distance.toFixed(2)} → sim=${r.similarity.toFixed(3)}`);
+      });
+    }
 
-    // Apply distance cutoff to vector results
-    const filteredVec = vec.results.filter(r => (r as any).distance <= maxDistance);
-    console.log(`[AV-HYBRID] After distance cutoff (≤${maxDistance}): ${filteredVec.length} vector results`);
+    // Filter by similarity (after distance-to-similarity conversion), not raw distance
+    let filteredVec = vec.results.filter(r => r.similarity >= minVectorSim);
+    console.log(`[AV-HYBRID] After vector cutoff (≥${minVectorSim}): ${filteredVec.length} vector results`);
+    if (maxDistance && maxDistance > 0) {
+      filteredVec = filteredVec.filter(r => r.distance <= maxDistance);
+      console.log(`[AV-HYBRID] After legacy distance cutoff (≤${maxDistance}): ${filteredVec.length} vector results`);
+    }
 
     const map = new Map<string, { item: AVHybridResult; vs: number; fs: number; distance?: number }>();
     

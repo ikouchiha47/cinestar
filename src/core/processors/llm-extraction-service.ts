@@ -1,4 +1,5 @@
 import { ProviderManager } from '../llm/provider-manager';
+import { ConfigManager } from '../config';
 
 /**
  * Structured elements extracted from image captions
@@ -20,7 +21,14 @@ export interface ExtractedElements {
 export class LLMExtractionService {
   private providerManager: ProviderManager;
 
-  constructor(providerManager: ProviderManager) {
+  constructor(providerManager?: ProviderManager) {
+    // Create default ProviderManager if not provided
+    if (!providerManager) {
+      const config = ConfigManager.getConfig();
+      const llmConfig = (config as any).llm || ProviderManager.getDefaultConfig();
+      providerManager = new ProviderManager(llmConfig);
+    }
+    
     this.providerManager = providerManager;
     const activeProvider = providerManager.getActiveProvider();
     const model = providerManager.getModelForTask('text');
@@ -42,20 +50,56 @@ export class LLMExtractionService {
     try {
       const adapter = this.providerManager.getProviderForTask('text');
       
-      // Use chat API with system message for extraction
-      const response = await adapter.chat([
-        {
-          role: 'system',
-          content: 'You are a helpful assistant that extracts structured information from image descriptions.'
+      // Define JSON schema for structured extraction
+      const jsonSchema = {
+        type: 'object',
+        properties: {
+          objects: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of objects visible in the image'
+          },
+          people: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'List of people or their descriptions'
+          },
+          colors: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Dominant colors in the image'
+          },
+          lighting: {
+            type: 'string',
+            description: 'Brief description of lighting conditions'
+          },
+          time: {
+            type: 'string',
+            description: 'Time of day (e.g., morning, afternoon, evening, night)'
+          },
+          setting: {
+            type: 'string',
+            description: 'Brief location or setting description'
+          },
+          mood: {
+            type: 'string',
+            description: 'Optional mood or atmosphere'
+          }
         },
+        required: ['objects', 'people', 'colors', 'lighting', 'time', 'setting']
+      };
+      
+      // Use chat API with JSON schema for structured output
+      const response = await adapter.chat([
         {
           role: 'user',
           content: prompt
         }
       ], {
         model,
-        temperature: 0.7,
-        maxTokens: 500
+        temperature: 0.3,
+        maxTokens: 500,
+        format: jsonSchema
       });
 
       const extractedText = response.content?.trim() || '';
@@ -69,7 +113,8 @@ export class LLMExtractionService {
         return this.getFallbackElements();
       }
 
-      const parsed = this.parseExtractedElements(extractedText);
+      // Parse JSON response
+      const parsed = this.parseJsonResponse(extractedText);
       console.log(`[LLM-EXTRACTION] ✅ Extracted:`, {
         objects: parsed.objects.length,
         people: parsed.people.length,
@@ -86,26 +131,51 @@ export class LLMExtractionService {
   }
 
   /**
-   * Build extraction prompt for llama3.2
+   * Build extraction prompt for JSON output
    */
   private buildExtractionPrompt(caption: string): string {
-    return `Extract structured information from this image description. Return ONLY a concise list in this exact format:
+    return `Extract structured information from this image description and return it as JSON.
 
-OBJECTS: [comma-separated list]
-PEOPLE: [comma-separated list or 'none']
-COLORS: [comma-separated list]
-LIGHTING: [brief description]
-TIME: [time of day]
-SETTING: [brief location description]
-MOOD: [optional mood/atmosphere]
+Description: ${caption}
 
-/nothink
+Extract:
+- objects: array of objects visible in the image
+- people: array of people descriptions (empty array if none)
+- colors: array of dominant colors
+- lighting: brief description of lighting conditions
+- time: time of day (morning/afternoon/evening/night/unknown)
+- setting: brief location description
+- mood: optional mood or atmosphere
 
-Description: ${caption}`;
+Return valid JSON only.`;
   }
 
   /**
-   * Parse LLM response into structured elements
+   * Parse JSON response into structured elements
+   */
+  private parseJsonResponse(text: string): ExtractedElements {
+    try {
+      const json = JSON.parse(text);
+      
+      return {
+        objects: Array.isArray(json.objects) && json.objects.length > 0 ? json.objects : ['unknown'],
+        people: Array.isArray(json.people) ? json.people : [],
+        colors: Array.isArray(json.colors) && json.colors.length > 0 ? json.colors : ['unknown'],
+        lighting: json.lighting || 'unknown',
+        time: json.time || 'unknown',
+        setting: json.setting || 'unknown',
+        mood: json.mood || undefined
+      };
+    } catch (error) {
+      console.error('[LLM-EXTRACTION] JSON parse failed:', error);
+      console.error('[LLM-EXTRACTION] Raw text:', text);
+      // Fallback to old parsing method
+      return this.parseExtractedElements(text);
+    }
+  }
+  
+  /**
+   * Parse LLM response into structured elements (fallback for non-JSON)
    */
   private parseExtractedElements(text: string): ExtractedElements {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
