@@ -360,8 +360,13 @@ export class VideoMediaAPI {
     try {
       console.log('[VIDEO-JOB-RECOVERY] Checking for stalled video processing jobs...');
       
-      // Get all jobs and find stalled ones using multiple criteria
-      const jobs = await this.videoDb.getJobs();
+      // Get all video jobs from jobs.db (unified database)
+      const jobs = this.jobsDb!.db.prepare(`
+        SELECT id, file_path, status, started_at, created_at
+        FROM indexing_jobs
+        WHERE job_type = 'video_processing'
+      `).all() as any[];
+      
       const now = new Date();
       const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
       const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
@@ -369,22 +374,28 @@ export class VideoMediaAPI {
       
       const stalledJobs = jobs.filter(job => {
         // Case 1: Pending jobs that never started (>5 min old)
-        if (job.status === 'pending' && job.createdAt && new Date(job.createdAt) < fiveMinutesAgo) {
+        if (job.status === 'pending' && job.created_at && new Date(job.created_at) < fiveMinutesAgo) {
           return true;
         }
         
         // Case 2: Processing jobs running too long (>20 min)
-        if (job.status === 'processing' && job.startTime && new Date(job.startTime) < twentyMinutesAgo) {
+        if (job.status === 'processing' && job.started_at && new Date(job.started_at) < twentyMinutesAgo) {
           return true;
         }
         
         // Case 3: Scheduled jobs that never got picked up (>10 min)
-        if (job.status === 'scheduled' && job.createdAt && new Date(job.createdAt) < tenMinutesAgo) {
+        if (job.status === 'scheduled' && job.created_at && new Date(job.created_at) < tenMinutesAgo) {
           return true;
         }
         
         return false;
-      });
+      }).map(job => ({
+        id: job.id,
+        videoPath: job.file_path,
+        status: job.status,
+        startTime: job.started_at,
+        createdAt: job.created_at
+      }));
       
       console.log(`[VIDEO-JOB-RECOVERY] Found ${stalledJobs.length} stalled video jobs`);
       

@@ -2,6 +2,11 @@
  * Application configuration settings
  */
 export interface AppConfig {
+  branding?: {
+    appName: string;
+    tagline: string;
+    logoPath: string;
+  };
   indexing: {
     concurrencyLimit: number;
     batchSize: number;
@@ -117,6 +122,11 @@ const defaultDbPath = process.env.VECTOR_DB_PATH ||
   (isDev ? './data/vector.db' : path.join(os.homedir(), '.cinestar', 'vector.db'));
 
 export const DEFAULT_CONFIG: AppConfig = {
+  branding: {
+    appName: "Cinestar",
+    tagline: "AI-Powered Media Search",
+    logoPath: "./cinestar-app.png"
+  },
   indexing: {
     concurrencyLimit: 3, // Process 1 image at a time to avoid Ollama crashes
     batchSize: 10, // Standard batch size
@@ -291,6 +301,16 @@ export class ConfigManager {
     };
 
     console.log('📋 [CONFIG] Configuration updated:', this.config);
+  }
+
+  /**
+   * Get branding configuration
+   */
+  static getBranding(): { appName: string; tagline: string; logoPath: string } {
+    if (!this.config.branding) {
+      throw new Error('Branding configuration not found in config');
+    }
+    return this.config.branding;
   }
 
   /**

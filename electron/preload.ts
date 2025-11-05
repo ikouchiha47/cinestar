@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('whisper:setup:signal', listener);
     return () => ipcRenderer.removeListener('whisper:setup:signal', listener);
   },
+  
+  // Branding configuration (synchronous for immediate access)
+  getBranding: () => ipcRenderer.sendSync('app:getBranding'),
 })
 
 // Expose MediaAPI for the renderer process

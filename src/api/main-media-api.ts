@@ -214,11 +214,18 @@ export class MainMediaAPI {
         }
         try {
           if (this.flags.useNewAVSearch) {
+            console.log('[SEARCH-ROUTE] Attempting to initialize AVHybridStore...');
             const avDb = new AVModalityVecDatabase(path.join(baseDir, 'av_search.db'));
-            avStores.push(new AVHybridStore(avDb, this.llm));
+            const avHybridStore = new AVHybridStore(avDb, this.llm);
+            avStores.push(avHybridStore);
+            console.log('[SEARCH-ROUTE] ✅ AVHybridStore initialized successfully');
+          } else {
+            console.log('[SEARCH-ROUTE] ⚠️  useNewAVSearch is disabled, using fallback AVSearchStoreSqlite only');
           }
         } catch (e) {
-          console.warn('[SEARCH-ROUTE] Failed to initialize AVModalityVecDatabase (non-fatal):', e);
+          console.error('[SEARCH-ROUTE] ❌ Failed to initialize AVModalityVecDatabase:', e);
+          console.error('[SEARCH-ROUTE] Stack trace:', (e as Error).stack);
+          console.warn('[SEARCH-ROUTE] Falling back to AVSearchStoreSqlite (path-only search)');
         }
       }
 
@@ -1378,17 +1385,17 @@ export class MainMediaAPI {
    * Start background reconciliation service
    */
   static startBackgroundReconciliation(): void {
-    // Run reconciliation every 30 minutes (infrequent)
-    const RECONCILIATION_INTERVAL = 30 * 60 * 1000; // 30 minutes
+    // Run reconciliation every 5 minutes (more frequent to catch stalled jobs)
+    const RECONCILIATION_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
-    console.log('[JOB-RECONCILIATION] Starting background reconciliation service (every 30 minutes)');
+    console.log('[JOB-RECONCILIATION] Starting background reconciliation service (every 5 minutes)');
 
-    // Initial reconciliation after 2 minutes (let app settle)
+    // Initial reconciliation after 1 minute (quick check for stalled jobs from previous session)
     setTimeout(() => {
       this.runReconciliation().catch((error: any) => {
         console.warn('[JOB-RECONCILIATION] Initial reconciliation failed:', error);
       });
-    }, 2 * 60 * 1000); // 2 minutes
+    }, 60 * 1000); // 1 minute
 
     // Then run periodically
     this.reconciliationInterval = setInterval(() => {
@@ -1419,17 +1426,27 @@ export class MainMediaAPI {
     let unindexedImagesCount = 0;
 
     try {
-      // 1. Check for stalled jobs (only if no active jobs to avoid conflicts)
-      const activeJobs = await this.jobsDb!.getActiveJobs();
-      if (activeJobs.length === 0) {
-        console.log('[JOB-RECONCILIATION] No active jobs - checking for stalled jobs');
-        const stalledResult = await this.recoverStalledJobs();
-        stalledJobsCount = stalledResult.recoveredCount;
-      } else {
-        console.log(`[JOB-RECONCILIATION] ${activeJobs.length} active jobs running - skipping stalled job check`);
+      // 1. Always check for stalled image jobs (independent of other job types)
+      const { ImageJobCoordinator } = await import('../core/image-job-coordinator');
+      const coordinator = ImageJobCoordinator.getInstance(this.jobsDb!);
+      const stalledImageJobs = await coordinator.resetStalledJobs(5); // 5 minute timeout
+      
+      if (stalledImageJobs > 0) {
+        console.log(`[JOB-RECONCILIATION] Reset ${stalledImageJobs} stalled image jobs`);
+        stalledJobsCount += stalledImageJobs;
       }
 
-      // 2. Check for unindexed images (less aggressive)
+      // 2. Check for stalled indexing jobs (only if no active jobs to avoid conflicts)
+      const activeJobs = await this.jobsDb!.getActiveJobs();
+      if (activeJobs.length === 0) {
+        console.log('[JOB-RECONCILIATION] No active jobs - checking for stalled indexing jobs');
+        const stalledResult = await this.recoverStalledJobs();
+        stalledJobsCount += stalledResult.recoveredCount;
+      } else {
+        console.log(`[JOB-RECONCILIATION] ${activeJobs.length} active jobs running - skipping indexing job stall check`);
+      }
+
+      // 3. Check for unindexed images (less aggressive)
       const unindexedResult = await this.indexUnprocessedImages();
       if (unindexedResult.success && unindexedResult.unindexedCount) {
         unindexedImagesCount = unindexedResult.unindexedCount;

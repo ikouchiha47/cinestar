@@ -146,4 +146,49 @@ export class ImageJobCoordinator {
     
     return result;
   }
+
+  /**
+   * Detect and reset stalled image jobs
+   * A job is considered stalled if it's been in 'running' state for more than the timeout
+   * 
+   * @param timeoutMinutes - How long a job can be running before it's considered stalled (default: 5 minutes)
+   * @returns Number of jobs reset
+   */
+  async resetStalledJobs(timeoutMinutes: number = 5): Promise<number> {
+    const timeoutMs = timeoutMinutes * 60 * 1000;
+    const cutoffTime = new Date(Date.now() - timeoutMs).toISOString();
+    
+    // Find jobs that have been running for too long
+    const stalledJobs = this.db.db.prepare(`
+      SELECT id, file_name, started_at
+      FROM indexing_jobs
+      WHERE job_type = 'image_processing'
+        AND status = 'running'
+        AND started_at < ?
+    `).all(cutoffTime) as any[];
+    
+    if (stalledJobs.length === 0) {
+      return 0;
+    }
+    
+    console.log(`[IMAGE-COORDINATOR] 🔧 Found ${stalledJobs.length} stalled image jobs (running > ${timeoutMinutes} min)`);
+    
+    // Reset them back to pending for retry
+    const ids = stalledJobs.map(j => j.id);
+    const placeholders = ids.map(() => '?').join(',');
+    
+    this.db.db.prepare(`
+      UPDATE indexing_jobs 
+      SET status = 'pending',
+          started_at = NULL,
+          last_error = 'Job stalled - reset for retry'
+      WHERE id IN (${placeholders})
+    `).run(...ids);
+    
+    stalledJobs.forEach(job => {
+      console.log(`[IMAGE-COORDINATOR] 🔄 Reset stalled job: ${job.file_name} (started: ${job.started_at})`);
+    });
+    
+    return stalledJobs.length;
+  }
 }

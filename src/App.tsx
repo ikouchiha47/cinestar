@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { SimplifiedOnboarding } from './components/SimplifiedOnboarding';
+import { BrandingManager } from './core/branding';
 const DrillerV2 = lazy(() => import('./components/v2/DrillerV2'));
 
 // Icon components (only what's used in this file)
@@ -33,6 +34,12 @@ function App() {
   // Track whether the indexing drawer is open to avoid log spam when closed
   const indexOpenRef = useRef<boolean>(false);
   useEffect(() => { indexOpenRef.current = indexDrawerOpen; }, [indexDrawerOpen]);
+
+  // Set document title from branding
+  useEffect(() => {
+    const branding = BrandingManager.getBranding();
+    document.title = `${branding.appName} - ${branding.tagline}`;
+  }, []);
 
   useEffect(() => {
     try {

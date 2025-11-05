@@ -1,11 +1,15 @@
+import React from 'react';
 import { motion } from 'framer-motion';
 import { DrillbitLogoImage } from '../DrillbitLogoImage';
+import { BrandingManager } from '../../core/branding';
 
 interface WelcomeScreenProps {
   onGetStarted: () => void;
 }
 
-export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
+export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onGetStarted }) => {
+  const branding = BrandingManager.getBranding();
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-br from-neutral-950 via-neutral-900 to-neutral-950">
       <motion.div
@@ -31,7 +35,7 @@ export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
           transition={{ delay: 0.3, duration: 0.5 }}
           className="text-5xl font-bold text-white mb-4"
         >
-          Welcome to Cinestar
+          Welcome to {branding.appName}
         </motion.h1>
 
         {/* Subtitle */}

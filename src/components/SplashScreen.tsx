@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DrillbitLogoImage } from './DrillbitLogoImage';
+import { BrandingManager } from '../core/branding';
 
 interface SplashScreenProps {
   onComplete: () => void;
@@ -12,6 +13,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
   duration = 3000 
 }) => {
   const [isVisible, setIsVisible] = useState(true);
+  const branding = BrandingManager.getBranding();
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -125,7 +127,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
               className="text-5xl font-bold text-white mb-4 tracking-wider"
             >
               <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-blue-400 bg-clip-text text-transparent">
-                Cinestar
+                {branding.appName}
               </span>
             </motion.h1>
 

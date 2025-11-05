@@ -1,12 +1,17 @@
 {
   "version": 1,
+  "branding": {
+    "appName": "Cinestar",
+    "tagline": "AI-Powered Media Search",
+    "logoPath": "./cinestar-app.png"
+  },
   "onboarding": {
     "complete": false,
     "firstLaunchDate": null
   },
   "features": {
     "images": true,
-    "videos": false,
+    "videos": true,
     "audio": false
   },
   "workers": {

@@ -133,9 +133,11 @@ export class SearchScoringService {
     }
 
     // Sort by adaptive score
-    scoredResults.sort((a, b) => b.adaptiveScore - a.adaptiveScore);
+    scoredResults.sort((a, b) => (b.adaptiveScore || 0) - (a.adaptiveScore || 0));
 
-    console.log(`[SEARCH-SCORING] Top result: ${scoredResults[0]?.adaptiveScore.toFixed(3)} (base: ${scoredResults[0]?.similarity.toFixed(3)})`);
+    if (scoredResults.length > 0 && scoredResults[0]?.adaptiveScore !== undefined && scoredResults[0]?.score !== undefined) {
+      console.log(`[SEARCH-SCORING] Top result: ${scoredResults[0].adaptiveScore.toFixed(3)} (base: ${scoredResults[0].score.toFixed(3)})`);
+    }
     
     return scoredResults;
   }

@@ -55,8 +55,8 @@ export class AVHybridStore implements IAVSearchStore {
       limit,
       alpha: this.alpha,
       cutoff,
-      minSimilarity: 0.5,   // Hybrid score threshold (same as image search)
-      minVectorSim: 0.50    // Vector similarity threshold (lower than image's 0.60 for video)
+      minSimilarity: 0.6,   // Hybrid score threshold - increased to reduce false positives
+      minVectorSim: 0.65    // Vector similarity threshold - increased to require stronger semantic match
     });
 
     const items: SearchItem[] = [];

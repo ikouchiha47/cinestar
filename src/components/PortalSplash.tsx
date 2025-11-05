@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { DrillbitLogoImage } from './DrillbitLogoImage';
+import { BrandingManager } from '../core/branding';
 
 interface PortalSplashProps {
   visible: boolean;
@@ -11,7 +12,8 @@ interface PortalSplashProps {
  * - Clean, minimal design
  * - Shows logo and loading text
  */
-export const PortalSplash: React.FC<PortalSplashProps> = ({ visible }) => {
+export const PortalSplash: React.FC<PortalSplashProps> = ({ visible, onComplete }) => {
+  const branding = BrandingManager.getBranding();
   if (!visible) return null;
 
   return (
@@ -46,7 +48,7 @@ export const PortalSplash: React.FC<PortalSplashProps> = ({ visible }) => {
           transition={{ duration: 0.5, delay: 0.1 }}
           className="text-3xl font-bold text-white mb-6 tracking-wide"
         >
-          Cinestar
+          {branding.appName}
         </motion.h1>
 
         <motion.div

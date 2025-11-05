@@ -19,6 +19,7 @@ import { attachPartialSegmentWriter } from '../src/orchestrator'
 import { autoTuneFFmpegThreads } from '../src/core/auto-tuner'
 import { getMimeType } from '../src/core/utils'
 import { initializeLLMConfigHandler } from '../src/main/llm-config-handler'
+import { ConfigManager } from '../src/core/config'
 
 // ESM-safe __filename and __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -95,6 +96,26 @@ async function waitForUrl(url: string, timeoutMs = 15000, intervalMs = 250): Pro
 
 async function createWindow() {
   console.log('[MAIN-PROCESS] Creating BrowserWindow at:', new Date().toISOString());
+  
+  // Get branding from runtime config file
+  let appName = "Cinestar"; // Default fallback
+  try {
+    const configPath = IS_DEV 
+      ? path.join(DATA_DIR, 'config.dev.json')
+      : path.join(DATA_DIR, 'config.json');
+    
+    if (fs.existsSync(configPath)) {
+      const configData = fs.readFileSync(configPath, 'utf8');
+      const config = JSON.parse(configData);
+      if (config.branding?.appName) {
+        appName = config.branding.appName;
+        console.log('[MAIN-PROCESS] Using branding from config:', appName);
+      }
+    }
+  } catch (error) {
+    console.error('[MAIN-PROCESS] Failed to read branding from config:', error);
+  }
+  
   win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -102,7 +123,7 @@ async function createWindow() {
     minHeight: 600,
     backgroundColor: '#0b0b0b',
     show: true,
-    title: 'Cinestar',
+    title: appName,
     icon: path.join(process.env.VITE_PUBLIC, 'icons', 'icon-256.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -340,6 +361,34 @@ ipcMain.handle('app:getDataDir', async () => {
     // ignore
   }
   return DATA_DIR
+});
+
+// Expose branding configuration to renderer (synchronous)
+ipcMain.on('app:getBranding', (event) => {
+  try {
+    // Read from runtime config file, not backend config
+    const configPath = IS_DEV 
+      ? path.join(DATA_DIR, 'config.dev.json')
+      : path.join(DATA_DIR, 'config.json');
+    
+    if (fs.existsSync(configPath)) {
+      const configData = fs.readFileSync(configPath, 'utf8');
+      const config = JSON.parse(configData);
+      if (config.branding) {
+        event.returnValue = config.branding;
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('[BRANDING] Failed to read branding from config:', error);
+  }
+  
+  // Fallback to defaults
+  event.returnValue = {
+    appName: "Cinestar",
+    tagline: "AI-Powered Media Search",
+    logoPath: "./cinestar-app.png"
+  };
 });
 
 // Initialize MediaAPI in main process
@@ -1244,6 +1293,18 @@ ipcMain.handle('config:get', async () => {
         console.log('[CONFIG] Added missing workers section to config');
       }
       
+      // Ensure branding section exists (migration for existing configs)
+      if (!config.branding) {
+        (config as any).branding = {
+          appName: "Cinestar",
+          tagline: "AI-Powered Media Search",
+          logoPath: "./cinestar-app.png"
+        };
+        console.log('[CONFIG] Added missing branding section to config');
+        // Save the updated config
+        await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+      }
+      
       // Merge modelDownloaded from preferences.json (single source of truth)
       try {
         const preferencesPath = path.join(DATA_DIR, 'preferences.json');
@@ -1263,20 +1324,23 @@ ipcMain.handle('config:get', async () => {
       return config;
     }
     
-    // Try to copy from template in production builds
-    if (!IS_DEV) {
-      try {
-        const templatePath = path.join(process.resourcesPath, 'config.template.json');
-        if (fs.existsSync(templatePath)) {
-          await fs.promises.copyFile(templatePath, CONFIG_FILE);
-          const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
-          const config = JSON.parse(configData);
-          console.log('[CONFIG] Created config from template:', CONFIG_FILE);
-          return config;
-        }
-      } catch (error) {
-        console.warn('[CONFIG] Failed to copy template, creating default:', error);
+    // Try to copy from template (both dev and production)
+    try {
+      const templatePath = IS_DEV
+        ? path.join(__dirname, '..', 'config.template.json')  // Dev: use repo file
+        : path.join(process.resourcesPath, 'config.template.json');  // Prod: use packaged file
+      
+      if (fs.existsSync(templatePath)) {
+        await fs.promises.copyFile(templatePath, CONFIG_FILE);
+        const configData = await fs.promises.readFile(CONFIG_FILE, 'utf8');
+        const config = JSON.parse(configData);
+        console.log('[CONFIG] Created config from template:', templatePath, '→', CONFIG_FILE);
+        return config;
+      } else {
+        console.warn('[CONFIG] Template not found at:', templatePath);
       }
+    } catch (error) {
+      console.warn('[CONFIG] Failed to copy template, creating default:', error);
     }
     
     // Initialize defaults from ConfigManager if no config exists
@@ -1285,6 +1349,11 @@ ipcMain.handle('config:get', async () => {
     
     const defaultConfig = {
       version: 1,
+      branding: {
+        appName: "Cinestar",
+        tagline: "AI-Powered Media Search",
+        logoPath: "./cinestar-app.png"
+      },
       onboarding: {
         complete: false,
         firstLaunchDate: null

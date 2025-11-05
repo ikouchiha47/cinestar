@@ -4,6 +4,7 @@ import { VideoPlayerModal } from '../VideoPlayer/VideoPlayerModal';
 import { ImageViewerModal } from '../ImageViewer/ImageViewerModal';
 import { useVideoPlayer } from '../../hooks/useVideoPlayer';
 import { useImageViewer } from '../../hooks/useImageViewer';
+import { BrandingManager } from '../../core/branding';
 
 // Import decomposed components
 import { Icon } from './components/Icons';
@@ -19,6 +20,9 @@ import { Scope, Place, MediaT } from './types';
 
 export default function DrillerV2(props: { overallProgress?: number; onOpenIndexing: () => void }) {
   const { overallProgress = -1, onOpenIndexing } = props;
+
+  // Get branding from config
+  const branding = BrandingManager.getBranding();
 
   // Video player state
   const { playerState, openVideoPlayer, closeVideoPlayer } = useVideoPlayer();
@@ -529,8 +533,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
             </button>
           </div>
           <div className="text-center">
-            <div className="text-lg font-semibold tracking-tight">Cinestar</div>
-            <div className="text-[11px] text-neutral-400">Media Search</div>
+            <div className="text-lg font-semibold tracking-tight">{branding.appName}</div>
+            <div className="text-[11px] text-neutral-400">{branding.tagline}</div>
           </div>
           <div className="flex items-center justify-end gap-2">
             <button 

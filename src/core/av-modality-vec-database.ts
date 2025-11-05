@@ -127,7 +127,7 @@ export class AVModalityVecDatabase {
       WITH ranked AS (
         SELECT m.segment_id as id, m.item_id as itemId, m.path, m.media_type as mediaType, m.start_ms as startMs, m.end_ms as endMs, m.created_at as createdAt, bm25(transcripts_fts) as fts_score
         FROM transcripts_fts f
-        JOIN av_meta_cache m ON f.rowid = m.segment_id
+        JOIN av_meta_cache m ON f.segment_id = m.segment_id
         WHERE transcripts_fts MATCH ?
       )
       SELECT * FROM ranked

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { DrillbitLogoImage } from './DrillbitLogoImage';
+import { BrandingManager } from '../core/branding';
 import PortalSplash from './PortalSplash';
 import { SetupProgress } from './SetupProgress';
 import { ModelManager } from '../core/model-manager';
@@ -20,8 +21,9 @@ interface SetupTask {
   size?: string;
 }
 
-export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: SimplifiedOnboardingProps) {
+export const SimplifiedOnboarding: React.FC<SimplifiedOnboardingProps> = ({ onComplete, onCheckOnboarding }) => {
   const [currentStep, setCurrentStep] = useState<'splash' | 'welcome' | 'features' | 'provider' | 'download' | 'complete'>('splash');
+  const branding = BrandingManager.getBranding();
   const [selectedFeatures, setSelectedFeatures] = useState({ videos: false, audio: false });
   const [selectedProvider, setSelectedProvider] = useState<'ollama' | 'openai' | 'litellm'>('ollama');
   const [setupTasks, setSetupTasks] = useState<SetupTask[]>([]);
@@ -92,6 +94,15 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
       };
       await window.ipcRenderer.invoke('config:set', updatedConfig);
       console.log('[SIMPLIFIED-ONBOARDING] Feature preferences saved');
+      
+      // Reload MediaAPI configuration to apply feature changes
+      console.log('[SIMPLIFIED-ONBOARDING] Reloading MediaAPI configuration...');
+      const reloadResult = await window.ipcRenderer.invoke('config:reload');
+      if (reloadResult.success) {
+        console.log('[SIMPLIFIED-ONBOARDING] MediaAPI configuration reloaded successfully');
+      } else {
+        console.error('[SIMPLIFIED-ONBOARDING] Failed to reload MediaAPI configuration:', reloadResult.error);
+      }
     } catch (error) {
       console.error('[SIMPLIFIED-ONBOARDING] Failed to save preferences:', error);
     }
@@ -368,7 +379,7 @@ export function SimplifiedOnboarding({ onComplete, onCheckOnboarding }: Simplifi
             transition={{ delay: 0.3, duration: 0.5 }}
             className="text-5xl font-bold text-white mb-4"
           >
-            Welcome to Cinestar
+            Welcome to {branding.appName}
           </motion.h1>
 
           {/* Subtitle */}
