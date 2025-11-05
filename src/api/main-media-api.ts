@@ -6,6 +6,7 @@ import { UnifiedMigrator, getDefaultDataDir } from '../core/unified-migrator';
 import { getMimeType } from '../core/utils';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import Database from 'better-sqlite3';
 // import * as os from 'os';
 import { ConfigStore, StrategyFlags } from '../core/config-store';
 import { CanonicalMediaDatabase } from '../core/canonical-media-database';
@@ -2473,6 +2474,34 @@ export class MainMediaAPI {
       return { success: true, available: false };
     } catch (error) {
       return { success: false, available: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get image metadata (caption) for image viewer
+   */
+  static async getImageMetadata(imagePath: string): Promise<{ success: boolean; metadata?: { id?: string; caption?: string; path: string; fileName: string }; error?: string }>{
+    try {
+      await this.ensureInitialized();
+      const baseDir = this.dataDirPath;
+      const dbPath = path.join(baseDir, 'image_search.db');
+      let caption: string | undefined;
+      let itemId: string | undefined;
+      try {
+        const db = new Database(dbPath);
+        const row = db.prepare(`SELECT item_id, path, caption FROM image_meta_cache WHERE path = ? LIMIT 1`).get(imagePath) as any;
+        if (row) {
+          itemId = row.item_id;
+          caption = row.caption || undefined;
+        }
+        db.close();
+      } catch (e) {
+        console.warn('[IMAGE-METADATA] Failed to read image_search.db (non-fatal):', e);
+      }
+      const fileName = path.basename(imagePath);
+      return { success: true, metadata: { id: itemId, caption, path: imagePath, fileName } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
   }
 

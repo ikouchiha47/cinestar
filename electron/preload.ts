@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   searchText: (text: string, limit?: number) => ipcRenderer.invoke('media:searchText', text, limit),
   unifiedSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number; offset?: number }) => 
     ipcRenderer.invoke('search:unified', { query, ...options }),
+  fastFTSSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number }) => 
+    ipcRenderer.invoke('search:fastFTS', { query, ...options }),
   getSuggestions: (query: string, limit?: number) => ipcRenderer.invoke('media:getSuggestions', query, limit),
   getStats: () => ipcRenderer.invoke('media:getStats'),
   getRecentItems: (params?: { 
@@ -90,6 +92,7 @@ contextBridge.exposeInMainWorld('mediaAPI', {
   getItems: (sourceId?: string) => ipcRenderer.invoke('media:getItems', sourceId),
   isOllamaAvailable: () => ipcRenderer.invoke('media:isOllamaAvailable'),
   getImageThumbnail: (imagePath: string) => ipcRenderer.invoke('media:getImageThumbnail', imagePath),
+  getImageMetadata: (imagePath: string) => ipcRenderer.invoke('image:getMetadata', imagePath),
   selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
 })
 

@@ -70,6 +70,7 @@ export class OllamaModelValidator {
         return result;
       }
     } catch (error) {
+      // Silently fail validation - don't spam console with 404s during onboarding
       const result: ValidationResult = {
         modelId,
         exists: false,

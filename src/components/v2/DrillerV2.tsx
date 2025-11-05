@@ -1,14 +1,15 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { AutoSizer, List } from 'react-virtualized';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import MediaUpload from '../MediaUpload';
 import { VideoPlayerModal } from '../VideoPlayer/VideoPlayerModal';
+import { ImageViewerModal } from '../ImageViewer/ImageViewerModal';
 import { useVideoPlayer } from '../../hooks/useVideoPlayer';
+import { useImageViewer } from '../../hooks/useImageViewer';
 
 // Import decomposed components
 import { Icon } from './components/Icons';
 import { PlacesGrid } from './components/PlacesGrid';
-import { MediaGroup, MediaCard } from './components/MediaGrid';
+import { MediaGroup } from './components/MediaGrid';
+import { ExpandedFullPageView } from './components/ExpandedFullPageView';
 import { ConnectModal } from './components/ConnectModal';
 import { SettingsModal } from './components/SettingsModal';
 import { useMediaLibrary } from './hooks/useMediaLibrary';
@@ -21,6 +22,8 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
 
   // Video player state
   const { playerState, openVideoPlayer, closeVideoPlayer } = useVideoPlayer();
+  // Image viewer state
+  const { imageState, openImageViewer, closeImageViewer } = useImageViewer();
 
   const [q, setQ] = useState('');
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -59,6 +62,16 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
       }
       return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
     });
+  };
+
+  // Handle image item click - open image viewer
+  const handleImageClick = async (item: MediaT) => {
+    try {
+      if (item.type !== 'image') return;
+      await openImageViewer({ imagePath: item.path, imageName: item.name });
+    } catch (error) {
+      console.error('[DRILLER-V2] Failed to open image viewer:', error);
+    }
   };
 
   // Grouped library state via grouped API (per-type cursors)
@@ -720,50 +733,72 @@ export default function DrillerV2(props: { overallProgress?: number; onOpenIndex
               </div>
             )}
             
-            <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 220px)' }}>
-              {expandedType === null ? (
-                <>
-                  <MediaGroup
-                    title="Images"
-                    icon={<Icon.Image />}
-                    items={grouped.image}
-                    places={places}
-                    maxVisible={6}
-                    onShowMore={() => setExpandedType('image')}
-                    onItemDeleted={handleItemDeleted}
-                  />
-                  <MediaGroup
-                    title="Videos"
-                    icon={<Icon.Video />}
-                    items={grouped.video}
-                    places={places}
-                    maxVisible={6}
-                    onShowMore={() => setExpandedType('video')}
-                    onItemDeleted={handleItemDeleted}
-                    onVideoClick={handleVideoClick}
-                  />
-                  <MediaGroup
-                    title="Audio"
-                    icon={<Icon.Audio />}
-                    items={grouped.audio}
-                    places={places}
-                    maxVisible={6}
-                    onShowMore={() => setExpandedType('audio')}
-                    onItemDeleted={handleItemDeleted}
-                  />
-                </>
-              ) : null}
-            </div>
-            {expandedType && (
-              <ExpandedVirtualOverlay
-                type={expandedType}
-                placeId={selectedPlace}
-                onBack={() => setExpandedType(null)}
-              />
+            {expandedType ? (
+              <div style={{ height: '80vh' }}>
+                <ExpandedFullPageView
+                  type={expandedType}
+                  placeId={selectedPlace}
+                  onBack={() => setExpandedType(null)}
+                  onVideoClick={handleVideoClick}
+                  onImageClick={handleImageClick}
+                />
+              </div>
+            ) : (
+              <div className="overflow-auto" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+                <MediaGroup
+                  title="Images"
+                  icon={<Icon.Image />}
+                  items={grouped.image}
+                  places={places}
+                  maxVisible={6}
+                  onShowMore={() => setExpandedType('image')}
+                  onItemDeleted={handleItemDeleted}
+                  onImageClick={handleImageClick}
+                />
+                <MediaGroup
+                  title="Videos"
+                  icon={<Icon.Video />}
+                  items={grouped.video}
+                  places={places}
+                  maxVisible={6}
+                  onShowMore={() => setExpandedType('video')}
+                  onItemDeleted={handleItemDeleted}
+                  onVideoClick={handleVideoClick}
+                />
+                <MediaGroup
+                  title="Audio"
+                  icon={<Icon.Audio />}
+                  items={grouped.audio}
+                  places={places}
+                  maxVisible={6}
+                  onShowMore={() => setExpandedType('audio')}
+                  onItemDeleted={handleItemDeleted}
+                />
+              </div>
             )}
           </>
         )}
       </main>
+
+      {/* Image Viewer Modal */}
+      <ImageViewerModal
+        isOpen={imageState.isOpen}
+        imagePath={imageState.imagePath}
+        imageName={imageState.imageName}
+        caption={imageState.caption}
+        thumbDataUrl={imageState.thumbDataUrl}
+        onClose={closeImageViewer}
+      />
+
+      {/* Video Player Modal */}
+      <VideoPlayerModal
+        isOpen={playerState.isOpen}
+        videoPath={playerState.videoPath}
+        videoName={playerState.videoName}
+        searchQuery={playerState.searchQuery}
+        segments={playerState.segments}
+        onClose={closeVideoPlayer}
+      />
 
       {/* Drawers */}
       {connectOpen && (
@@ -885,156 +920,6 @@ function StackCard({ title }: { title: string }) {
       <div className="text-xs text-neutral-400">Auto‑clustered</div>
     </button>
   );
-}
-
-
-function ExpandedVirtualOverlay({ type, placeId, onBack }: { type: 'image'|'video'|'audio'|null; placeId?: string; onBack: () => void }) {
-  const [items, setItems] = useState<MediaT[]>([]);
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const PAGE = 120;
-  const PREFETCH_MULT = 1.5;
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!type) return;
-      setLoading(true);
-      try {
-        const res = await (window.mediaAPI as any).getRecentItems({
-          sourceIds: placeId ? [placeId] : undefined,
-          types: [type],
-          limit: PAGE,
-          cursor: undefined,
-          orderBy: 'createdAt',
-          orderDirection: 'desc'
-        });
-        if (!alive) return;
-        if (res?.success && Array.isArray(res.items)) {
-          const mapped: MediaT[] = res.items.map((it: any) => {
-            const mime = (it.mimeType || '').toLowerCase();
-            let kind: 'image'|'video'|'audio' = 'image';
-            if (mime.startsWith('video/')) kind = 'video';
-            else if (mime.startsWith('audio/')) kind = 'audio';
-            else if (typeof it.type === 'string') {
-              const t = it.type.toLowerCase();
-              if (t.includes('video')) kind = 'video';
-              else if (t.includes('audio')) kind = 'audio';
-            }
-            return { id: String(it.id), placeId: String(it.sourceId || ''), type: kind, name: it.name || 'item', path: it.path, thumb: it.metadata?.thumbnailPath || undefined } as MediaT;
-          });
-          setItems(mapped);
-          setCursor(res.nextCursor);
-          setHasMore(res.hasMore || false);
-        } else {
-          setItems([]);
-          setCursor(undefined);
-          setHasMore(false);
-        }
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => { alive = false; };
-  }, [type, placeId]);
-
-  const overlay = (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onBack} />
-      <div className="absolute left-1/2 top-[18%] -translate-x-1/2 w-[min(95vw,1280px)]">
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/60 backdrop-blur-xl shadow-xl p-3">
-          <div className="flex items-center justify-between mb-2 px-1">
-            <div className="flex items-center gap-2 text-sm text-neutral-300">
-              <b>{type === 'image' ? 'Images' : type === 'video' ? 'Videos' : 'Audio'}</b>
-              <span className="text-neutral-500">{items.length}{hasMore ? '+' : ''}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:border-neutral-700" onClick={onBack}>Back</button>
-              <div className="text-xs text-neutral-500">Virtualized</div>
-            </div>
-          </div>
-          <div style={{ height: '66vh' }}>
-            <AutoSizer>
-              {({ width, height }: { width: number; height: number }) => {
-                const gap = 12;
-                const minCard = 180;
-                const perRow = Math.max(1, Math.floor((width + gap) / (minCard + gap)));
-                const cardWidth = (width - gap * (perRow - 1)) / perRow;
-                const caption = 56; // approx caption + padding
-                const rowHeight = Math.ceil(cardWidth + caption);
-                const rowCount = Math.max(1, Math.ceil(items.length / perRow));
-
-                // Infinite scroll: Load more when scrolling near bottom
-                const rowsVisible = Math.ceil(height / rowHeight);
-                const wantCount = Math.ceil((rowsVisible * PREFETCH_MULT + 2) * perRow);
-                if (!loading && hasMore && items.length < wantCount && cursor) {
-                  setLoading(true);
-                  (window.mediaAPI as any)
-                    .getRecentItems({
-                      sourceIds: placeId ? [placeId] : undefined,
-                      types: type ? [type] : undefined,
-                      limit: PAGE,
-                      cursor: cursor,
-                      orderBy: 'createdAt',
-                      orderDirection: 'desc'
-                    })
-                    .then((res: any) => {
-                      if (res?.success && Array.isArray(res.items)) {
-                        const mapped: MediaT[] = res.items.map((it: any) => ({
-                          id: String(it.id),
-                          placeId: String(it.sourceId || ''),
-                          type: ((it.mimeType || '').toLowerCase().startsWith('video/')
-                            ? 'video'
-                            : (it.mimeType || '').toLowerCase().startsWith('audio/')
-                            ? 'audio'
-                            : 'image'),
-                          name: it.name || 'item',
-                          path: it.path,
-                          thumb: it.metadata?.thumbnailPath || undefined,
-                        }));
-                        setItems((prev) => [...prev, ...mapped]);
-                        setCursor(res.nextCursor);
-                        setHasMore(res.hasMore || false);
-                      }
-                    })
-                    .finally(() => setLoading(false));
-                }
-
-                const rowRenderer = ({ index, key, style }: { index: number; key: string; style: React.CSSProperties }) => {
-                  const start = index * perRow;
-                  const end = Math.min(start + perRow, items.length);
-                  const rowItems = items.slice(start, end);
-                  return (
-                    <div key={key} style={style}>
-                      <div className="grid" style={{ gridTemplateColumns: `repeat(${perRow}, minmax(0, 1fr))`, gap: `${gap}px` }}>
-                        {rowItems.map((m) => (
-                          <MediaCard key={m.id} item={m} placeLabel={''} onDeleted={(itemId) => setItems(prev => prev.filter(item => item.id !== itemId))} />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                };
-
-                return (
-                  <List
-                    width={width}
-                    height={height}
-                    rowHeight={rowHeight}
-                    rowCount={rowCount}
-                    rowRenderer={rowRenderer}
-                    overscanRowCount={Math.ceil((height / rowHeight) * (PREFETCH_MULT - 1))}
-                  />
-                );
-              }}
-            </AutoSizer>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  return createPortal(overlay, document.body);
 }
 
 function ConnectDrawer({ onClose, onPick }: { onClose: () => void; onPick: (kind: 'local' | 's3' | 'gdrive' | 'nas') => void }) {

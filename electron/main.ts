@@ -719,6 +719,11 @@ ipcMain.handle('media:getImageThumbnail', async (_, imagePath: string) => {
   return await guardMedia(() => MainMediaAPI.getImageThumbnail(imagePath));
 });
 
+// Image metadata (captions) for image viewer modal
+ipcMain.handle('image:getMetadata', async (_evt, imagePath: string) => {
+  return await guardMedia(() => MainMediaAPI.getImageMetadata(imagePath));
+});
+
 // Unified search IPC handler - now uses the new unifiedSearch method with cancellation
 ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: number; offset?: number; types?: ('image' | 'video' | 'audio')[] }) => {
   if (!mediaAPI) await initializeMediaAPI();
@@ -775,6 +780,110 @@ ipcMain.handle('search:unified', async (_evt, query: { query: string; limit?: nu
   }
 });
 
+// Fast FTS-only search (Phase 1 of 2-phase search)
+// Returns quickly with FTS results only, no vector search
+ipcMain.handle('search:fastFTS', async (_evt, query: { query: string; limit?: number; types?: ('image' | 'video' | 'audio')[] }) => {
+  if (!mediaAPI) await initializeMediaAPI();
+  
+  try {
+    console.log(`[FAST-FTS] ⚡ Fast FTS search: "${query.query}"`);
+    
+    const { prepareFTSQuery } = await import('../src/utils/fts-query-processor');
+    const ftsQuery = prepareFTSQuery(query.query || '');
+    
+    if (!ftsQuery) {
+      return { success: true, results: { images: [], videos: [], audio: [] } };
+    }
+    
+    const types = query.types || ['image', 'video', 'audio'];
+    const limit = query.limit || 20;
+    const results: any = { images: [], videos: [], audio: [] };
+    
+    // Fast FTS search for each type
+    if (types.includes('image')) {
+      const imageDb = new Database(path.join(DATA_DIR, 'image_search.db'));
+      const imageFTS = imageDb.prepare(`
+        SELECT item_id FROM image_fts 
+        WHERE image_fts MATCH ? 
+        LIMIT ?
+      `).all(ftsQuery, limit);
+      
+      // Get metadata for each result
+      for (const row of imageFTS) {
+        const meta = imageDb.prepare(`
+          SELECT * FROM image_meta_cache WHERE item_id = ?
+        `).get((row as any).item_id);
+        if (meta) {
+          const m: any = meta as any;
+          const thumb = m.thumbnailPath || m.thumb || m.path;
+          results.images.push({
+            id: m.item_id,
+            type: 'image',
+            path: m.path,
+            thumb,
+            score: 0.5, // FTS-only score
+            caption: m.caption
+          });
+        }
+      }
+      imageDb.close();
+    }
+    
+    if (types.includes('video')) {
+      const avDb = new Database(path.join(DATA_DIR, 'av_search.db'));
+      const videoFTS = avDb.prepare(`
+        SELECT segment_id FROM transcripts_fts 
+        WHERE transcripts_fts MATCH ? 
+        LIMIT ?
+      `).all(ftsQuery, limit);
+      
+      // Get metadata for each result
+      for (const row of videoFTS) {
+        const meta = avDb.prepare(`
+          SELECT * FROM av_meta_cache WHERE segment_id = ?
+        `).get((row as any).segment_id);
+        if (meta) {
+          const m: any = meta as any;
+          const videoPath = String(m.path || '');
+          const baseVideoPath = videoPath.includes('#t=') ? videoPath.split('#t=')[0] : videoPath;
+          let thumb = '';
+          try {
+            const { getCacheDir } = await import('../src/core/video-processing');
+            const cacheDir = getCacheDir(baseVideoPath);
+            const quickThumb = path.join(cacheDir, 'quick_thumb.jpg');
+            if (fs.existsSync(quickThumb)) {
+              thumb = quickThumb;
+            }
+          } catch {}
+          results.videos.push({
+            id: m.segment_id,
+            type: 'video',
+            path: videoPath,
+            thumb, // empty string if not available; FE will show icon rather than try to render video as image
+            score: 0.5, // FTS-only score
+            caption: m.caption
+          });
+        }
+      }
+      avDb.close();
+    }
+    
+    console.log(`[FAST-FTS] ✅ Returning ${results.images.length} images, ${results.videos.length} videos`);
+    
+    return {
+      success: true,
+      results,
+      isFastFTS: true // Flag to indicate this is preliminary
+    };
+  } catch (error: any) {
+    console.error('[FAST-FTS] Failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Fast FTS search failed'
+    };
+  }
+});
+
 // Video processing IPC handlers
 ipcMain.handle('video:processVideo', async (_, videoPath: string) => {
   console.log(`[IPC-VIDEO-PROCESS] 🚀 Received video processing request for: ${videoPath}`);
@@ -794,7 +903,7 @@ ipcMain.handle('video:processVideo', async (_, videoPath: string) => {
 ipcMain.handle('video:processAudio', async (_, audioPath: string) => {
   if (!videoAPI) await initializeVideoAPI();
   try {
-    return { success: true, videoId: await videoAPI!.processAudio(audioPath) };
+    return { success: true, videoId: await (videoAPI as any)!.processAudio(audioPath) };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }

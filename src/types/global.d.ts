@@ -78,10 +78,21 @@ declare global {
         };
         error?: string;
       }>;
+      fastFTSSearch: (query: string, options?: { types?: ('image' | 'video' | 'audio')[]; limit?: number }) => Promise<{
+        success: boolean;
+        results?: {
+          images: any[];
+          videos: any[];
+          audio: any[];
+        };
+        isFastFTS?: boolean;
+        error?: string;
+      }>;
       getSuggestions: (query: string, limit?: number) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>;
       getStats: () => Promise<{ success: boolean; stats?: { totalSources: number; totalItems: number; activeJobs: number }; error?: string }>;
       isOllamaAvailable: () => Promise<{ success: boolean; available: boolean; error?: string }>;
       selectDirectory: () => Promise<{ canceled: boolean; path?: string }>;
+      getImageMetadata: (imagePath: string) => Promise<{ success: boolean; metadata?: { id?: string; caption?: string; path: string; fileName: string }; error?: string }>;
     };
     
     videoAPI: {

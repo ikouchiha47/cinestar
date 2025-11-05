@@ -42,14 +42,20 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         const allModels = providerConfigManager.getAllModels(providerId);
         const modelIds = allModels.map(m => m.id);
         
-        const results = await ollamaValidator.validateModels(modelIds);
-        const validation: Record<string, boolean> = {};
-        results.forEach(result => {
-          validation[result.modelId] = result.exists;
-        });
-        
-        setModelValidation(validation);
-        setIsValidating(false);
+        try {
+          const results = await ollamaValidator.validateModels(modelIds);
+          const validation: Record<string, boolean> = {};
+          results.forEach(result => {
+            validation[result.modelId] = result.exists;
+          });
+          
+          setModelValidation(validation);
+        } catch (error) {
+          // Validation failed (likely CORS or Ollama not running) - skip validation
+          console.log('[MODEL-SELECTOR] Skipping Ollama validation:', error);
+        } finally {
+          setIsValidating(false);
+        }
       };
       
       validateOllamaModels();
