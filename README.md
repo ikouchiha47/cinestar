@@ -7,4 +7,7 @@ Index media, images privately on local macihnes.
 ## Release Link
 
 [Download Page](https://github.com/ikouchiha47/cinestar-release)
-  
+
+## Blog
+
+[How it came to being](https://ikouchiha47.github.io/2025/10/02/media-search.html)
