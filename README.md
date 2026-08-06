@@ -1,6 +1,8 @@
 # Cinestar
 
-Index media, images privately on local macihnes.
+Index media, images privately on local machines.
+
+Watch it in Action:
 
 [![Preview](https://img.youtube.com/vi/upaCDuOZtTs/0.jpg)](https://www.youtube.com/watch?v=upaCDuOZtTs&t=37s)
 
